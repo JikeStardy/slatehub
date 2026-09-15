@@ -166,10 +166,13 @@ export class DeviceCurrentContentService {
       try {
         await this.dynamicRenderer.renderDynamicContent(content.id);
         const updatedSnapshot = await this.manifestSnapshotForDeviceGroup(device, request.groupId);
-        const updatedEntry = updatedSnapshot?.entries[request.seq];
+        const updatedEntry = updatedSnapshot?.entries.find(
+          (entry) => entry.content.id === request.contentId
+        );
         if (!updatedSnapshot || !updatedEntry) return null;
         return {
           ...request,
+          seq: updatedEntry.summary.seq,
           manifestEtag: updatedSnapshot.manifestEtag,
           contentId: updatedEntry.content.id,
           content: updatedEntry.content,

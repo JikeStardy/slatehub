@@ -529,7 +529,7 @@ describe('DeviceFirmwareService.poll', () => {
     expect(harness.calls.renders).toBe(0);
   });
 
-  it('refreshes the playable projection exactly once after a timer render changes it', async () => {
+  it('refreshes the playable projection exactly once after a timer render runs', async () => {
     const harness = createProjectedPollService({
       contentKind: 'dynamic',
       dynamicNextRunAt: new Date('2026-01-01T00:00:00.000Z'),

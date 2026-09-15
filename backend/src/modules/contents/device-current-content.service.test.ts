@@ -274,4 +274,133 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
     expect(current?.id).toBe('content-3');
     expect(current?.seq).toBe(1);
   });
+
+  it('keeps the current content identity and returns its new compact seq after render shifts projection', async () => {
+    const harness = createDynamicRefreshHarness();
+    const manifestEtag = await harness.service.manifestEtagForDeviceGroup(
+      harness.device,
+      'group-1'
+    );
+    const request = await harness.service.resolveCurrentContentRequest(harness.device, {
+      current_group: 'group-1',
+      current_content_seq: 1,
+      manifest_etag: manifestEtag,
+    });
+
+    const refreshed = await harness.service.refreshCurrentContentForDeviceIfDue(
+      request,
+      harness.device
+    );
+    const current = refreshed ? harness.service.currentContentForDevice(refreshed) : null;
+
+    expect(harness.renders).toBe(1);
+    expect(refreshed?.contentId).toBe('content-current');
+    expect(current?.id).toBe('content-current');
+    expect(current?.seq).toBe(2);
+  });
+
+  it('returns null when the original current content is no longer ready after render', async () => {
+    const harness = createDynamicRefreshHarness({ currentStatusAfterRender: 'failed' });
+    const manifestEtag = await harness.service.manifestEtagForDeviceGroup(
+      harness.device,
+      'group-1'
+    );
+    const request = await harness.service.resolveCurrentContentRequest(harness.device, {
+      current_group: 'group-1',
+      current_content_seq: 1,
+      manifest_etag: manifestEtag,
+    });
+
+    const refreshed = await harness.service.refreshCurrentContentForDeviceIfDue(
+      request,
+      harness.device
+    );
+
+    expect(harness.renders).toBe(1);
+    expect(refreshed).toBeNull();
+  });
 });
+
+function createDynamicRefreshHarness(opts: { currentStatusAfterRender?: 'ready' | 'failed' } = {}) {
+  let renders = 0;
+  const device = {
+    id: 'device-1',
+    selectedGroupId: 'group-1',
+    selectedGroup: { manifestEtag: 'legacy-manifest' },
+    boardId: 'zectrix-note4',
+    displayProfileId: NOTE4_PROFILE,
+    protocolVersion: 2,
+  };
+  const rows = [
+    contentRow('ready', NOTE4_PROFILE, { id: 'content-1', sortOrder: 0, frameName: 'First' }),
+    contentRow('pending', NOTE4_PROFILE, {
+      id: 'content-pending',
+      sortOrder: 1,
+      frameName: 'Pending',
+    }),
+    {
+      ...contentRow('ready', NOTE4_PROFILE, {
+        id: 'content-current',
+        sortOrder: 2,
+        frameName: 'Current',
+      }),
+      kind: 'dynamic' as const,
+      dynamicType: 'weather',
+      dynamicNextRunAt: new Date('2026-01-01T00:00:00.000Z'),
+      dynamicRefreshDueAt: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    contentRow('ready', NOTE4_PROFILE, { id: 'content-4', sortOrder: 3, frameName: 'Fourth' }),
+  ];
+  const prisma = {
+    device: {
+      findUnique: async () => device,
+    },
+    group: {
+      findUnique: async () => ({
+        id: 'group-1',
+        ownerUserId: 'user-1',
+        name: 'Group',
+        sortOrder: 0,
+        structureEtag: 'structure-etag',
+        contents: rows,
+      }),
+    },
+  };
+  const service = new DeviceCurrentContentService(
+    prisma as unknown as PrismaService,
+    {
+      renderDynamicContent: async () => {
+        renders += 1;
+        rows[1].variants[0] = {
+          ...rows[1].variants[0],
+          status: 'ready',
+          frameEtag: computeETag(Buffer.alloc(15_000, 0x22)),
+          frameSize: 15_000,
+          storageKey: `frames/${NOTE4_PROFILE}/group-1/content-pending.img`,
+        };
+        if (opts.currentStatusAfterRender === 'failed') {
+          rows[2].variants[0] = {
+            ...rows[2].variants[0],
+            status: 'failed',
+            frameEtag: null,
+            frameSize: null,
+            storageKey: null,
+            lastError: 'render failed',
+          };
+        }
+        return { groupEtag: 'rendered' };
+      },
+    } as unknown as DynamicContentRendererService,
+    new ContentReadTargetResolver(prisma as unknown as PrismaService, { nodeEnv: 'test' } as never),
+    {
+      ownerGroupPosition: async () => ({ current: 1, total: 1 }),
+    } as unknown as GroupsService
+  );
+  return {
+    service,
+    device,
+    get renders() {
+      return renders;
+    },
+  };
+}

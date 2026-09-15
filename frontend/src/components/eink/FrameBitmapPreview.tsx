@@ -1,11 +1,16 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
-import { FRAME_HEIGHT, FRAME_WIDTH } from 'shared';
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  frameDescriptorForProfile,
+  type FrameDescriptorT,
+} from 'shared';
 import { cn } from '@/lib/cn';
-import { clearCanvas, decodeBppImage, isValidBppLength } from '@/lib/eink/bpp';
+import { clearCanvas, decodeRawFrameToImageData, isValidRawFrameLength } from '@/lib/eink/bpp';
 import { StatusBarOverlay } from './StatusBarOverlay';
 
 interface FrameBitmapPreviewProps {
   data?: ArrayBuffer | null;
+  descriptor?: FrameDescriptorT;
   caption?: string | null;
   className?: string;
   showStatusBar?: boolean;
@@ -13,18 +18,19 @@ interface FrameBitmapPreviewProps {
 
 export function FrameBitmapPreview({
   data,
+  descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID),
   caption,
   className,
   showStatusBar = true,
 }: FrameBitmapPreviewProps) {
-  const canvasRef = useContentBitmap(data);
+  const canvasRef = useContentBitmap(data, descriptor);
 
   return (
     <div className={cn('relative h-full w-full overflow-hidden bg-paper', className)}>
       <canvas
         ref={canvasRef}
-        width={FRAME_WIDTH}
-        height={FRAME_HEIGHT}
+        width={descriptor.width}
+        height={descriptor.height}
         className="block h-full w-full"
         style={{ imageRendering: 'pixelated' }}
       />
@@ -33,34 +39,41 @@ export function FrameBitmapPreview({
   );
 }
 
-function useContentBitmap(data: ArrayBuffer | null | undefined) {
+function useContentBitmap(data: ArrayBuffer | null | undefined, descriptor: FrameDescriptorT) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const imageData = useMemo(() => decodeContentBitmap(data), [data]);
+  const imageData = useMemo(() => decodeContentBitmap(data, descriptor), [data, descriptor]);
 
   useLayoutEffect(() => {
-    drawContentBitmap(canvasRef.current, imageData);
-  }, [imageData]);
+    drawContentBitmap(canvasRef.current, imageData, descriptor);
+  }, [descriptor, imageData]);
 
   return useCallback((node: HTMLCanvasElement | null) => {
     canvasRef.current = node;
   }, []);
 }
 
-function drawContentBitmap(canvas: HTMLCanvasElement | null, data: ImageData | null): void {
+function drawContentBitmap(
+  canvas: HTMLCanvasElement | null,
+  data: ImageData | null,
+  descriptor: FrameDescriptorT
+): void {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   if (!data) {
-    clearCanvas(ctx);
+    clearCanvas(ctx, descriptor);
     return;
   }
 
   ctx.putImageData(data, 0, 0);
 }
 
-function decodeContentBitmap(data: ArrayBuffer | null | undefined): ImageData | null {
+function decodeContentBitmap(
+  data: ArrayBuffer | null | undefined,
+  descriptor: FrameDescriptorT
+): ImageData | null {
   if (!data) return null;
   const bytes = new Uint8Array(data);
-  if (!isValidBppLength(bytes)) return null;
-  return decodeBppImage(bytes);
+  if (!isValidRawFrameLength(bytes, descriptor)) return null;
+  return decodeRawFrameToImageData(bytes, descriptor);
 }

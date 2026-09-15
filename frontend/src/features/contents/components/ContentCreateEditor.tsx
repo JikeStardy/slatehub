@@ -11,6 +11,7 @@ import { DynamicFramePreview } from '@/features/dynamic/components/DynamicFrameP
 import { useDynamicContentForm } from '@/features/dynamic/hooks/useDynamicContentForm';
 import { ContentTypeCardGrid, ContentTypePicker } from './ContentTypePicker';
 import { ImageCreateForm } from './ImageCreateForm';
+import { defaultDisplayProfileId } from '@/features/profiles/profile-environment';
 
 // ─── 主编辑器 ──────────────────────────────────────────────────────────────────
 
@@ -21,7 +22,8 @@ interface ContentCreateEditorProps {
 }
 
 export function ContentCreateEditor({ gid, onDone, onEditCreatedImage }: ContentCreateEditorProps) {
-  const dynamicForm = useDynamicContentForm({ requireDashboardData: true });
+  const [displayProfileId, setDisplayProfileId] = useState(defaultDisplayProfileId);
+  const dynamicForm = useDynamicContentForm({ requireDashboardData: true, displayProfileId });
   const [type, setType] = useState<AllContentType | null>(null);
 
   function handleTypeChange(t: AllContentType) {
@@ -85,6 +87,8 @@ export function ContentCreateEditor({ gid, onDone, onEditCreatedImage }: Content
             gid={gid}
             type={type}
             form={dynamicForm}
+            displayProfileId={displayProfileId}
+            onDisplayProfileChange={setDisplayProfileId}
             header={selectedTypeHeader}
             onDone={onDone}
           />

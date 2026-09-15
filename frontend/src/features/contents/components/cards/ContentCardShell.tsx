@@ -13,6 +13,7 @@ interface ContentCardShellProps {
   preview?: ReactNode;
   topRight?: ReactNode;
   titleMeta?: ReactNode;
+  mediaMeta?: ReactNode;
   actions: ReactNode;
 }
 
@@ -27,6 +28,7 @@ export function ContentCardShell({
   preview,
   topRight,
   titleMeta,
+  mediaMeta,
   actions,
 }: ContentCardShellProps) {
   return (
@@ -51,6 +53,7 @@ export function ContentCardShell({
         <span className="absolute top-2 left-2 bg-paper border border-ink px-1.5 font-mono text-[10px] pointer-events-none">
           {String(seq + 1).padStart(2, '0')}
         </span>
+        {mediaMeta}
 
         {topRight}
       </div>

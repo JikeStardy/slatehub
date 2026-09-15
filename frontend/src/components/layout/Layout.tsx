@@ -2,13 +2,15 @@
 
 import { Link, Outlet } from 'react-router-dom';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { LogOut } from 'lucide-react';
+import { FlaskConical, LogOut } from 'lucide-react';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { IconBlock } from '@/components/ui/IconBlock';
 import { appRoutes } from '@/app/routes';
+import { currentDisplayProfileEnvironment } from '@/features/profiles/profile-environment';
 
 export function Layout() {
   const { user, logout } = useAuth();
+  const showSimulator = currentDisplayProfileEnvironment() !== 'production';
 
   return (
     <div className="min-h-screen flex flex-col bg-paper">
@@ -31,6 +33,16 @@ export function Layout() {
 
           {/* 右侧用户下拉 */}
           <div className="flex items-center gap-2">
+            {showSimulator && (
+              <Link
+                to={appRoutes.simulator}
+                aria-label="打开模拟器"
+                title="设备模拟器"
+                className="hidden sm:inline-flex h-9 w-9 items-center justify-center border border-ink text-ink hover:bg-cream-deep transition-colors"
+              >
+                <FlaskConical size={15} />
+              </Link>
+            )}
             {user && (
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger asChild>
@@ -81,7 +93,7 @@ export function Layout() {
       <footer className="border-t border-line">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 py-3.5 text-center">
           <p className="font-mono text-[11px] text-stone tracking-[0.06em]">
-            Slate · 1bpp · 400×300 · v0.1
+            Slate · multi-profile · 1bpp · v0.1
           </p>
         </div>
       </footer>

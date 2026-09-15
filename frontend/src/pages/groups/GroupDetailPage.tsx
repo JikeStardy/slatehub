@@ -3,6 +3,7 @@
 // dnd-kit reorder 通过 useDndOrder 复用；本地顺序会在保存失败时回滚。
 
 import { Link, useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 import { ArrowLeft, Plus, Layers } from 'lucide-react';
 import { useGroup, useUpdateGroup } from '@/features/groups/query/group-queries';
 import { useGroupContents } from '@/features/contents/query/content-read-queries';
@@ -22,6 +23,8 @@ import { getApiErrorMessage } from '@/lib/api-errors';
 import { formatBytes } from '@/lib/format';
 import { useDndOrder } from '@/components/dnd/useDndOrder';
 import { appRoutes } from '@/app/routes';
+import { DisplayProfileSelector } from '@/features/profiles/components/DisplayProfileSelector';
+import { defaultDisplayProfileId } from '@/features/profiles/profile-environment';
 
 export function GroupDetailPage() {
   const navigate = useNavigate();
@@ -45,7 +48,8 @@ function GroupDetailContent({
   navigate: ReturnType<typeof useNavigate>;
 }) {
   const groupQuery = useGroup(gid);
-  const contents = useGroupContents(gid);
+  const [displayProfileId, setDisplayProfileId] = useState(defaultDisplayProfileId);
+  const contents = useGroupContents(gid, displayProfileId);
   const reorder = useReorderContents(gid);
   const toast = useToast();
 
@@ -103,7 +107,13 @@ function GroupDetailContent({
 
   return (
     <div>
-      <GroupHeader group={group} onBack={goBack} onAdd={openCreate} />
+      <GroupHeader
+        group={group}
+        displayProfileId={displayProfileId}
+        onDisplayProfileChange={setDisplayProfileId}
+        onBack={goBack}
+        onAdd={openCreate}
+      />
       <div className="mt-6 fade-up fade-up-1">
         {contents.isPending ? (
           <Spinner label="加载中" />
@@ -153,10 +163,14 @@ function BackHomeLink() {
 // ───── 组标题 + inline 改名 + 新建内容 ───────────────────────────
 function GroupHeader({
   group,
+  displayProfileId,
+  onDisplayProfileChange,
   onBack,
   onAdd,
 }: {
   group: GroupSummaryT;
+  displayProfileId: string;
+  onDisplayProfileChange: (profileId: string) => void;
   onBack: () => void;
   onAdd: () => void;
 }) {
@@ -199,9 +213,18 @@ function GroupHeader({
       }
       subtitle={`${group.content_count} 项 · ${formatBytes(group.total_bytes)}`}
       action={
-        <Button iconLeft={<Plus size={16} />} size="sm" onClick={onAdd}>
-          新建帧
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <div className="min-w-[260px]">
+            <DisplayProfileSelector
+              value={displayProfileId}
+              onChange={onDisplayProfileChange}
+              compact
+            />
+          </div>
+          <Button iconLeft={<Plus size={16} />} size="sm" onClick={onAdd}>
+            新建帧
+          </Button>
+        </div>
       }
     />
   );

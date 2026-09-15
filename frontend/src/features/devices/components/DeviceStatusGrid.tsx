@@ -34,6 +34,9 @@ export function DeviceStatusGrid({
           stale={!online}
         />
         <DeviceMetaCard label="固件" value={device.fw_version ?? '—'} mono />
+        <DeviceMetaCard label="协议" value={`v${device.protocol_version}`} mono />
+        <DeviceMetaCard label="Board" value={device.board_id} mono />
+        <DeviceMetaCard label="Profile" value={device.display_profile_id} mono />
         <DeviceMetaCard label="心跳" value={lastSeenAgo} />
       </div>
     </section>

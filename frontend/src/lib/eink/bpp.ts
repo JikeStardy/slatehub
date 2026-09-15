@@ -1,5 +1,19 @@
-import { FRAME_HEIGHT, FRAME_WIDTH } from 'shared';
+import { FRAME_HEIGHT, FRAME_WIDTH, type FrameDescriptorT } from 'shared';
 import { INK_RGB, PAPER_HEX, PAPER_RGB } from './colors';
+
+export interface DecodedRgbaFrame {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+}
+
+export type RawFrameValidation =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: 'unsupported-format' | 'invalid-dimensions' | 'invalid-byte-length';
+      message: string;
+    };
 
 export function clearCanvas(
   ctx: CanvasRenderingContext2D,
@@ -40,6 +54,94 @@ export function decodeBppImage(
   }
 
   return data;
+}
+
+export function validateRawFrameDescriptor(descriptor: FrameDescriptorT): RawFrameValidation {
+  if (descriptor.pixel_format !== 'mono1' || descriptor.frame_codec !== 'raw_mono1_msb') {
+    return {
+      ok: false,
+      reason: 'unsupported-format',
+      message: '仅支持 mono1 + raw_mono1_msb 帧',
+    };
+  }
+  if (descriptor.width <= 0 || descriptor.height <= 0 || descriptor.width % 8 !== 0) {
+    return {
+      ok: false,
+      reason: 'invalid-dimensions',
+      message: '帧宽高不合法',
+    };
+  }
+  const expected = (descriptor.width * descriptor.height) / 8;
+  if (descriptor.byte_length !== expected) {
+    return {
+      ok: false,
+      reason: 'invalid-byte-length',
+      message: `帧长度应为 ${expected} bytes`,
+    };
+  }
+  return { ok: true };
+}
+
+export function isValidRawFrameLength(
+  bytes: Uint8Array | ArrayBuffer,
+  descriptor: FrameDescriptorT
+): boolean {
+  const byteLength = bytes instanceof ArrayBuffer ? bytes.byteLength : bytes.length;
+  return validateRawFrameDescriptor(descriptor).ok && byteLength === descriptor.byte_length;
+}
+
+export function decodeRawFrameToRgba(
+  bytes: Uint8Array | ArrayBuffer,
+  descriptor: FrameDescriptorT,
+  paperColor: readonly [number, number, number] = PAPER_RGB,
+  inkColor: readonly [number, number, number] = INK_RGB
+): DecodedRgbaFrame {
+  const validation = validateRawFrameDescriptor(descriptor);
+  if (!validation.ok) throw new Error(validation.message);
+  const byteView = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
+  if (byteView.byteLength !== descriptor.byte_length) {
+    throw new Error(
+      `raw frame length mismatch: expected ${descriptor.byte_length}, got ${byteView.byteLength}`
+    );
+  }
+
+  const data = new Uint8ClampedArray(descriptor.width * descriptor.height * 4);
+  const bpr = descriptor.width >> 3;
+  let dst = 0;
+  for (let y = 0; y < descriptor.height; y++) {
+    const rowStart = y * bpr;
+    for (let byteOffset = 0; byteOffset < bpr; byteOffset++) {
+      const byte = byteView[rowStart + byteOffset]!;
+      for (let bit = 7; bit >= 0; bit--) {
+        const color = byte & (1 << bit) ? paperColor : inkColor;
+        data[dst++] = color[0];
+        data[dst++] = color[1];
+        data[dst++] = color[2];
+        data[dst++] = 255;
+      }
+    }
+  }
+  return { width: descriptor.width, height: descriptor.height, data };
+}
+
+export function decodeRawFrameToImageData(
+  bytes: Uint8Array | ArrayBuffer,
+  descriptor: FrameDescriptorT
+): ImageData {
+  const rgba = decodeRawFrameToRgba(bytes, descriptor);
+  const imageDataArray = rgba.data as ImageDataArray;
+  return new ImageData(imageDataArray, rgba.width, rgba.height);
+}
+
+export function frameRgbaHash(frame: DecodedRgbaFrame): string {
+  let inkWeighted = 0;
+  let paperWeighted = 0;
+  for (let i = 0; i < frame.data.length; i += 4) {
+    const pixel = frame.data[i]! + frame.data[i + 1]! + frame.data[i + 2]!;
+    if (pixel < 128 * 3) inkWeighted = (inkWeighted + (i / 4 + 1) * pixel) % 100_000_000;
+    else paperWeighted = (paperWeighted + (i / 4 + 1) * pixel) % 100_000_000;
+  }
+  return `${frame.width}x${frame.height}:${inkWeighted}:${paperWeighted}`;
 }
 
 export function isValidBppLength(

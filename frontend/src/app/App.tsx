@@ -4,7 +4,8 @@ import { Layout } from '@/components/layout/Layout';
 import { RequireAuth } from '@/features/auth/components/RequireAuth';
 import { ErrorBoundary } from '@/components/feedback/ErrorBoundary';
 import { Spinner } from '@/components/ui/Spinner';
-import { appRoutes, routePaths } from './routes';
+import { currentDisplayProfileEnvironment } from '@/features/profiles/profile-environment';
+import { appRoutes, isSimulatorRouteEnabled, routePaths } from './routes';
 
 const AuthPage = lazy(() =>
   import('@/pages/auth/AuthPage').then((module) => ({ default: module.AuthPage }))
@@ -28,6 +29,13 @@ const DynamicContentEditorPage = lazy(() =>
     default: module.DynamicContentEditorPage,
   }))
 );
+const SimulatorPage = import.meta.env.PROD
+  ? null
+  : lazy(() =>
+      import('@/pages/simulator/SimulatorPage').then((module) => ({
+        default: module.SimulatorPage,
+      }))
+    );
 
 function ScrollToTop() {
   const { pathname } = useLocation();
@@ -39,6 +47,8 @@ function ScrollToTop() {
 }
 
 export function App() {
+  const simulatorEnabled = isSimulatorRouteEnabled(currentDisplayProfileEnvironment());
+
   return (
     <ErrorBoundary>
       <ScrollToTop />
@@ -60,6 +70,9 @@ export function App() {
             <Route path={routePaths.contentNew} element={<ContentNewPage />} />
             <Route path={routePaths.imageContentEdit} element={<ImageContentEditorPage />} />
             <Route path={routePaths.dynamicContentEdit} element={<DynamicContentEditorPage />} />
+            {simulatorEnabled && SimulatorPage && (
+              <Route path={routePaths.simulator} element={<SimulatorPage />} />
+            )}
           </Route>
 
           <Route path="*" element={<Navigate to={appRoutes.home} replace />} />

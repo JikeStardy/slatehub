@@ -12,6 +12,7 @@ import { ContentCardShell } from './ContentCardShell';
 import { useDeleteContentWithConfirm } from '@/features/contents/hooks/useDeleteContentWithConfirm';
 import { FrameBitmapPreview } from '@/components/eink/FrameBitmapPreview';
 import { useSortableStyle } from '@/components/dnd/useSortableStyle';
+import { compatibilityLabel } from '@/features/contents/lib/variant-status';
 
 interface ContentCardProps {
   gid: string;
@@ -26,7 +27,8 @@ export const ContentCard = memo(function ContentCard({ gid, content, onEdit }: C
     gid,
     content,
   });
-  const img = useContentImage(content.id, content.image_etag);
+  const img = useContentImage(content.id, content.image_etag, content.frame.profile_id);
+  const variantReady = content.variant_status === 'ready';
   const { attributes, listeners, setNodeRef, style, isDragging } = useSortableStyle(content.id);
   const refreshContent = useMutationAction<string>({
     isPending: refresh.isPending,
@@ -40,16 +42,22 @@ export const ContentCard = memo(function ContentCard({ gid, content, onEdit }: C
       nodeRef={setNodeRef}
       style={style}
       isDragging={isDragging}
-      loading={img.isPending}
-      error={!!img.error}
+      loading={variantReady && img.isPending}
+      error={variantReady && !!img.error}
       frameName={content.frame_name}
       seq={content.seq}
       preview={
         <FrameBitmapPreview
           data={img.data}
+          descriptor={content.frame}
           caption={content.device_status_bar_text}
           showStatusBar={false}
         />
+      }
+      mediaMeta={
+        <span className="absolute bottom-2 left-2 bg-paper border border-ink px-1.5 font-mono text-[10px] pointer-events-none">
+          {content.frame.width}x{content.frame.height}
+        </span>
       }
       topRight={
         <AudioStatusBadge
@@ -59,7 +67,15 @@ export const ContentCard = memo(function ContentCard({ gid, content, onEdit }: C
         />
       }
       titleMeta={
-        isDynamic && content.dynamic_render_error ? (
+        content.variant_status !== 'ready' ? (
+          <p
+            className="mt-0.5 flex items-center gap-1 truncate font-sans text-[11px] text-clay"
+            title={compatibilityLabel(content.variant_status)}
+          >
+            <AlertCircle size={11} className="shrink-0" />
+            <span className="truncate">{compatibilityLabel(content.variant_status)}</span>
+          </p>
+        ) : isDynamic && content.dynamic_render_error ? (
           <p
             className="mt-0.5 flex items-center gap-1 truncate font-sans text-[11px] text-clay"
             title={content.dynamic_render_error}

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { DynamicConfig, type DynamicConfigT, type DynamicTypeT } from 'shared';
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  DynamicConfig,
+  type DisplayProfileIdT,
+  type DynamicConfigT,
+  type DynamicTypeT,
+} from 'shared';
 import { effectiveDynamicFrameName } from '@/features/dynamic/model/display-name';
 import { usePreviewDynamicContent } from '@/features/dynamic/query/dynamic-content-queries';
 
@@ -11,6 +17,7 @@ export function useDynamicPreview({
   config,
   frameName,
   dashboardData,
+  displayProfileId = DEFAULT_DISPLAY_PROFILE_ID,
   debounceMs = 800,
 }: {
   contentId?: string;
@@ -18,6 +25,7 @@ export function useDynamicPreview({
   config: DynamicConfigT | null;
   frameName: string;
   dashboardData?: Record<string, unknown> | null;
+  displayProfileId?: DisplayProfileIdT;
   debounceMs?: number;
 }) {
   const preview = usePreviewDynamicContent(contentId);
@@ -47,6 +55,7 @@ export function useDynamicPreview({
       previewMutate(
         {
           config: parsed.data,
+          displayProfileId,
           frameName: effectiveDynamicFrameName(type, parsed.data, frameName),
           data: parsed.data.type === 'dashboard' ? (dashboardData ?? undefined) : undefined,
           signal: controller.signal,
@@ -65,7 +74,16 @@ export function useDynamicPreview({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [config, dashboardData, debounceMs, frameName, invalidatePreview, previewMutate, type]);
+  }, [
+    config,
+    dashboardData,
+    debounceMs,
+    displayProfileId,
+    frameName,
+    invalidatePreview,
+    previewMutate,
+    type,
+  ]);
 
   return { livePreviewData, previewPending: preview.isPending, invalidatePreview };
 }

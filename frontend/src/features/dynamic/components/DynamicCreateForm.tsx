@@ -1,5 +1,5 @@
 import type { FormEvent, ReactNode } from 'react';
-import { isAudioDynamicConfig, type DynamicTypeT } from 'shared';
+import { frameDescriptorForProfile, isAudioDynamicConfig, type DynamicTypeT } from 'shared';
 import { useToast } from '@/components/feedback/toast-context';
 import { FormActions } from '@/components/ui/FormActions';
 import { useCreateDynamicContent } from '@/features/dynamic/query/dynamic-content-queries';
@@ -9,16 +9,27 @@ import { DynamicFramePreview } from '@/features/dynamic/components/DynamicFrameP
 import { useDynamicContentForm } from '@/features/dynamic/hooks/useDynamicContentForm';
 import { DYNAMIC_TYPE_META } from '@/features/dynamic/model/type-meta';
 import { getApiErrorMessage } from '@/lib/api-errors';
+import { DisplayProfileSelector } from '@/features/profiles/components/DisplayProfileSelector';
 
 interface DynamicCreateFormProps {
   gid: string;
   type: DynamicTypeT;
   form: ReturnType<typeof useDynamicContentForm>;
+  displayProfileId: string;
+  onDisplayProfileChange: (profileId: string) => void;
   header?: ReactNode;
   onDone: () => void;
 }
 
-export function DynamicCreateForm({ gid, type, form, header, onDone }: DynamicCreateFormProps) {
+export function DynamicCreateForm({
+  gid,
+  type,
+  form,
+  displayProfileId,
+  onDisplayProfileChange,
+  header,
+  onDone,
+}: DynamicCreateFormProps) {
   const createDynamic = useCreateDynamicContent(gid);
   const toast = useToast();
   const dynamicMeta = DYNAMIC_TYPE_META[type];
@@ -62,9 +73,19 @@ export function DynamicCreateForm({ gid, type, form, header, onDone }: DynamicCr
           pending={form.previewPending}
           hasConfig={!!form.config}
           caption={form.caption}
+          descriptor={frameDescriptorForProfile(displayProfileId)}
         />
       }
-      header={header}
+      header={
+        <div className="space-y-3">
+          <DisplayProfileSelector
+            value={displayProfileId}
+            onChange={onDisplayProfileChange}
+            compact
+          />
+          {header}
+        </div>
+      }
       fields={
         form.config ? (
           <DynamicContentFields

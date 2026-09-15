@@ -1,5 +1,11 @@
 import { useCallback, useMemo, useState } from 'react';
-import { DynamicConfig, type DynamicConfigT, type DynamicTypeT } from 'shared';
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  DynamicConfig,
+  type DisplayProfileIdT,
+  type DynamicConfigT,
+  type DynamicTypeT,
+} from 'shared';
 import { defaultConfig } from '@/features/dynamic/model/default-config';
 import {
   defaultDynamicFrameName,
@@ -17,6 +23,7 @@ interface UseDynamicContentFormOptions {
   initialFrameName?: string | null;
   initialDashboardData?: Record<string, unknown> | null;
   requireDashboardData?: boolean;
+  displayProfileId?: DisplayProfileIdT;
 }
 
 export function useDynamicContentForm({
@@ -26,6 +33,7 @@ export function useDynamicContentForm({
   initialFrameName = null,
   initialDashboardData = null,
   requireDashboardData = false,
+  displayProfileId = DEFAULT_DISPLAY_PROFILE_ID,
 }: UseDynamicContentFormOptions = {}) {
   const [type, setType] = useState<DynamicTypeT | null>(initialType);
   const [config, setConfig] = useState<DynamicConfigT | null>(initialConfig);
@@ -43,6 +51,7 @@ export function useDynamicContentForm({
     config,
     frameName,
     dashboardData,
+    displayProfileId,
   });
   const configKey = useMemo(() => (config ? dynamicConfigKey(config) : ''), [config]);
   const hasDashboardData = dashboardData !== null && Object.keys(dashboardData).length > 0;

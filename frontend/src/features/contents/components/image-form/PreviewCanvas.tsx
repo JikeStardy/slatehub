@@ -1,4 +1,4 @@
-import { FRAME_WIDTH, FRAME_HEIGHT } from 'shared';
+import { DEFAULT_DISPLAY_PROFILE_ID, frameDescriptorForProfile } from 'shared';
 import type { DitherMode } from 'shared';
 import type { RefObject } from 'react';
 import { cn } from '@/lib/cn';
@@ -32,6 +32,7 @@ export function PreviewCanvas({
   statusCaption,
   showStatusBar = true,
 }: PreviewCanvasProps) {
+  const descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID);
   const pan = usePreviewCanvasRenderer({
     imageFile,
     existingImage,
@@ -64,8 +65,8 @@ export function PreviewCanvas({
       )}
       <canvas
         ref={canvasRef}
-        width={FRAME_WIDTH}
-        height={FRAME_HEIGHT}
+        width={descriptor.width}
+        height={descriptor.height}
         className={cn('block w-full h-full', pan.isDragging && 'cursor-grabbing')}
         style={{
           imageRendering: 'auto',

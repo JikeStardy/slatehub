@@ -1,8 +1,8 @@
 import { useMutation } from '@tanstack/react-query';
 import {
-  DEFAULT_DISPLAY_PROFILE_ID,
   type ContentMutationResponseT,
   type CreateDynamicContentRequestT,
+  type DisplayProfileIdT,
   type DynamicConfigT,
   type IngestResponseT,
 } from 'shared';
@@ -74,11 +74,13 @@ export function usePreviewDynamicContent(contentId: string | undefined) {
   return useMutation({
     mutationFn: async ({
       config,
+      displayProfileId,
       frameName,
       data: previewData,
       signal,
     }: {
       config: DynamicConfigT;
+      displayProfileId: DisplayProfileIdT;
       frameName?: string | null;
       data?: Record<string, unknown>;
       signal?: AbortSignal;
@@ -88,7 +90,7 @@ export function usePreviewDynamicContent(contentId: string | undefined) {
         : `${API_PREFIX}/contents/preview`;
       const body = {
         config,
-        display_profile_id: DEFAULT_DISPLAY_PROFILE_ID,
+        display_profile_id: displayProfileId,
         frame_name: frameName,
         data: previewData,
       };

@@ -1,3 +1,8 @@
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  frameDescriptorForProfile,
+  type FrameDescriptorT,
+} from 'shared';
 import { Spinner } from '@/components/ui/Spinner';
 import { FrameBitmapPreview } from '@/components/eink/FrameBitmapPreview';
 
@@ -6,16 +11,18 @@ export function DynamicFramePreview({
   pending,
   hasConfig,
   caption,
+  descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID),
 }: {
   data: ArrayBuffer | null;
   pending: boolean;
   hasConfig: boolean;
   caption?: string | null;
+  descriptor?: FrameDescriptorT;
 }) {
   const showPlaceholder = !data;
   return (
     <div className="frame-preview-surface">
-      <FrameBitmapPreview data={data} caption={caption} />
+      <FrameBitmapPreview data={data} descriptor={descriptor} caption={caption} />
       {showPlaceholder && !pending && (
         <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
           <span className="font-serif italic text-[13px] text-stone-light">
@@ -39,6 +46,7 @@ export function SavedOrLiveDynamicFramePreview({
   livePending,
   hasConfig,
   caption,
+  descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID),
 }: {
   savedData?: ArrayBuffer;
   savedPending?: boolean;
@@ -46,6 +54,7 @@ export function SavedOrLiveDynamicFramePreview({
   livePending: boolean;
   hasConfig: boolean;
   caption?: string | null;
+  descriptor?: FrameDescriptorT;
 }) {
   const displayData = liveData ?? savedData ?? null;
   const pending = livePending || (!liveData && Boolean(savedPending));
@@ -56,6 +65,7 @@ export function SavedOrLiveDynamicFramePreview({
       pending={pending}
       hasConfig={hasConfig}
       caption={caption}
+      descriptor={descriptor}
     />
   );
 }

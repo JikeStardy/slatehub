@@ -6,11 +6,12 @@
 //   AudioDropzone   — 选音频 + 删除已有音频
 //   DitherControls  — 缩放 / 抖动算法 / 阈值
 
-import type { FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { Image as ImageIcon } from 'lucide-react';
 import type { ContentDetailT } from 'shared';
 import { useGenerateContentTts } from '@/features/contents/query/content-audio-queries';
 import { useContentImage } from '@/features/contents/query/content-image-queries';
+import { useContentDetail } from '@/features/contents/query/content-read-queries';
 import {
   usePatchContentFrameName,
   useUpdateImageContent,
@@ -22,6 +23,10 @@ import { TYPE_META } from '@/features/contents/model/content-type-meta';
 import { getApiErrorMessage } from '@/lib/api-errors';
 import { useImageContentForm } from '@/features/contents/hooks/useImageContentForm';
 import { ImageFormBody } from './ImageFormBody';
+import { DisplayProfileSelector } from '@/features/profiles/components/DisplayProfileSelector';
+import { defaultDisplayProfileId } from '@/features/profiles/profile-environment';
+import { compatibilityLabel } from '@/features/contents/lib/variant-status';
+import { pendingContentForProfile } from '@/features/contents/lib/profile-content';
 
 interface ImageContentEditorProps {
   gid: string;
@@ -30,6 +35,10 @@ interface ImageContentEditorProps {
 }
 
 export function ImageContentEditor({ gid, content, onDone }: ImageContentEditorProps) {
+  const [displayProfileId, setDisplayProfileId] = useState(defaultDisplayProfileId);
+  const selectedContentQuery = useContentDetail(content.id, displayProfileId);
+  const selectedContent =
+    selectedContentQuery.data ?? pendingContentForProfile(content, displayProfileId);
   const updateImageContent = useUpdateImageContent(gid);
   const patchFrameName = usePatchContentFrameName(gid);
   const generateTts = useGenerateContentTts(gid);
@@ -38,7 +47,11 @@ export function ImageContentEditor({ gid, content, onDone }: ImageContentEditorP
   const toast = useToast();
   const form = useImageContentForm(content);
 
-  const existingImg = useContentImage(content.id, !form.image.file ? content.image_etag : null);
+  const existingImg = useContentImage(
+    content.id,
+    !form.image.file ? selectedContent.image_etag : null,
+    selectedContent.frame.profile_id
+  );
   const canSubmit = form.canEdit;
 
   async function submitContent() {
@@ -82,7 +95,16 @@ export function ImageContentEditor({ gid, content, onDone }: ImageContentEditorP
         onBack={onDone}
         icon={<ImageIcon size={24} />}
         title={`编辑第 ${content.seq + 1} 项`}
-        subtitle="改顺序请在组内用拖拽。"
+        subtitle="改顺序请在组内用拖拽。已保存帧按所选 Display Profile 预览。"
+        action={
+          <div className="min-w-[260px]">
+            <DisplayProfileSelector
+              value={displayProfileId}
+              onChange={setDisplayProfileId}
+              compact
+            />
+          </div>
+        }
       />
 
       <div className="mt-6 fade-up fade-up-1">
@@ -99,6 +121,11 @@ export function ImageContentEditor({ gid, content, onDone }: ImageContentEditorP
             audioError={content.audio_error}
             beforeFields={
               <div className="space-y-3">
+                {selectedContent.variant_status !== 'ready' && (
+                  <p className="border border-clay px-3 py-2 font-sans text-[12px] text-clay">
+                    {compatibilityLabel(selectedContent.variant_status)}
+                  </p>
+                )}
                 <p className="font-sans text-[12px] text-stone leading-relaxed">
                   {TYPE_META.image.description}
                 </p>

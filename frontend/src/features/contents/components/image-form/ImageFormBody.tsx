@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { FRAME_HEIGHT, FRAME_WIDTH, type ContentDetailT } from 'shared';
+import { DEFAULT_DISPLAY_PROFILE_ID, frameDescriptorForProfile, type ContentDetailT } from 'shared';
 import { Input } from '@/components/ui/Input';
 import { FormSection } from '@/components/ui/FormSection';
 import { cn } from '@/lib/cn';
@@ -42,13 +42,14 @@ export function ImageFormBody({
   beforeFields,
   actions,
 }: ImageFormBodyProps) {
+  const descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID);
   return (
     <div
       className={cn('grid grid-cols-1 gap-6 lg:gap-8', gridClassName ?? 'lg:grid-cols-[1.3fr_1fr]')}
     >
       <div className="order-2 min-w-0 lg:order-1">
         <p className="font-mono text-[10px] leading-5 text-stone uppercase tracking-[0.18em] ml-0.5 mb-2">
-          预览 · 1bpp · {FRAME_WIDTH}×{FRAME_HEIGHT}
+          预览 · 1bpp · {descriptor.width}×{descriptor.height}
         </p>
         <PreviewCanvas
           canvasRef={form.image.previewRef}

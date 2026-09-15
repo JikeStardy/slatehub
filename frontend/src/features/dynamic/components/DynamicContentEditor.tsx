@@ -1,6 +1,6 @@
 // 动态内容编辑器 —— 编辑动态内容配置。
 
-import { useCallback, useMemo, type FormEvent } from 'react';
+import { useCallback, useMemo, useState, type FormEvent } from 'react';
 import { Sparkles } from 'lucide-react';
 import {
   isAudioDynamicConfig,
@@ -10,6 +10,7 @@ import {
 } from 'shared';
 import { useUpdateDynamicContent } from '@/features/dynamic/query/dynamic-content-queries';
 import { useContentImage } from '@/features/contents/query/content-image-queries';
+import { useContentDetail } from '@/features/contents/query/content-read-queries';
 import { useToast } from '@/components/feedback/toast-context';
 import { FormActions } from '@/components/ui/FormActions';
 import { PageHeader } from '@/components/layout/PageHeader';
@@ -20,6 +21,10 @@ import { SavedOrLiveDynamicFramePreview } from '@/features/dynamic/components/Dy
 import { useDynamicContentForm } from '@/features/dynamic/hooks/useDynamicContentForm';
 import { DynamicContentFormShell } from './DynamicContentFormShell';
 import { DynamicContentFields } from './DynamicContentFields';
+import { DisplayProfileSelector } from '@/features/profiles/components/DisplayProfileSelector';
+import { defaultDisplayProfileId } from '@/features/profiles/profile-environment';
+import { compatibilityLabel } from '@/features/contents/lib/variant-status';
+import { pendingContentForProfile } from '@/features/contents/lib/profile-content';
 
 interface DynamicContentEditorProps {
   gid: string;
@@ -37,6 +42,10 @@ export function DynamicContentEditor({
   onDone,
 }: DynamicContentEditorProps) {
   const update = useUpdateDynamicContent(gid);
+  const [displayProfileId, setDisplayProfileId] = useState(defaultDisplayProfileId);
+  const selectedContentQuery = useContentDetail(content.id, displayProfileId);
+  const selectedContent =
+    selectedContentQuery.data ?? pendingContentForProfile(content, displayProfileId);
   const submitting = update.isPending;
   const toast = useToast();
   const initialDashboardData = useMemo(
@@ -49,6 +58,7 @@ export function DynamicContentEditor({
     initialConfig,
     initialFrameName: content.frame_name,
     initialDashboardData,
+    displayProfileId,
   });
   const { baseline, setBaseline } = useDynamicEditorBaselineSync({
     contentId: content.id,
@@ -77,8 +87,13 @@ export function DynamicContentEditor({
     ]
   );
 
-  const savedPreviewEnabled = !!content.image_etag;
-  const savedPreview = useContentImage(content.id, content.image_etag ?? null);
+  const savedPreviewEnabled =
+    selectedContent.variant_status === 'ready' && !!selectedContent.image_etag;
+  const savedPreview = useContentImage(
+    content.id,
+    selectedContent.image_etag ?? null,
+    selectedContent.frame.profile_id
+  );
   const dynamicMeta = form.type ? DYNAMIC_TYPE_META[form.type] : null;
   const showParams = Boolean(dynamicMeta?.hasConfigurableParams);
   const showAudio = Boolean(
@@ -124,7 +139,16 @@ export function DynamicContentEditor({
         onBack={onDone}
         icon={<Sparkles size={24} />}
         title="编辑动态内容"
-        subtitle="动态内容由服务端生成 400×300 1bpp 帧，设备端直接显示并叠加状态栏。"
+        subtitle="动态内容由服务端按 Display Profile 生成 1bpp 帧，设备端直接显示并叠加状态栏。"
+        action={
+          <div className="min-w-[260px]">
+            <DisplayProfileSelector
+              value={displayProfileId}
+              onChange={setDisplayProfileId}
+              compact
+            />
+          </div>
+        }
       />
 
       <div className="mt-6 fade-up fade-up-1">
@@ -139,10 +163,16 @@ export function DynamicContentEditor({
               livePending={form.previewPending}
               hasConfig={!!form.config}
               caption={form.caption}
+              descriptor={selectedContent.frame}
             />
           }
           header={
             <div className="space-y-3">
+              {selectedContent.variant_status !== 'ready' && (
+                <p className="border border-clay px-3 py-2 font-sans text-[12px] text-clay">
+                  {compatibilityLabel(selectedContent.variant_status)}
+                </p>
+              )}
               <p className="font-sans text-[12px] text-stone leading-relaxed">
                 {form.type ? DYNAMIC_TYPE_META[form.type].description : ''}
               </p>

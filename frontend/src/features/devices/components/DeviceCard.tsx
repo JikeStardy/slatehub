@@ -73,7 +73,7 @@ export const DeviceCard = memo(function DeviceCard({
             </div>
 
             <p className="font-mono text-[11px] text-stone-light mt-1 truncate">
-              {device.id.slice(0, 12)}
+              {device.board_id} · p{device.protocol_version}
             </p>
 
             <p className="mt-2 truncate">
@@ -89,6 +89,10 @@ export const DeviceCard = memo(function DeviceCard({
                 {groupName ?? '未选组'}
                 {groupName && playingContents != null && ` · ${playingContents} 项`}
               </span>
+            </p>
+
+            <p className="mt-1 font-mono text-[10px] text-stone-light truncate">
+              {device.display_profile_id} · fw {device.fw_version ?? '—'}
             </p>
 
             <div className="mt-2 flex items-center gap-3.5 text-[12px] text-stone">

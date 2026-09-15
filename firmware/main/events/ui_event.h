@@ -131,7 +131,7 @@ struct UiEvent {
             uint32_t token;
         } xiaozhi_channel;
         struct {
-            uint32_t generation;
+            uint64_t generation;
         } bg_refresh;
         U() : group{} {
         }

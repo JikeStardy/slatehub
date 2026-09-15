@@ -25,6 +25,9 @@ class BgRefreshScene : public Scene {
     bool RequiresRoot() const override {
         return false;
     }
+    bool IsCompletionGeneration(uint64_t generation) const;
+    bool IsCompletedGeneration(uint64_t generation) const;
+    bool CompleteDoneEvent(uint64_t generation);
 
    private:
     enum class State {
@@ -39,13 +42,12 @@ class BgRefreshScene : public Scene {
     void StartWatcher(display::Display* display);
     void StartDeadlineWatchdog();
     void Finish();
-    void FinishAfterCompletionClaimed();
+    void MarkCompleted();
     void ClearPendingFrameCommit();
 
     State                              state_                  = State::kWaiting;
     bool                               previous_screen_seeded_ = false;
     bool                               force_full_refresh_     = false;
-    uint32_t                           next_generation_        = 0;
     std::shared_ptr<bg_refresh::CompletionState> completion_;
     bool                               pending_frame_commit_   = false;
     int                                pending_seq_            = 0;

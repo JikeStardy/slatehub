@@ -27,17 +27,37 @@ constexpr char kTag[] = "bg_refresh";
 // 都算在内。超时直接投 kBgRefreshDone 回睡，不再依赖 10min idle Tick 兜底，封住
 // 「sync 卡住 → 持续亮屏连网耗电」的窗口。
 constexpr int kBgRefreshDeadlineMs = 40000;
+constexpr TickType_t kBgRefreshPostTimeoutTicks = pdMS_TO_TICKS(50);
+constexpr int        kBgRefreshPostAttempts     = 3;
+constexpr int        kBgRefreshWaitForClaim     = 0;
+std::atomic<uint64_t> s_bg_refresh_generation{0};
 
-void PostBgRefreshDone() {
-    if (!evt::PostSimple(UiEventKind::kBgRefreshDone, portMAX_DELAY))
-        ESP_LOGW(kTag, "post done failed");
+bool PostBgRefreshDone(uint64_t generation, TickType_t timeout = kBgRefreshPostTimeoutTicks) {
+    UiEvent e{};
+    e.kind                    = UiEventKind::kBgRefreshDone;
+    e.u.bg_refresh.generation = generation;
+    if (evt::Post(e, timeout))
+        return true;
+    ESP_LOGW(kTag, "post done failed generation=%llu", static_cast<unsigned long long>(generation));
+    return false;
 }
 
-bool PostBgRefreshDisplayIdle(uint32_t generation) {
+bool PostBgRefreshDisplayIdle(uint64_t generation) {
     UiEvent e{};
     e.kind                    = UiEventKind::kBgRefreshDisplayIdle;
     e.u.bg_refresh.generation = generation;
-    return evt::Post(e, portMAX_DELAY);
+    if (evt::Post(e, kBgRefreshPostTimeoutTicks))
+        return true;
+    ESP_LOGW(kTag, "post display idle failed generation=%llu", static_cast<unsigned long long>(generation));
+    return false;
+}
+
+void YieldCompletionContention() {
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+
+bool IsFinished(const std::shared_ptr<bg_refresh::CompletionState>& state) {
+    return !state || bg_refresh::IsTerminal(state->state.load(std::memory_order_acquire));
 }
 
 void UpdateFrameSchedule(int seq, const cache::FrameMeta& meta) {
@@ -55,18 +75,16 @@ void WatcherEntry(void* arg) {
     auto                            state   = ctx ? ctx->completion : std::shared_ptr<bg_refresh::CompletionState>();
     constexpr int                   kTimeoutMs = 8000;
     bg_refresh::RunWatcherCompletion(
-        *state,
+        state,
         [display]() { return display && display->WaitForRefreshIdle(kTimeoutMs); },
         [&ctx, &state]() {
             ctx.reset();
             state.reset();
         },
-        [](uint32_t generation) { return PostBgRefreshDisplayIdle(generation); },
-        [](uint32_t /*generation*/) {
-            PostBgRefreshDone();
-            return true;
-        },
-        3);
+        [](uint64_t generation) { return PostBgRefreshDisplayIdle(generation); },
+        [](uint64_t generation) { return PostBgRefreshDone(generation); },
+        []() { YieldCompletionContention(); },
+        kBgRefreshPostAttempts);
     vTaskDelete(nullptr);
 }
 
@@ -75,17 +93,13 @@ void WatcherEntry(void* arg) {
 // 自删除 + unique_ptr 释放 ctx,与 WatcherEntry 同模式,无泄漏。
 void DeadlineEntry(void* arg) {
     std::unique_ptr<WatcherContext> ctx(static_cast<WatcherContext*>(arg));
-    auto                            state       = ctx ? ctx->completion : std::shared_ptr<bg_refresh::CompletionState>();
-    auto*                           state_ptr   = state.get();
-    int                             waited      = 0;
-    const auto finished = [state_ptr] {
-        return !state_ptr || bg_refresh::IsTerminal(state_ptr->state.load(std::memory_order_acquire));
-    };
-    while (waited < kBgRefreshDeadlineMs && !finished()) {
+    auto                            state  = ctx ? ctx->completion : std::shared_ptr<bg_refresh::CompletionState>();
+    int                             waited = 0;
+    while (waited < kBgRefreshDeadlineMs && !IsFinished(state)) {
         vTaskDelay(pdMS_TO_TICKS(200));
         waited += 200;
     }
-    const bool timed_out = !finished();
+    const bool timed_out = !IsFinished(state);
     if (timed_out) {
         ESP_LOGW(kTag, "deadline reached elapsed_ms=%d action=force_done", kBgRefreshDeadlineMs);
         // 不在此处 RecordTimerWakeResult：与 OnEvent 的上报存在时序竞态(渲染跨过截止时
@@ -94,19 +108,16 @@ void DeadlineEntry(void* arg) {
         // 仅靠 40s 截止回睡兜底、不计入退避（已知次要限制）。
     }
     bg_refresh::RunDeadlineCompletion(
-        *state,
-        [state_ptr]() {
-            return !state_ptr || bg_refresh::IsTerminal(state_ptr->state.load(std::memory_order_acquire));
-        },
+        state,
+        [&state]() { return IsFinished(state); },
         [&ctx, &state]() {
             ctx.reset();
             state.reset();
         },
-        [](uint32_t /*generation*/) {
-            PostBgRefreshDone();
-            return true;
-        },
-        3);
+        [](uint64_t generation) { return PostBgRefreshDone(generation); },
+        []() { YieldCompletionContention(); },
+        kBgRefreshPostAttempts,
+        kBgRefreshWaitForClaim);
     vTaskDelete(nullptr);
 }
 
@@ -115,7 +126,8 @@ void DeadlineEntry(void* arg) {
 BgRefreshScene::~BgRefreshScene() = default;
 
 void BgRefreshScene::OnEnter(SceneContext& ctx) {
-    completion_            = std::make_shared<bg_refresh::CompletionState>(++next_generation_);
+    completion_            = std::make_shared<bg_refresh::CompletionState>(
+        bg_refresh::NextGeneration(s_bg_refresh_generation));
     force_full_refresh_     = false;
     previous_screen_seeded_ = SeedPreviousFrame(ctx);
     state_                  = State::kWaiting;
@@ -147,8 +159,8 @@ void BgRefreshScene::OnEvent(SceneContext& ctx, const UiEvent& e) {
     if (e.kind == UiEventKind::kBgRefreshDisplayIdle) {
         if (!completion_ || e.u.bg_refresh.generation != completion_->generation) {
             ESP_LOGW(kTag, "display idle ignored reason=generation_mismatch event=%lu current=%lu",
-                     static_cast<unsigned long>(e.u.bg_refresh.generation),
-                     static_cast<unsigned long>(completion_ ? completion_->generation : 0));
+                     static_cast<unsigned long long>(e.u.bg_refresh.generation),
+                     static_cast<unsigned long long>(completion_ ? completion_->generation : 0));
             return;
         }
         if (state_ != State::kRendering || !pending_frame_commit_) {
@@ -156,17 +168,14 @@ void BgRefreshScene::OnEvent(SceneContext& ctx, const UiEvent& e) {
             return;
         }
 
-        const bool completed = bg_refresh::CompleteDisplayIdleOnUiTask(
+        const bool completed = bg_refresh::CompleteIdleOnUiTask(
             *completion_,
             e.u.bg_refresh.generation,
             [this]() {
                 UpdateFrameSchedule(pending_seq_, pending_meta_);
                 ClearPendingFrameCommit();
             },
-            [this](uint32_t /*generation*/) {
-                FinishAfterCompletionClaimed();
-                return true;
-            });
+            [this](uint64_t /*generation*/) { MarkCompleted(); });
         if (!completed)
             ESP_LOGW(kTag, "display idle ignored reason=state_mismatch");
         return;
@@ -353,27 +362,43 @@ void BgRefreshScene::Finish() {
     ClearPendingFrameCommit();
     if (!completion_ ||
         !bg_refresh::QueueDoneEvent(
-            *completion_,
-            [](uint32_t /*generation*/) {
-                PostBgRefreshDone();
-                return true;
-            },
-            3)) {
+            completion_,
+            [](uint64_t generation) { return PostBgRefreshDone(generation, evt::kNoWait); },
+            []() {},
+            kBgRefreshPostAttempts,
+            1)) {
         return;
     }
-    state_ = State::kDone;
 }
 
-void BgRefreshScene::FinishAfterCompletionClaimed() {
+void BgRefreshScene::MarkCompleted() {
     if (state_ == State::kDone)
         return;
     state_ = State::kDone;
     ClearPendingFrameCommit();
-    PostBgRefreshDone();
 }
 
 void BgRefreshScene::ClearPendingFrameCommit() {
     pending_frame_commit_ = false;
     pending_seq_          = 0;
     pending_meta_         = {};
+}
+
+bool BgRefreshScene::IsCompletionGeneration(uint64_t generation) const {
+    return completion_ && completion_->generation == generation;
+}
+
+bool BgRefreshScene::IsCompletedGeneration(uint64_t generation) const {
+    return IsCompletionGeneration(generation) && state_ == State::kDone;
+}
+
+bool BgRefreshScene::CompleteDoneEvent(uint64_t generation) {
+    if (!completion_)
+        return generation == 0;
+    if (generation == 0) {
+        MarkCompleted();
+        return true;
+    }
+    return bg_refresh::CompleteDoneOnUiTask(
+        *completion_, generation, [this](uint64_t /*generation*/) { MarkCompleted(); });
 }

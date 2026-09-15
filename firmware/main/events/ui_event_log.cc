@@ -196,8 +196,10 @@ void Describe(const UiEvent& e, char* out, size_t cap) {
         case UiEventKind::kXiaozhiChannelClosed:
             std::snprintf(out, cap, "token=%lu", static_cast<unsigned long>(e.u.xiaozhi_channel.token));
             break;
+        case UiEventKind::kBgRefreshDone:
         case UiEventKind::kBgRefreshDisplayIdle:
-            std::snprintf(out, cap, "generation=%lu", static_cast<unsigned long>(e.u.bg_refresh.generation));
+            std::snprintf(out, cap, "generation=%llu",
+                          static_cast<unsigned long long>(e.u.bg_refresh.generation));
             break;
         default:
             std::snprintf(out, cap, "-");

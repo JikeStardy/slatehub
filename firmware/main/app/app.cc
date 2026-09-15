@@ -211,6 +211,24 @@ bool App::HandleSecretInvalid(const UiEvent& e) {
 bool App::HandleBackgroundRefreshDone(const UiEvent& e) {
     if (e.kind != UiEventKind::kBgRefreshDone)
         return false;
+    if (e.u.bg_refresh.generation != 0) {
+        Scene* top = scene_stack_.Top();
+        if (!top || std::strcmp(top->Name(), "bg_refresh") != 0) {
+            ESP_LOGW(kTag, "background refresh done ignored reason=no_current_scene generation=%llu",
+                     static_cast<unsigned long long>(e.u.bg_refresh.generation));
+            return true;
+        }
+        auto* bg = static_cast<BgRefreshScene*>(top);
+        if (!bg->CompleteDoneEvent(e.u.bg_refresh.generation)) {
+            ESP_LOGW(kTag, "background refresh done ignored reason=generation_mismatch generation=%llu",
+                     static_cast<unsigned long long>(e.u.bg_refresh.generation));
+            return true;
+        }
+    }
+    return CompleteBackgroundRefreshSleep();
+}
+
+bool App::CompleteBackgroundRefreshSleep() {
     ESP_LOGI(kTag, "background refresh done");
     auto d = sleep_mgr_.TryEnterDeepSleep();
     ESP_LOGI(kTag, "sleep decision outcome=%s next_sec=%u", SleepOutcomeName(d.outcome),
@@ -324,6 +342,16 @@ void App::UiLoopTask() {
             continue;
         }
         scene_stack_.Dispatch(e);
+        if (e.kind == UiEventKind::kBgRefreshDisplayIdle) {
+            Scene* top = scene_stack_.Top();
+            if (top && std::strcmp(top->Name(), "bg_refresh") == 0) {
+                auto* bg = static_cast<BgRefreshScene*>(top);
+                if (bg->IsCompletedGeneration(e.u.bg_refresh.generation)) {
+                    CompleteBackgroundRefreshSleep();
+                    continue;
+                }
+            }
+        }
         sleep_mgr_.OnEvent(e);
         // 供电状态变化时重配 light sleep：插 USB 关、拔掉(电池)开。
         if (e.kind == UiEventKind::kChargeChanged) {
@@ -517,7 +545,10 @@ void App::Init() {
                 ESP_LOGW(kTag, "background refresh network failed action=deep_sleep");
                 // 联系不上服务器：递增退避计数，下次 timer wake 间隔指数拉长，避免空醒。
                 power_state::RecordTimerWakeResult(false);
-                evt::PostSimple(UiEventKind::kBgRefreshDone, portMAX_DELAY);
+                UiEvent done{};
+                done.kind                    = UiEventKind::kBgRefreshDone;
+                done.u.bg_refresh.generation = 0;
+                evt::Post(done, evt::kNoWait);
             }
             break;
         }

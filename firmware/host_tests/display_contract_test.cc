@@ -468,46 +468,46 @@ void TestBgRefreshWatcherCleanupBeforePostAndNoPersistence() {
     bool display_idle_event = false;
     bool done_event         = false;
     int  persistence_count  = 0;
-    bg_refresh::CompletionState completion{7};
+    auto completion = std::make_shared<bg_refresh::CompletionState>(7);
     auto ctx = std::make_unique<CleanupProbe>(&destroyed);
 
     bg_refresh::RunWatcherCompletion(
         completion,
         []() { return true; },
         [&ctx]() { ctx.reset(); },
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(destroyed);
             CHECK(generation == 7);
             display_idle_event = true;
             return true;
         },
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 7);
             CHECK(destroyed);
             done_event = true;
             return true;
-        });
+        },
+        []() {});
 
     CHECK(destroyed);
     CHECK(display_idle_event);
     CHECK(!done_event);
     CHECK(persistence_count == 0);
 
-    CHECK(bg_refresh::CompleteDisplayIdleOnUiTask(
-        completion,
+    CHECK(bg_refresh::CompleteIdleOnUiTask(
+        *completion,
         7,
         [&]() { ++persistence_count; },
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 7);
             done_event = true;
-            return true;
         }));
     CHECK(persistence_count == 1);
     CHECK(done_event);
 }
 
 void TestBgRefreshDeadlineWinnerPreventsWatcherCommit() {
-    bg_refresh::CompletionState completion{8};
+    auto completion = std::make_shared<bg_refresh::CompletionState>(8);
     int  done_count         = 0;
     int  idle_event_count   = 0;
 
@@ -515,31 +515,33 @@ void TestBgRefreshDeadlineWinnerPreventsWatcherCommit() {
         completion,
         []() { return false; },
         []() {},
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 8);
             ++done_count;
             return true;
-        });
+        },
+        []() {});
 
     bg_refresh::RunWatcherCompletion(
         completion,
         []() { return true; },
         []() {},
-        [&](uint32_t /*generation*/) {
+        [&](uint64_t /*generation*/) {
             ++idle_event_count;
             return true;
         },
-        [&](uint32_t /*generation*/) {
+        [&](uint64_t /*generation*/) {
             ++done_count;
             return true;
-        });
+        },
+        []() {});
 
     CHECK(done_count == 1);
     CHECK(idle_event_count == 0);
 }
 
 void TestBgRefreshWatcherWinnerUiCommitOnce() {
-    bg_refresh::CompletionState completion{9};
+    auto completion = std::make_shared<bg_refresh::CompletionState>(9);
     int  done_count         = 0;
     int  idle_event_count   = 0;
     int  persistence_count  = 0;
@@ -548,120 +550,210 @@ void TestBgRefreshWatcherWinnerUiCommitOnce() {
         completion,
         []() { return true; },
         []() {},
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 9);
             ++idle_event_count;
             return true;
         },
-        [&](uint32_t /*generation*/) {
+        [&](uint64_t /*generation*/) {
             ++done_count;
             return true;
-        });
+        },
+        []() {});
 
     bg_refresh::RunDeadlineCompletion(
         completion,
         []() { return false; },
         []() {},
-        [&](uint32_t /*generation*/) {
+        [&](uint64_t /*generation*/) {
             ++done_count;
             return true;
-        });
+        },
+        []() {});
 
     CHECK(idle_event_count == 1);
     CHECK(done_count == 0);
-    CHECK(bg_refresh::CompleteDisplayIdleOnUiTask(
-        completion,
+    CHECK(bg_refresh::CompleteIdleOnUiTask(
+        *completion,
         9,
         [&]() { ++persistence_count; },
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 9);
             ++done_count;
-            return true;
         }));
     CHECK(persistence_count == 1);
     CHECK(done_count == 1);
 }
 
 void TestBgRefreshIdlePostRetryAndDeadlineTakeover() {
-    bg_refresh::CompletionState retry_completion{10};
+    auto retry_completion = std::make_shared<bg_refresh::CompletionState>(10);
     int                         idle_post_attempts = 0;
     CHECK(bg_refresh::RunWatcherCompletion(
         retry_completion,
         []() { return true; },
         []() {},
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 10);
             ++idle_post_attempts;
             return idle_post_attempts == 2;
         },
-        [](uint32_t /*generation*/) { return true; },
+        [](uint64_t /*generation*/) { return true; },
+        []() {},
         2));
     CHECK(idle_post_attempts == 2);
-    CHECK(retry_completion.state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kIdleQueued);
+    CHECK(retry_completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kIdleQueued);
 
-    bg_refresh::CompletionState takeover_completion{11};
+    auto takeover_completion = std::make_shared<bg_refresh::CompletionState>(11);
     int                         failed_idle_posts = 0;
     CHECK(!bg_refresh::RunWatcherCompletion(
         takeover_completion,
         []() { return true; },
         []() {},
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 11);
             ++failed_idle_posts;
             return false;
         },
-        [](uint32_t /*generation*/) { return true; },
+        [](uint64_t /*generation*/) { return true; },
+        []() {},
         2));
     CHECK(failed_idle_posts == 2);
-    CHECK(takeover_completion.state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kWaiting);
+    CHECK(takeover_completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kWaiting);
 
     int done_posts = 0;
     CHECK(bg_refresh::RunDeadlineCompletion(
         takeover_completion,
         []() { return false; },
         []() {},
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 11);
             ++done_posts;
             return true;
-        }));
+        },
+        []() {}));
     CHECK(done_posts == 1);
-    CHECK(takeover_completion.state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kDoneQueued);
+    CHECK(takeover_completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kDoneQueued);
 }
 
 void TestBgRefreshDeadlinePostRetryAndOldGenerationIgnored() {
-    bg_refresh::CompletionState completion{12};
+    auto completion = std::make_shared<bg_refresh::CompletionState>(12);
     int                         done_attempts = 0;
     CHECK(bg_refresh::RunDeadlineCompletion(
         completion,
         []() { return false; },
         []() {},
-        [&](uint32_t generation) {
+        [&](uint64_t generation) {
             CHECK(generation == 12);
             ++done_attempts;
             return done_attempts == 2;
         },
+        []() {},
         2));
     CHECK(done_attempts == 2);
-    CHECK(completion.state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kDoneQueued);
+    CHECK(completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kDoneQueued);
 
-    bg_refresh::CompletionState idle_completion{13};
+    auto idle_completion = std::make_shared<bg_refresh::CompletionState>(13);
     CHECK(bg_refresh::QueueIdleEvent(
         idle_completion,
-        [](uint32_t /*generation*/) { return true; },
+        [](uint64_t /*generation*/) { return true; },
         1));
     int persistence_count = 0;
     int done_count        = 0;
-    CHECK(!bg_refresh::CompleteDisplayIdleOnUiTask(
-        idle_completion,
+    CHECK(!bg_refresh::CompleteIdleOnUiTask(
+        *idle_completion,
         12,
         [&]() { ++persistence_count; },
-        [&](uint32_t /*generation*/) {
+        [&](uint64_t /*generation*/) {
             ++done_count;
-            return true;
         }));
     CHECK(persistence_count == 0);
     CHECK(done_count == 0);
+}
+
+void TestBgRefreshImmediateIdleConsumeDuringPost() {
+    auto completion       = std::make_shared<bg_refresh::CompletionState>(14);
+    int  persistence_count = 0;
+    int  complete_count    = 0;
+    CHECK(bg_refresh::RunWatcherCompletion(
+        completion,
+        []() { return true; },
+        []() {},
+        [&](uint64_t generation) {
+            CHECK(bg_refresh::CompleteIdleOnUiTask(
+                *completion,
+                generation,
+                [&]() { ++persistence_count; },
+                [&](uint64_t completed_generation) {
+                    CHECK(completed_generation == 14);
+                    ++complete_count;
+                }));
+            return true;
+        },
+        [](uint64_t /*generation*/) { return true; },
+        []() {},
+        1));
+    CHECK(persistence_count == 1);
+    CHECK(complete_count == 1);
+    CHECK(completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kCompleted);
+}
+
+void TestBgRefreshOwnerReleaseDuringPostDoesNotUseAfterFree() {
+    bool destroyed = false;
+    auto owner     = std::make_shared<bg_refresh::CompletionState>(15);
+    auto ctx       = std::make_unique<CleanupProbe>(&destroyed);
+    CHECK(bg_refresh::RunWatcherCompletion(
+        owner,
+        []() { return true; },
+        [&]() { ctx.reset(); },
+        [&](uint64_t generation) {
+            CHECK(destroyed);
+            CHECK(generation == 15);
+            owner.reset();
+            return true;
+        },
+        [](uint64_t /*generation*/) { return true; },
+        []() {},
+        1));
+    CHECK(destroyed);
+    CHECK(!owner);
+}
+
+void TestBgRefreshDeadlineWaitsForPublishingRollback() {
+    auto completion = std::make_shared<bg_refresh::CompletionState>(16);
+    completion->state.store(bg_refresh::CompletionStatus::kIdlePublishing, std::memory_order_release);
+    int yields     = 0;
+    int done_posts = 0;
+    CHECK(bg_refresh::RunDeadlineCompletion(
+        completion,
+        []() { return false; },
+        []() {},
+        [&](uint64_t generation) {
+            CHECK(generation == 16);
+            ++done_posts;
+            return true;
+        },
+        [&]() {
+            ++yields;
+            if (yields == 1) {
+                bg_refresh::CompletionStatus expected = bg_refresh::CompletionStatus::kIdlePublishing;
+                completion->state.compare_exchange_strong(expected, bg_refresh::CompletionStatus::kWaiting,
+                                                          std::memory_order_acq_rel, std::memory_order_acquire);
+            }
+        },
+        1,
+        0));
+    CHECK(yields == 1);
+    CHECK(done_posts == 1);
+    CHECK(completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kDoneQueued);
+}
+
+void TestBgRefreshGenerationDoesNotReuseAcrossSceneInstances() {
+    std::atomic<uint64_t> counter{0};
+    auto first = std::make_shared<bg_refresh::CompletionState>(bg_refresh::NextGeneration(counter));
+    bg_refresh::Cancel(first.get());
+    first.reset();
+    auto second = std::make_shared<bg_refresh::CompletionState>(bg_refresh::NextGeneration(counter));
+    CHECK(second->generation == 2);
 }
 
 void TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange() {
@@ -694,6 +786,10 @@ int main() {
     TestBgRefreshWatcherWinnerUiCommitOnce();
     TestBgRefreshIdlePostRetryAndDeadlineTakeover();
     TestBgRefreshDeadlinePostRetryAndOldGenerationIgnored();
+    TestBgRefreshImmediateIdleConsumeDuringPost();
+    TestBgRefreshOwnerReleaseDuringPostDoesNotUseAfterFree();
+    TestBgRefreshDeadlineWaitsForPublishingRollback();
+    TestBgRefreshGenerationDoesNotReuseAcrossSceneInstances();
     TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
     return g_failures == 0 ? 0 : 1;
 }

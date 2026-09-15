@@ -10,6 +10,7 @@
 #include <string>
 
 #include "bsp/charge_status.h"
+#include "drivers/display/display_contract.h"
 
 namespace cache {
 struct FrameMeta;
@@ -20,16 +21,15 @@ class XiaozhiService;
 }
 
 class StatusBar;
-class EpdSsd1683;
 class AudioPlayer;
 class SceneStack;
 
 struct UiEvent;
 
 struct SceneContext {
-    EpdSsd1683*  epd   = nullptr;
-    AudioPlayer* audio = nullptr;
-    SceneStack*  stack = nullptr;
+    display::Display* epd   = nullptr;
+    AudioPlayer*      audio = nullptr;
+    SceneStack*       stack = nullptr;
 
     // 数据访问通过依赖注入，Scene 不直接抓 Board / Wifi 单例。
     std::function<bool(int* mv, int* pct)>  read_battery;

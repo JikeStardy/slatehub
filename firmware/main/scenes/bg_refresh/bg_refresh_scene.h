@@ -7,8 +7,6 @@
 #include "scenes/core/scene.h"
 #include "ui/status_bar.h"
 
-class EpdSsd1683;
-
 class BgRefreshScene : public Scene {
    public:
     ~BgRefreshScene() override;
@@ -36,7 +34,7 @@ class BgRefreshScene : public Scene {
     bool SeedPreviousFrame(SceneContext& ctx);
     bool ResolveCurrentFrame(std::string& gid, int& seq, int& content_count);
     bool RenderChangedFrame(SceneContext& ctx);
-    void StartWatcher(EpdSsd1683* epd);
+    void StartWatcher(display::Display* display);
     void StartDeadlineWatchdog();
     void Finish();
 

@@ -3,6 +3,8 @@
 #include <driver/i2c_master.h>
 #include <memory>
 
+#include "bsp/board_platform.h"
+
 class BatteryAdc;
 class BoardPowerBsp;
 class ChargeStatus;
@@ -32,9 +34,8 @@ class Board {
     Button* boot_btn() {
         return boot_btn_.get();
     }
-    EpdSsd1683* epd() {
-        return epd_.get();
-    }
+    display::Display*           display();
+    const board::BoardPlatform& platform() const;
     i2c_master_bus_handle_t i2c_bus() {
         return i2c_bus_;
     }

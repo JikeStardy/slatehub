@@ -1,5 +1,12 @@
 menu "Slate Configuration"
 
+config SLATE_BOARD_ID
+    string "Slate board id"
+    default "zectrix-note4"
+    help
+        Compile-time board identity. Task 5A implements only zectrix-note4;
+        other values must fail configuration/build until a BSP is added.
+
 config SLATE_DEFAULT_SERVER_URL
     string "Default server URL (shown in captive portal)"
     default ""

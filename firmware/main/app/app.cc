@@ -18,7 +18,6 @@
 
 #include "bsp/board.h"
 #include "bsp/config.h"
-#include "drivers/display/epd_ssd1683.h"
 #include "drivers/input/button.h"
 #include "scenes/bg_refresh/bg_refresh_scene.h"
 #include "startup/boot_mode.h"
@@ -129,7 +128,7 @@ void App::InitEventBus() {
 
 void App::InitSceneStack() {
     SceneContext ctx;
-    ctx.epd   = Board::Get().epd();
+    ctx.epd   = Board::Get().display();
     ctx.audio = &AudioPlayer::Get();
     ctx.stack = &scene_stack_;
 
@@ -354,8 +353,8 @@ void App::AttachInputs() {
         MakeButtonInput(board->up_btn()), MakeButtonInput(board->down_btn()),
         [] {
             ESP_LOGI(kTag, "button combo action=full_refresh combo=up_down");
-            if (auto* epd = Board::Get().epd())
-                epd->RequestUrgentFullRefresh();
+            if (auto* display = Board::Get().display())
+                display::RequestRefreshWithFallback(*display, display::PresentMode::kFull);
         },
         post_button(UiEventKind::kButtonShort, ButtonId::kUp), post_button(UiEventKind::kButtonLong, ButtonId::kUp),
         post_button(UiEventKind::kButtonShort, ButtonId::kDown),

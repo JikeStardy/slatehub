@@ -6,17 +6,16 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#include <array>
 #include <utility>
+#include <vector>
 
 #include "bsp/board.h"
 #include "bsp/charge_status.h"
 #include "bsp/config.h"
-#include "drivers/display/epd_ssd1683.h"
-#include "drivers/display/framebuffer_ops.h"
 #include "events/event_bus.h"
 #include "power/power_state.h"
 #include "power/shutdown.h"
+#include "ui/theme.h"
 #include "utils/gpio_util.h"
 #include "utils/time_utils.h"
 
@@ -63,12 +62,19 @@ void LockVbatPowerHigh() {
     rtc_gpio_hold_en(pin);
 }
 
-void SaveStatusBarSnapshot(EpdSsd1683* epd) {
-    if (!epd)
+void SaveStatusBarSnapshot(display::Display* display) {
+    if (!display)
         return;
-    std::array<uint8_t, epd::kStatusBarSnapshotBytes> snapshot{};
-    if (!epd->ReadPreviousRaw1bpp(0, 0, epd::kStatusBarSnapshotWidth, epd::kStatusBarSnapshotHeight, snapshot.data(),
-                                  snapshot.size())) {
+    const display::FrameDescriptor& frame = display->Info().frame;
+    const display::FrameRegion      status_region{0, 0, frame.width, theme::kStatusBarHeight};
+    const std::size_t               status_bytes = display::ExpectedRegionBytes(status_region, frame);
+    if (status_bytes == 0) {
+        ESP_LOGW(kTag, "status snapshot skipped reason=invalid_shape");
+        power_state::ClearStatusBarSnapshot();
+        return;
+    }
+    std::vector<uint8_t> snapshot(status_bytes);
+    if (!display::ReadPreviousIfSupported(*display, status_region, snapshot.data(), snapshot.size())) {
         ESP_LOGW(kTag, "status snapshot skipped reason=previous_buffer_not_synced");
         power_state::ClearStatusBarSnapshot();
         return;
@@ -238,12 +244,12 @@ SleepManager::SleepDecision SleepManager::TryEnterDeepSleep() {
 
     // 2) 不主动制造一轮全刷。墨水屏内容本来可保留；
     //    静态帧 idle 进睡眠时如果这里再全刷一次，会白白耗电。
-    if (auto* epd = Board::Get().epd()) {
+    if (auto* display = Board::Get().display()) {
         if (!epd_ready) {
             ESP_LOGW(kTag, "status snapshot skipped reason=epd_pending elapsed_ms=%d", kEpdFlushTimeoutMs);
             power_state::ClearStatusBarSnapshot();
         } else {
-            SaveStatusBarSnapshot(epd);
+            SaveStatusBarSnapshot(display);
         }
     }
 

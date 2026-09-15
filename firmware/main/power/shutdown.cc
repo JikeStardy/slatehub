@@ -7,7 +7,6 @@
 #include "bsp/board.h"
 #include "bsp/charge_status.h"
 #include "drivers/audio/audio_player.h"
-#include "drivers/display/epd_ssd1683.h"
 #include "sync/sync_service.h"
 
 namespace power_shutdown {
@@ -28,11 +27,11 @@ bool WaitForEpdAndShutdown(int epd_timeout_ms) {
     if (auto* charge = Board::Get().charge())
         charge->StopTick();
 
-    auto* epd = Board::Get().epd();
-    if (!epd)
+    auto* display = Board::Get().display();
+    if (!display)
         return true;
 
-    return epd->WaitForRefreshIdle(epd_timeout_ms);
+    return display->WaitForRefreshIdle(epd_timeout_ms);
 }
 
 [[noreturn]] void GracefulRestart(int pre_delay_ms, int epd_timeout_ms) {

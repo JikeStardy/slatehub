@@ -11,12 +11,13 @@
 #include <functional>
 #include <vector>
 
+#include "drivers/display/display_contract.h"
 #include "drivers/display/framebuffer_ops.h"
 
 // SSD1683 类驱动 4.2" 黑白 EPD（400×300，1bpp）+ LVGL 集成。
 // SPI 写帧 + 异步 refresh_task（300 ms 节流，防过频刷新损伤 EPD）+ LVGL flush_cb
 // 阈值化 RGB565→1bpp。RequestUrgentFullRefresh() 立即触发全帧刷新。
-class EpdSsd1683 {
+class EpdSsd1683 : public display::Display {
    public:
     static constexpr int kWidth     = 400;
     static constexpr int kHeight    = 300;
@@ -27,10 +28,13 @@ class EpdSsd1683 {
 
     void Init();
 
+    const display::DisplayInfo& Info() const override;
+
     bool IsRefreshPending();
     // 阻塞轮询直到刷新结束或超时。返回 true=已空闲，false=超时仍 pending。
     // 进深睡 / 关 rail / 后台刷新结束前用它确保不在刷新中途切断 EPD 电源。
-    bool WaitForRefreshIdle(int timeout_ms);
+    bool WaitForRefreshIdle(int timeout_ms) override;
+    void RequestRefresh(display::PresentMode mode) override;
     void RequestUrgentPartialRefresh();  // partial(~1s 残影)
     void RequestUrgentFullRefresh();     // full(~5s 干净)
 
@@ -38,17 +42,21 @@ class EpdSsd1683 {
     // bit=1=白，bit=0=黑（与服务端下发格式一致，无需反转）。
     // 调用后自动 notify refresh_task；调用方再发 RequestUrgentXxxRefresh 设 urgent 标志。
     void WriteRaw1bpp(int x, int y, int w, int h, const uint8_t* data, size_t len);
+    bool Present(const display::FrameRegion& region, const uint8_t* data, size_t len,
+                 display::PresentMode mode) override;
 
     // 把已知的当前物理画面种到 buffer_/prev_snapshot_，不触发刷新。
     // deep sleep 唤醒后内存丢失，但 EPD 物理像素仍保持；timer 自动刷新要先用
     // 睡前缓存重建 previous snapshot，后续才能做真正 partial 而不是首次 full 清屏。
     void SeedPreviousRaw1bpp(int x, int y, int w, int h, const uint8_t* data, size_t len);
+    bool SeedPrevious(const display::FrameRegion& region, const uint8_t* data, size_t len) override;
 
     // 读取上次已刷到物理屏的 framebuffer 快照。只有 prev_snapshot_ 已同步时返回 true。
     bool ReadPreviousRaw1bpp(int x, int y, int w, int h, uint8_t* out, size_t len);
+    bool ReadPrevious(const display::FrameRegion& region, uint8_t* out, size_t len) override;
 
-    bool Lock(int timeout_ms = 0);
-    void Unlock();
+    bool Lock(int timeout_ms = 0) override;
+    void Unlock() override;
 
     lv_display_t* lvgl_display() {
         return lvgl_display_;

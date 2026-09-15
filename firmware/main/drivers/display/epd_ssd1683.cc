@@ -88,6 +88,10 @@ EpdSsd1683::~EpdSsd1683() {
     buffer_ = snapshot_ = prev_snapshot_ = lvgl_render_buf_ = nullptr;
 }
 
+const display::DisplayInfo& EpdSsd1683::Info() const {
+    return display::kZectrixNote4DisplayInfo;
+}
+
 void EpdSsd1683::Init() {
     ESP_LOGD(kTag, "init begin spi=%d cs=%d dc=%d rst=%d busy=%d mosi=%d sclk=%d", static_cast<int>(spi_host_),
              static_cast<int>(cs_), static_cast<int>(dc_), static_cast<int>(rst_), static_cast<int>(busy_),
@@ -266,6 +270,13 @@ void EpdSsd1683::RequestUrgentFullRefresh() {
         xTaskNotifyGive(refresh_task_);
 }
 
+void EpdSsd1683::RequestRefresh(display::PresentMode mode) {
+    if (mode == display::PresentMode::kFull)
+        RequestUrgentFullRefresh();
+    else
+        RequestUrgentPartialRefresh();
+}
+
 void EpdSsd1683::WriteRaw1bpp(int x, int y, int w, int h, const uint8_t* data, size_t len) {
     ESP_LOGD(kTag, "write raw x=%d y=%d w=%d h=%d len=%u", x, y, w, h, static_cast<unsigned>(len));
     if (!data || w <= 0 || h <= 0)
@@ -288,6 +299,18 @@ void EpdSsd1683::WriteRaw1bpp(int x, int y, int w, int h, const uint8_t* data, s
     xSemaphoreGive(dirty_mutex_);
 }
 
+bool EpdSsd1683::Present(const display::FrameRegion& region, const uint8_t* data, size_t len,
+                         display::PresentMode mode) {
+    if (data == nullptr || len != display::ExpectedRegionBytes(region, Info().frame))
+        return false;
+    WriteRaw1bpp(region.x, region.y, region.width, region.height, data, len);
+    if (mode == display::PresentMode::kFull)
+        RequestUrgentFullRefresh();
+    else
+        RequestUrgentPartialRefresh();
+    return true;
+}
+
 void EpdSsd1683::SeedPreviousRaw1bpp(int x, int y, int w, int h, const uint8_t* data, size_t len) {
     if (!data || w <= 0 || h <= 0)
         return;
@@ -300,6 +323,13 @@ void EpdSsd1683::SeedPreviousRaw1bpp(int x, int y, int w, int h, const uint8_t* 
     epd::Copy1bppInto(prev_snapshot_, kWidth, kHeight, x, y, w, h, data);
     prev_snapshot_synced_ = true;
     xSemaphoreGive(dirty_mutex_);
+}
+
+bool EpdSsd1683::SeedPrevious(const display::FrameRegion& region, const uint8_t* data, size_t len) {
+    if (data == nullptr || len != display::ExpectedRegionBytes(region, Info().frame))
+        return false;
+    SeedPreviousRaw1bpp(region.x, region.y, region.width, region.height, data, len);
+    return true;
 }
 
 bool EpdSsd1683::ReadPreviousRaw1bpp(int x, int y, int w, int h, uint8_t* out, size_t len) {
@@ -316,6 +346,12 @@ bool EpdSsd1683::ReadPreviousRaw1bpp(int x, int y, int w, int h, uint8_t* out, s
     }
     xSemaphoreGive(dirty_mutex_);
     return synced;
+}
+
+bool EpdSsd1683::ReadPrevious(const display::FrameRegion& region, uint8_t* out, size_t len) {
+    if (out == nullptr || len != display::ExpectedRegionBytes(region, Info().frame))
+        return false;
+    return ReadPreviousRaw1bpp(region.x, region.y, region.width, region.height, out, len);
 }
 
 void EpdSsd1683::StartRefreshTask() {

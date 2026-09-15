@@ -4,7 +4,7 @@
 // items > kVisibleRows 时右侧出现一个细 thumb 标记当前视口在总长度里的位置,
 // 不画 track(1bpp 灰阶有限,track + thumb 都用纯黑会糊在一起)。
 //
-// 屏幕 400×300 - status bar 24 = root 276,对称 pad 12,行高 42 -> 视口 6 行
+// 当前 Note4 UI 根高度减去 status bar 后，对称 pad 12、行高 42 -> 视口 6 行。
 // (12 + 6×42 + 12 = 276 完美填满,thumb track 区也自然对称)。
 // 滚动一律走 partial refresh(EPD 自身按 dirty 比例自决是否升 full),
 // 不主动 full,牺牲一点残影换响应速度。OnUp/OnDown 仍返回是否发生 viewport

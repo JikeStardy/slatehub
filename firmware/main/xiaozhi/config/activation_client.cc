@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "bsp/board.h"
 #include "utils/byte_utils.h"
 #include "utils/json_utils.h"
 #include "utils/mac_utils.h"
@@ -58,7 +59,7 @@ std::string ActivationClient::DeviceId() const {
 
 std::string ActivationClient::UserAgent() const {
     const auto* app = esp_app_get_description();
-    std::string ua  = kBoardName;
+    std::string ua  = Board::Get().platform().BoardId();
     ua += "/";
     ua += app ? app->version : "unknown";
     return ua;
@@ -134,15 +135,18 @@ std::string ActivationClient::SystemInfoJson() const {
     cJSON_AddStringToObject(ota, "label", running ? running->label : "unknown");
     cJSON_AddItemToObject(root, "ota", ota);
 
-    cJSON* display = cJSON_CreateObject();
-    cJSON_AddBoolToObject(display, "monochrome", true);
-    cJSON_AddNumberToObject(display, "width", 400);
-    cJSON_AddNumberToObject(display, "height", 300);
-    cJSON_AddItemToObject(root, "display", display);
+    const auto& display_info = Board::Get().platform().Display();
+    cJSON*      display_json = cJSON_CreateObject();
+    cJSON_AddBoolToObject(display_json, "monochrome",
+                          display_info.frame.pixel_format == display::PixelFormat::kMono1);
+    cJSON_AddNumberToObject(display_json, "width", display_info.frame.width);
+    cJSON_AddNumberToObject(display_json, "height", display_info.frame.height);
+    cJSON_AddStringToObject(display_json, "profile", display_info.profile_id);
+    cJSON_AddItemToObject(root, "display", display_json);
 
     cJSON* board = cJSON_CreateObject();
-    cJSON_AddStringToObject(board, "type", kBoardType);
-    cJSON_AddStringToObject(board, "name", kBoardName);
+    cJSON_AddStringToObject(board, "type", Board::Get().platform().BoardId());
+    cJSON_AddStringToObject(board, "name", Board::Get().platform().BoardId());
     cJSON_AddStringToObject(board, "mac", DeviceId().c_str());
     cJSON_AddItemToObject(root, "board", board);
 

@@ -3,7 +3,6 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 
-#include "drivers/display/epd_ssd1683.h"
 #include "ui/status_bar.h"
 
 namespace {
@@ -71,10 +70,8 @@ bool Scene::SyncRender(SceneContext& ctx, std::function<void()> before_refresh, 
     lv_refr_now(NULL);
     ESP_LOGD(kTag, "lvgl refresh done scene=%s", Name());
     ctx.epd->Unlock();
-    if (force_full)
-        ctx.epd->RequestUrgentFullRefresh();
-    else
-        ctx.epd->RequestUrgentPartialRefresh();
+    display::RequestRefreshWithFallback(*ctx.epd,
+                                        force_full ? display::PresentMode::kFull : display::PresentMode::kPartial);
     const int64_t elapsed_ms = ElapsedMs(start_us);
     if (elapsed_ms >= kSlowRenderMs) {
         ESP_LOGW(kTag, "render slow scene=%s elapsed_ms=%lld force_full=%d", Name(), static_cast<long long>(elapsed_ms),
@@ -107,10 +104,8 @@ bool Scene::SyncRenderIfChanged(SceneContext& ctx, std::function<bool()> update,
                  static_cast<long long>(ElapsedMs(start_us)));
         return false;
     }
-    if (force_full)
-        ctx.epd->RequestUrgentFullRefresh();
-    else
-        ctx.epd->RequestUrgentPartialRefresh();
+    display::RequestRefreshWithFallback(*ctx.epd,
+                                        force_full ? display::PresentMode::kFull : display::PresentMode::kPartial);
     const int64_t elapsed_ms = ElapsedMs(start_us);
     if (elapsed_ms >= kSlowRenderMs) {
         ESP_LOGW(kTag, "render slow scene=%s elapsed_ms=%lld force_full=%d", Name(), static_cast<long long>(elapsed_ms),

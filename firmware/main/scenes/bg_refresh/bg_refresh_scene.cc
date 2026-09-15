@@ -4,25 +4,20 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-#include <array>
 #include <atomic>
 #include <cstring>
 #include <memory>
 #include <new>
 #include <vector>
 
-#include "drivers/display/epd_ssd1683.h"
-#include "drivers/display/framebuffer_ops.h"
 #include "events/event_bus.h"
 #include "power/power_state.h"
 #include "storage/cache/cache.h"
-#include "ui/frame_view.h"
 #include "ui/status_bar.h"
 #include "ui/theme.h"
 
 namespace {
 constexpr char kTag[] = "bg_refresh";
-constexpr int  kBpr   = FrameView::kWidth / 8;
 
 // 后台刷新整体硬截止：从进场到完成的总时长上限。WiFi 连接 + poll + 拉帧 + EPD 刷新
 // 都算在内。超时直接投 kBgRefreshDone 回睡，不再依赖 10min idle Tick 兜底，封住
@@ -40,16 +35,16 @@ void PostBgRefreshDoneOnce(const std::shared_ptr<std::atomic<bool>>& done_posted
 }
 
 struct WatcherContext {
-    EpdSsd1683*                        epd = nullptr;
+    display::Display*                  display = nullptr;
     std::shared_ptr<std::atomic<bool>> done_posted;
 };
 
 void WatcherEntry(void* arg) {
     std::unique_ptr<WatcherContext> ctx(static_cast<WatcherContext*>(arg));
-    auto*                           epd        = ctx ? ctx->epd : nullptr;
+    auto*                           display    = ctx ? ctx->display : nullptr;
     constexpr int                   kTimeoutMs = 8000;
-    if (epd)
-        epd->WaitForRefreshIdle(kTimeoutMs);
+    if (display)
+        display->WaitForRefreshIdle(kTimeoutMs);
     auto done_posted = ctx ? ctx->done_posted : std::shared_ptr<std::atomic<bool>>();
     PostBgRefreshDoneOnce(done_posted);
     vTaskDelete(nullptr);
@@ -138,9 +133,19 @@ void BgRefreshScene::OnEvent(SceneContext& ctx, const UiEvent& e) {
 bool BgRefreshScene::SeedPreviousFrame(SceneContext& ctx) {
     if (!ctx.epd)
         return false;
+    const display::FrameDescriptor& frame = ctx.epd->Info().frame;
+    if (!display::ValidateFrameDescriptor(frame))
+        return false;
+    const int                      bpr = frame.width / 8;
+    const display::FrameRegion     status_region{0, 0, frame.width, theme::kStatusBarHeight};
+    const std::size_t              status_bytes = display::ExpectedRegionBytes(status_region, frame);
 
-    std::array<uint8_t, epd::kStatusBarSnapshotBytes> status_bar{};
-    const bool status_ok = power_state::LoadStatusBarSnapshot(status_bar.data(), status_bar.size());
+    if (status_bytes == 0) {
+        ESP_LOGW(kTag, "seed skipped reason=status_snapshot_shape");
+        return false;
+    }
+    std::vector<uint8_t> status_bar(status_bytes);
+    const bool           status_ok = power_state::LoadStatusBarSnapshot(status_bar.data(), status_bar.size());
     if (!status_ok) {
         ESP_LOGW(kTag, "seed skipped reason=status_snapshot_missing");
         return false;
@@ -166,17 +171,16 @@ bool BgRefreshScene::SeedPreviousFrame(SceneContext& ctx) {
     }
 
     std::vector<uint8_t> raw;
-    if (!cache::ReadFrameImage(gid, seq, raw) || raw.size() != static_cast<size_t>(FrameView::kRawBytes)) {
+    if (!cache::ReadFrameImage(gid, seq, raw) || raw.size() != frame.byte_size) {
         ESP_LOGW(kTag, "seed skipped reason=image_miss seq=%d bytes=%u", seq, static_cast<unsigned>(raw.size()));
         return false;
     }
 
     const int y = theme::kStatusBarHeight;
-    const int h = FrameView::kHeight - y;
-    ctx.epd->SeedPreviousRaw1bpp(0, 0, epd::kStatusBarSnapshotWidth, epd::kStatusBarSnapshotHeight, status_bar.data(),
-                                 status_bar.size());
-    ctx.epd->SeedPreviousRaw1bpp(0, y, FrameView::kWidth, h, raw.data() + y * kBpr, h * kBpr);
-    return true;
+    const display::FrameRegion body_region{0, y, frame.width, frame.height - y};
+    const std::size_t          body_bytes = display::ExpectedRegionBytes(body_region, frame);
+    return display::SeedPreviousIfSupported(*ctx.epd, status_region, status_bar.data(), status_bar.size()) &&
+           display::SeedPreviousIfSupported(*ctx.epd, body_region, raw.data() + y * bpr, body_bytes);
 }
 
 bool BgRefreshScene::ResolveCurrentFrame(std::string& gid, int& seq, int& content_count) {
@@ -200,6 +204,9 @@ bool BgRefreshScene::ResolveCurrentFrame(std::string& gid, int& seq, int& conten
 bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
     if (!ctx.epd)
         return false;
+    const display::FrameDescriptor& frame = ctx.epd->Info().frame;
+    if (!display::ValidateFrameDescriptor(frame))
+        return false;
 
     std::string gid;
     int         seq           = 0;
@@ -208,7 +215,7 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
         return false;
 
     std::vector<uint8_t> raw;
-    if (!cache::ReadFrameImage(gid, seq, raw) || raw.size() != static_cast<size_t>(FrameView::kRawBytes)) {
+    if (!cache::ReadFrameImage(gid, seq, raw) || raw.size() != frame.byte_size) {
         ESP_LOGW(kTag, "render skipped reason=image_miss seq=%d bytes=%u", seq, static_cast<unsigned>(raw.size()));
         return false;
     }
@@ -233,17 +240,22 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
     // Background refresh uses LVGL only for the status bar. The frame body is
     // written as raw 1bpp data so it exactly matches the cached screen format.
     const int y = theme::kStatusBarHeight;
-    const int h = FrameView::kHeight - y;
-    ctx.epd->WriteRaw1bpp(0, y, FrameView::kWidth, h, raw.data() + y * kBpr, h * kBpr);
-    ctx.epd->RequestUrgentPartialRefresh();
+    const int bpr = frame.width / 8;
+    const display::FrameRegion body_region{0, y, frame.width, frame.height - y};
+    if (!display::PresentWithFallback(*ctx.epd, body_region, raw.data() + y * bpr,
+                                      display::ExpectedRegionBytes(body_region, frame), display::PresentMode::kPartial)) {
+        ctx.epd->Unlock();
+        ESP_LOGW(kTag, "render failed reason=display_present");
+        return false;
+    }
     ctx.epd->Unlock();
 
     StartWatcher(ctx.epd);
     return true;
 }
 
-void BgRefreshScene::StartWatcher(EpdSsd1683* epd) {
-    auto* ctx = new (std::nothrow) WatcherContext{epd, done_posted_};
+void BgRefreshScene::StartWatcher(display::Display* display) {
+    auto* ctx = new (std::nothrow) WatcherContext{display, done_posted_};
     if (!ctx) {
         ESP_LOGW(kTag, "watcher alloc failed action=finish");
         Finish();

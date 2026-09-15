@@ -6,7 +6,7 @@
 #include "ui/theme.h"
 
 namespace {
-// list root 高度 = 屏 300 - status bar 24 = 276。对称 pad 12 + 6 行 × 42 = 276。
+// Note4 list root 高度减去 status bar 后，对称 pad 12 + 6 行 × 42。
 // 选 6 行 + 42 行高:行间不空,设置页 6 项可完整放进一屏。
 // thumb track 区 [pad_top, root_h - pad_bot] 自然对称,顶/底间距相等。
 // 右侧 thumb 几何定义在 theme.h,与 DeviceInfoPage 共用。

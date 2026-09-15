@@ -4,7 +4,6 @@
 #include <memory>
 #include <utility>
 
-#include "drivers/display/epd_ssd1683.h"
 #include "events/event_bus.h"
 #include "events/ui_event_log.h"
 #include "scenes/core/scene_stack.h"

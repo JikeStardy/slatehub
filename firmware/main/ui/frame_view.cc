@@ -2,15 +2,11 @@
 
 #include <esp_log.h>
 
-#include "drivers/display/epd_ssd1683.h"
 #include "ui/theme.h"
 
 namespace {
 constexpr char kTag[]      = "frame_view";
 constexpr int  kStatusBarH = theme::kStatusBarHeight;
-constexpr int  kImgH       = FrameView::kHeight - kStatusBarH;
-constexpr int  kBpr        = FrameView::kWidth >> 3;
-constexpr int  kImgBytes   = kImgH * kBpr;
 }  // namespace
 
 FrameView::FrameView(lv_obj_t* parent) {
@@ -24,14 +20,18 @@ FrameView::FrameView(lv_obj_t* parent) {
     lv_obj_clear_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-void FrameView::SetFrame(EpdSsd1683* epd, const std::vector<uint8_t>& raw) {
-    if (!epd)
+void FrameView::SetFrame(display::Display* display, const std::vector<uint8_t>& raw, display::PresentMode mode) {
+    if (!display)
         return;
-    if (raw.size() != kRawBytes) {
-        ESP_LOGW(kTag, "raw size mismatch bytes=%u expected=%d", static_cast<unsigned>(raw.size()), kRawBytes);
+    const display::FrameDescriptor& frame = display->Info().frame;
+    if (!display::ValidateFrameDescriptor(frame) || raw.size() != frame.byte_size) {
+        ESP_LOGW(kTag, "raw size mismatch bytes=%u expected=%u", static_cast<unsigned>(raw.size()),
+                 static_cast<unsigned>(frame.byte_size));
         return;
     }
-    epd->WriteRaw1bpp(0, kStatusBarH, kWidth, kImgH, raw.data() + kStatusBarH * kBpr, kImgBytes);
+    if (!display::PresentFrameBody(*display, raw.data(), raw.size(), kStatusBarH, mode)) {
+        ESP_LOGW(kTag, "raw present failed bytes=%u", static_cast<unsigned>(raw.size()));
+    }
 }
 
 void FrameView::Show() {

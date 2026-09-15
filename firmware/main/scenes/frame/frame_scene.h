@@ -1,6 +1,6 @@
 #pragma once
 
-// 主场景：显示服务端渲染好的 400x300 1bpp frame，顶部 24px 状态栏叠加。
+// 主场景：显示服务端渲染好的完整 1bpp frame，顶部 24px 状态栏叠加。
 
 #include <memory>
 #include <string>

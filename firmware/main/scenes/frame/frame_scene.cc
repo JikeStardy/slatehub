@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "drivers/audio/audio_player.h"
-#include "drivers/display/epd_ssd1683.h"
 #include "events/event_bus.h"
 #include "events/ui_event_log.h"
 #include "scenes/core/scene_stack.h"
@@ -361,7 +360,9 @@ void FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
     }
 
     std::vector<uint8_t> raw;
-    if (!cache::ReadFrameImage(gid_, idx, raw) || raw.size() != static_cast<size_t>(FrameView::kRawBytes)) {
+    const auto& frame = ctx.epd ? ctx.epd->Info().frame : display::FrameDescriptor{};
+    if (!ctx.epd || !cache::ReadFrameImage(gid_, idx, raw) || raw.size() != frame.byte_size ||
+        !display::ValidateFrameDescriptor(frame)) {
         ESP_LOGW(kTag, "load frame failed idx=%d reason=image_miss bytes=%u", idx, static_cast<unsigned>(raw.size()));
         if (ctx.audio)
             ctx.audio->Stop();
@@ -382,15 +383,10 @@ void FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
     ESP_LOGD(kTag, "lvgl refresh done scene=frame idx=%d", idx);
     ctx.epd->Unlock();
 
-    if (frame_view_)
-        frame_view_->SetFrame(ctx.epd, raw);
-
     const bool full = force_full || (!first_loaded_ && first_load_full_refresh_);
     first_loaded_   = true;
-    if (full)
-        ctx.epd->RequestUrgentFullRefresh();
-    else
-        ctx.epd->RequestUrgentPartialRefresh();
+    if (frame_view_)
+        frame_view_->SetFrame(ctx.epd, raw, full ? display::PresentMode::kFull : display::PresentMode::kPartial);
     ESP_LOGD(kTag, "load frame refresh idx=%d full=%d first_loaded=%d", idx, full ? 1 : 0, first_loaded_ ? 1 : 0);
 
     if (ctx.audio) {

@@ -21,6 +21,7 @@ set(SOURCES
     "power/minute_boundary_ticker.cc"
 
     "bsp/board.cc"
+    "bsp/board_platform.cc"
     "bsp/battery_adc.cc"
     "bsp/board_power.cc"
     "bsp/charge_status.cc"
@@ -31,6 +32,7 @@ set(SOURCES
     "drivers/display/epd_ssd1683.cc"
     "drivers/display/epd_ssd1683_commands.cc"
     "drivers/display/epd_ssd1683_spi.cc"
+    "drivers/display/display_contract.cc"
     "drivers/display/framebuffer_ops.cc"
     "drivers/audio/audio_player.cc"
 
@@ -99,6 +101,13 @@ set(PRIVATE_INCLUDE_DIRS
     "resources/fonts"
 )
 
+if(NOT CONFIG_SLATE_BOARD_ID STREQUAL "zectrix-note4")
+    message(
+        FATAL_ERROR
+        "Unsupported CONFIG_SLATE_BOARD_ID='${CONFIG_SLATE_BOARD_ID}'. Only zectrix-note4 is implemented."
+    )
+endif()
+
 idf_component_register(
     SRCS ${SOURCES}
     INCLUDE_DIRS ${INCLUDE_DIRS}
@@ -130,3 +139,5 @@ idf_component_register(
         pthread
         spi_flash
 )
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE SLATE_BOARD_ID="${CONFIG_SLATE_BOARD_ID}")

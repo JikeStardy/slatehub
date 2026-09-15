@@ -4,17 +4,14 @@
 
 #include <vector>
 
-class EpdSsd1683;
+#include "drivers/display/display_contract.h"
 
 class FrameView {
    public:
-    static constexpr int kWidth    = 400;
-    static constexpr int kHeight   = 300;
-    static constexpr int kRawBytes = kWidth * kHeight / 8;
-
     explicit FrameView(lv_obj_t* parent);
 
-    void SetFrame(EpdSsd1683* epd, const std::vector<uint8_t>& raw);
+    void SetFrame(display::Display* display, const std::vector<uint8_t>& raw,
+                  display::PresentMode mode = display::PresentMode::kPartial);
     void Show();
     void Hide();
 

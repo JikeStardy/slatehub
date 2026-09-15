@@ -139,6 +139,14 @@ void Board::InitBatteryAdc() {
     battery_adc_->Init();
 }
 
+display::Display* Board::display() {
+    return epd_.get();
+}
+
+const board::BoardPlatform& Board::platform() const {
+    return board::CurrentPlatform();
+}
+
 bool Board::ReadBattery(uint16_t* voltage_mv, uint8_t* percent) {
     if (!battery_adc_)
         return false;

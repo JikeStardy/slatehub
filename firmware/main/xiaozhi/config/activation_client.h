@@ -24,8 +24,6 @@ struct ActivationConfigResult {
 class ActivationClient {
    public:
     static constexpr const char* kConfigUrl = "https://api.tenclass.net/xiaozhi/ota/";
-    static constexpr const char* kBoardType = "zectrix-s3-epaper-4.2";
-    static constexpr const char* kBoardName = "zectrix-s3-epaper-4.2";
     static constexpr const char* kLanguage  = "zh-CN";
 
     ActivationConfigResult Fetch();

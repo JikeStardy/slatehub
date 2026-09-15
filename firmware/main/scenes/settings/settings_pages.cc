@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "drivers/audio/audio_player.h"
-#include "drivers/display/epd_ssd1683.h"
 #include "events/event_bus.h"
 #include "network/cred_store.h"
 #include "network/wifi.h"

@@ -7,7 +7,6 @@
 
 #include <cstring>
 
-#include "drivers/display/framebuffer_ops.h"
 #include "utils/scoped_mutex_lock.h"
 
 namespace power_state {
@@ -33,9 +32,10 @@ constexpr uint32_t kMaxBackoffShift   = 6;
 constexpr uint64_t kMaxBackoffWakeSec = 3600;
 
 constexpr uint32_t     kStatusBarSnapshotMagic                             = 0x53544231u;  // "STB1"
+constexpr size_t       kStatusBarSnapshotBytes                             = 1200;
 RTC_DATA_ATTR uint32_t s_status_bar_magic                                  = 0;
 RTC_DATA_ATTR uint32_t s_status_bar_hash                                   = 0;
-RTC_DATA_ATTR uint8_t  s_status_bar_snapshot[epd::kStatusBarSnapshotBytes] = {};
+RTC_DATA_ATTR uint8_t  s_status_bar_snapshot[kStatusBarSnapshotBytes]       = {};
 
 SemaphoreHandle_t StateMutex() {
     static StaticSemaphore_t s_mutex_buf;
@@ -177,13 +177,13 @@ void RecordTimerWakeResult(bool success) {
 }
 
 bool SaveStatusBarSnapshot(const uint8_t* data, size_t len) {
-    if (!data || len != epd::kStatusBarSnapshotBytes)
+    if (!data || len != kStatusBarSnapshotBytes)
         return false;
     const uint32_t  hash = HashBytes(data, len);
     ScopedMutexLock lock(StateMutex());
     // magic 是提交标记:先清无效,写完 snapshot/hash 后再恢复,Load 只接受完整快照。
     s_status_bar_magic = 0;
-    std::memcpy(s_status_bar_snapshot, data, epd::kStatusBarSnapshotBytes);
+    std::memcpy(s_status_bar_snapshot, data, kStatusBarSnapshotBytes);
     s_status_bar_hash  = hash;
     s_status_bar_magic = kStatusBarSnapshotMagic;
     ESP_LOGD(kTag, "saved status bar snapshot hash=%08lx", static_cast<unsigned long>(hash));
@@ -191,7 +191,7 @@ bool SaveStatusBarSnapshot(const uint8_t* data, size_t len) {
 }
 
 bool LoadStatusBarSnapshot(uint8_t* out, size_t len) {
-    if (!out || len != epd::kStatusBarSnapshotBytes)
+    if (!out || len != kStatusBarSnapshotBytes)
         return false;
     uint32_t magic = 0;
     uint32_t hash  = 0;
@@ -200,7 +200,7 @@ bool LoadStatusBarSnapshot(uint8_t* out, size_t len) {
         magic = s_status_bar_magic;
         hash  = s_status_bar_hash;
         if (magic == kStatusBarSnapshotMagic) {
-            std::memcpy(out, s_status_bar_snapshot, epd::kStatusBarSnapshotBytes);
+            std::memcpy(out, s_status_bar_snapshot, kStatusBarSnapshotBytes);
         }
     }
     if (magic != kStatusBarSnapshotMagic)

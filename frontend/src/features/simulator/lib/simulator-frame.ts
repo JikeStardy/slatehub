@@ -186,6 +186,15 @@ export function completeDownloadOperation(
     : { status: 'error', identity, message: result.message };
 }
 
+export function resetDownloadStateForSelection(
+  current: DownloadState,
+  nextIdentity: string | null
+): DownloadState {
+  return current.status !== 'idle' && current.identity !== nextIdentity
+    ? { status: 'idle' }
+    : current;
+}
+
 export async function runSimulatorDownloadForIdentity(
   setDownload: (update: DownloadState | ((current: DownloadState) => DownloadState)) => void,
   identityInput: DownloadOperationIdentityInput,

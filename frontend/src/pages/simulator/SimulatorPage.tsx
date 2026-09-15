@@ -18,12 +18,14 @@ import {
   type ValidatedRawFrame,
 } from '@/features/simulator/lib/simulator-canvas';
 import { fetchFrameBytes } from '@/features/simulator/lib/simulator-api';
+import { simulatorStageCanvasStyle } from '@/features/simulator/lib/simulator-layout';
 import {
   batchSnapshotEntries,
   downloadOperationIdentity,
   frameQueryKey,
   manifestConditionalHeaders,
   manifestQueryKey,
+  resetDownloadStateForSelection,
   runSimulatorDownloadForIdentity,
   resolveSelectedContentId,
   resolveManifestResponse,
@@ -94,11 +96,7 @@ export function SimulatorPage() {
   }, [autoStep, manifest.data]);
 
   useEffect(() => {
-    setSingleDownload((current) =>
-      current.status !== 'idle' && current.identity !== singleDownloadIdentity
-        ? { status: 'idle' }
-        : current
-    );
+    setSingleDownload((current) => resetDownloadStateForSelection(current, singleDownloadIdentity));
   }, [singleDownloadIdentity]);
 
   return (
@@ -289,11 +287,8 @@ export function SimulatorStage({
             ref={canvasRef}
             width={content.frame.width}
             height={content.frame.height}
-            className="max-h-[72vh] w-full max-w-[920px] border border-ink bg-paper"
-            style={{
-              aspectRatio: `${content.frame.width} / ${content.frame.height}`,
-              imageRendering: 'pixelated',
-            }}
+            className="block max-w-full border border-ink bg-paper"
+            style={simulatorStageCanvasStyle(content.frame)}
           />
         ) : state.tone === 'loading' || state.tone === 'frame-loading' ? (
           <Spinner label={state.message} />

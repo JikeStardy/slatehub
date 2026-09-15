@@ -4,9 +4,12 @@ import {
   batchSnapshotEntries,
   beginDownloadOperation,
   completeDownloadOperation,
+  downloadOperationIdentity,
   manifestConditionalHeaders,
+  resetDownloadStateForSelection,
   resolveManifestResponse,
   runSimulatorDownload,
+  runSimulatorDownloadForIdentity,
   simulatorStageState,
   stepContentId,
   frameQueryKey,
@@ -14,6 +17,7 @@ import {
   resolveSelectedContentId,
   selectedFrameFilename,
   simulatorProfileIds,
+  type DownloadState,
 } from './simulator-frame';
 
 const note4Frame = frameDescriptorForProfile('zectrix-note4-400x300-mono');
@@ -171,7 +175,79 @@ describe('simulator profile cache and selection helpers', () => {
       status: 'success',
     });
   });
+
+  it('keeps pending download identity while ignoring stale deferred completions', async () => {
+    const first = deferred<void>();
+    const states: DownloadState[] = [];
+    let current: DownloadState = { status: 'idle' };
+    const setDownload = (update: DownloadState | ((state: DownloadState) => DownloadState)) => {
+      current = typeof update === 'function' ? update(current) : update;
+      states.push(current);
+    };
+
+    const firstRun = runSimulatorDownloadForIdentity(
+      setDownload,
+      {
+        groupId: 'group-1',
+        profileId: virtualFrame.profile_id,
+        contentId: 'content-1',
+        imageEtag: 'etag-1',
+      },
+      () => first.promise
+    );
+    expect(current).toMatchObject({ status: 'pending' });
+
+    current = beginDownloadOperation({
+      groupId: 'group-1',
+      profileId: virtualFrame.profile_id,
+      contentId: 'content-2',
+      imageEtag: 'etag-2',
+    });
+    first.resolve();
+    await firstRun;
+
+    expect(current).toMatchObject({ status: 'pending', identity: current.identity });
+    expect(states.at(-1)).toBe(current);
+  });
+
+  it('resets visible download state when the selected identity changes', () => {
+    const pending = beginDownloadOperation({
+      groupId: 'group-1',
+      profileId: virtualFrame.profile_id,
+      contentId: 'content-1',
+      imageEtag: 'etag-1',
+    });
+    const same = downloadOperationIdentity({
+      groupId: 'group-1',
+      profileId: virtualFrame.profile_id,
+      contentId: 'content-1',
+      imageEtag: 'etag-1',
+    });
+    const next = downloadOperationIdentity({
+      groupId: 'group-1',
+      profileId: virtualFrame.profile_id,
+      contentId: 'content-2',
+      imageEtag: 'etag-2',
+    });
+
+    expect(resetDownloadStateForSelection(pending, same)).toBe(pending);
+    expect(resetDownloadStateForSelection(pending, next)).toEqual({ status: 'idle' });
+    expect(resetDownloadStateForSelection(pending, null)).toEqual({ status: 'idle' });
+  });
 });
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 function manifestFor(contents: ContentSummaryT[]): ManifestResponseT {
   return {

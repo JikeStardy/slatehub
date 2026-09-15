@@ -52,34 +52,70 @@ function exactOccurrences(text, snippet) {
 }
 
 function stepBlock(workflow, name) {
-  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = workflow.match(
-    new RegExp(
-      `\\n\\s*- name: ${escapedName}\\n([\\s\\S]*?)(?=\\n\\s*- name: |\\n\\s*- uses: |\\n\\s{2}[a-zA-Z0-9_-]+:|$)`
-    )
-  );
-  return match?.[1] ?? '';
+  const lines = workflow.split('\n');
+  const start = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+  if (start === -1) {
+    return '';
+  }
+
+  const indent = lines[start].length - lines[start].trimStart().length;
+  let end = start + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    const lineIndent = line.length - line.trimStart().length;
+    if (lineIndent === indent && line.trimStart().startsWith('- ')) {
+      break;
+    }
+    end += 1;
+  }
+  return lines.slice(start + 1, end).join('\n');
 }
 
-function shellFunctionBlock(script, name) {
-  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = script.match(
-    new RegExp(`(?:^|\\n)([ \\t]*)${escapedName}\\(\\) \\{([\\s\\S]*?)\\n\\1\\}`)
+function yamlBlockScalar(block, key) {
+  const lines = block.split('\n');
+  const start = lines.findIndex((line) =>
+    new RegExp(`^\\s*${key}:\\s*[>|][+-]?(?:[1-9])?\\s*$`).test(line)
   );
-  return match?.[2] ?? '';
+  if (start === -1) {
+    return '';
+  }
+
+  const indent = lines[start].length - lines[start].trimStart().length;
+  let end = start + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    const lineIndent = line.length - line.trimStart().length;
+    if (line.trim() && lineIndent <= indent) {
+      break;
+    }
+    end += 1;
+  }
+  return lines.slice(start + 1, end).join('\n');
+}
+
+function shellFunctionBlocks(script, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = script.matchAll(
+    new RegExp(`(?:^|\\n)([ \\t]*)${escapedName}\\(\\) \\{([\\s\\S]*?)\\n\\1\\}`, 'g')
+  );
+  return [...matches].map((match) => match[2]);
 }
 
 function hasBoardSdkconfigCommand(workflow) {
   const block = stepBlock(workflow, 'ESP-IDF build');
-  return containsCompact(
-    block,
-    `
+  const command = yamlBlockScalar(block, 'command');
+  return (
+    /uses:\s*espressif\/esp-idf-ci-action@v1/.test(block) &&
+    containsCompact(
+      command,
+      `
       BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.\${{ matrix.board_id }}.defaults" &&
       printf "CONFIG_SLATE_BOARD_ID=\\"\${{ matrix.board_id }}\\"\\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
       idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
       idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-\${{ matrix.board_id }}-full.bin" &&
       cp build/slate.bin "build/slate-\${{ matrix.board_id }}-ota.bin"
     `
+    )
   );
 }
 
@@ -87,11 +123,16 @@ const releaseTagOrderingBlock = stepBlock(releaseWorkflow, 'Validate release tag
 const repositoryVersionsBlock = stepBlock(releaseWorkflow, 'Validate repository versions');
 const tagChangelogBlock = stepBlock(releaseWorkflow, 'Read tag changelog');
 const publishReleaseBlock = stepBlock(releaseWorkflow, 'Publish GitHub Release');
-const packageVersionFunction = shellFunctionBlock(repositoryVersionsBlock, 'check_package_version');
-const lockWorkspaceVersionFunction = shellFunctionBlock(
+const packageVersionFunctions = shellFunctionBlocks(
+  repositoryVersionsBlock,
+  'check_package_version'
+);
+const lockWorkspaceVersionFunctions = shellFunctionBlocks(
   repositoryVersionsBlock,
   'check_lock_workspace_version'
 );
+const packageVersionFunction = packageVersionFunctions[0] ?? '';
+const lockWorkspaceVersionFunction = lockWorkspaceVersionFunctions[0] ?? '';
 
 const boardProfileErrors = displayRegistry.boards
   .map((board) => {
@@ -200,21 +241,23 @@ assertContract(
 );
 
 assertContract(
-  containsCompact(
-    packageVersionFunction,
-    `
+  packageVersionFunctions.length === 1 &&
+    containsCompact(
+      packageVersionFunction,
+      `
       value="$(jq -r '.version' "$file")"
       if [ "$value" != "$RELEASE_VERSION" ]; then
         echo "$file version must be $RELEASE_VERSION, got $value." >&2
         exit 1
       fi
     `
-  ),
+    ),
   'Release workflow package version helper must read .version with jq, compare to RELEASE_VERSION, and exit 1 on mismatch.'
 );
 
 assertContract(
-  /awk -v workspace=/.test(lockWorkspaceVersionFunction) &&
+  lockWorkspaceVersionFunctions.length === 1 &&
+    /awk -v workspace=/.test(lockWorkspaceVersionFunction) &&
     /' bun\.lock/.test(lockWorkspaceVersionFunction) &&
     /in_workspace &&/.test(lockWorkspaceVersionFunction) &&
     /bun\.lock workspace \$workspace version must be \$RELEASE_VERSION/.test(

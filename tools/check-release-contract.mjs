@@ -72,13 +72,13 @@ function stepBlock(workflow, name) {
 }
 
 function directYamlKeyIndexes(lines, key) {
-  const nonEmptyLines = lines.filter((line) => line.trim());
-  if (nonEmptyLines.length === 0) {
+  const structuralLines = lines.filter((line) => line.trim() && !line.trimStart().startsWith('#'));
+  if (structuralLines.length === 0) {
     return [];
   }
 
   const directIndent = Math.min(
-    ...nonEmptyLines.map((line) => line.length - line.trimStart().length)
+    ...structuralLines.map((line) => line.length - line.trimStart().length)
   );
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return lines
@@ -107,7 +107,7 @@ function yamlBlockScalar(block, key) {
   while (end < lines.length) {
     const line = lines[end];
     const lineIndent = line.length - line.trimStart().length;
-    if (line.trim() && lineIndent <= indent) {
+    if (line.trim() && !line.trimStart().startsWith('#') && lineIndent <= indent) {
       break;
     }
     end += 1;
@@ -131,7 +131,7 @@ function yamlMappingBlock(block, key) {
   while (end < lines.length) {
     const line = lines[end];
     const lineIndent = line.length - line.trimStart().length;
-    if (line.trim() && lineIndent <= indent) {
+    if (line.trim() && !line.trimStart().startsWith('#') && lineIndent <= indent) {
       break;
     }
     end += 1;

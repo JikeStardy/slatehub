@@ -35,14 +35,19 @@ class BgRefreshScene : public Scene {
     bool SeedPreviousFrame(SceneContext& ctx);
     bool ResolveCurrentFrame(std::string& gid, int& seq, int& content_count);
     bool RenderChangedFrame(SceneContext& ctx);
-    void StartWatcher(display::Display* display, int seq, const cache::FrameMeta& meta);
+    void StartWatcher(display::Display* display);
     void StartDeadlineWatchdog();
     void Finish();
+    void FinishAfterCompletionClaimed();
+    void ClearPendingFrameCommit();
 
     State                              state_                  = State::kWaiting;
     bool                               previous_screen_seeded_ = false;
     bool                               force_full_refresh_     = false;
     std::shared_ptr<std::atomic<bool>> done_posted_            = std::make_shared<std::atomic<bool>>(false);
+    bool                               pending_frame_commit_   = false;
+    int                                pending_seq_            = 0;
+    cache::FrameMeta                   pending_meta_{};
 
     lv_obj_t*                  root_ = nullptr;
     std::unique_ptr<StatusBar> status_bar_;

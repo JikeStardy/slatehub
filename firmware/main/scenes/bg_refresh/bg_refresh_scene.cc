@@ -32,12 +32,6 @@ void PostBgRefreshDone() {
     evt::PostSimple(UiEventKind::kBgRefreshDone);
 }
 
-void PostBgRefreshDoneOnce(const std::shared_ptr<std::atomic<bool>>& done_posted) {
-    if (done_posted && done_posted->exchange(true, std::memory_order_acq_rel))
-        return;
-    PostBgRefreshDone();
-}
-
 void UpdateFrameSchedule(int seq, const cache::FrameMeta& meta) {
     power_state::SetCurrentFrameFromMeta(seq, meta);
 }
@@ -45,48 +39,55 @@ void UpdateFrameSchedule(int seq, const cache::FrameMeta& meta) {
 struct WatcherContext {
     display::Display*                  display = nullptr;
     std::shared_ptr<std::atomic<bool>> done_posted;
-    bool                               commit_current_frame = false;
-    int                                seq                  = 0;
-    cache::FrameMeta                   meta{};
 };
 
 void WatcherEntry(void* arg) {
     std::unique_ptr<WatcherContext> ctx(static_cast<WatcherContext*>(arg));
-    auto*                           display    = ctx ? ctx->display : nullptr;
+    auto*                           display = ctx ? ctx->display : nullptr;
+    auto                            done    = ctx ? ctx->done_posted : std::shared_ptr<std::atomic<bool>>();
+    auto*                           flag    = done.get();
     constexpr int                   kTimeoutMs = 8000;
-    bg_refresh::CompleteAcceptedRefreshAfterIdle(
+    bg_refresh::RunWatcherCompletion(
         [display]() { return display && display->WaitForRefreshIdle(kTimeoutMs); },
-        [&ctx]() {
-            if (ctx && ctx->commit_current_frame)
-                UpdateFrameSchedule(ctx->seq, ctx->meta);
+        [flag]() { return bg_refresh::TryClaimCompletion(flag); },
+        [&ctx, &done]() {
+            ctx.reset();
+            done.reset();
         },
-        [&ctx]() {
-            auto done_posted = ctx ? ctx->done_posted : std::shared_ptr<std::atomic<bool>>();
-            PostBgRefreshDoneOnce(done_posted);
-        });
+        []() { return evt::PostSimple(UiEventKind::kBgRefreshDisplayIdle, evt::kNoWait); },
+        []() { PostBgRefreshDone(); });
     vTaskDelete(nullptr);
 }
 
 // 截止看护任务：等到 kBgRefreshDeadlineMs；其间一旦 done_posted 置位(正常 finish)就提前退出，
-// 否则到点强制 PostBgRefreshDoneOnce。复用 WatcherContext(epd 置空,只用 done_posted)。
+// 否则到点通过 CAS 取得完成权并投递 kBgRefreshDone。复用 WatcherContext(epd 置空,只用 done_posted)。
 // 自删除 + unique_ptr 释放 ctx,与 WatcherEntry 同模式,无泄漏。
 void DeadlineEntry(void* arg) {
     std::unique_ptr<WatcherContext> ctx(static_cast<WatcherContext*>(arg));
     auto                            done_posted = ctx ? ctx->done_posted : std::shared_ptr<std::atomic<bool>>();
+    auto*                           flag        = done_posted.get();
     int                             waited      = 0;
-    const auto finished = [&] { return done_posted && done_posted->load(std::memory_order_acquire); };
+    const auto finished = [flag] { return flag && flag->load(std::memory_order_acquire); };
     while (waited < kBgRefreshDeadlineMs && !finished()) {
         vTaskDelay(pdMS_TO_TICKS(200));
         waited += 200;
     }
-    if (!finished()) {
+    const bool timed_out = !finished();
+    if (timed_out) {
         ESP_LOGW(kTag, "deadline reached elapsed_ms=%d action=force_done", kBgRefreshDeadlineMs);
         // 不在此处 RecordTimerWakeResult：与 OnEvent 的上报存在时序竞态(渲染跨过截止时
         // 会先 true 再 false 重复计数)。失败退避由「连不上服务器」(app.cc net_ok=false)与
         // OnEvent 的 kSyncFinished(ok) 覆盖；「连上但每次卡满截止」是罕见失败模式，
         // 仅靠 40s 截止回睡兜底、不计入退避（已知次要限制）。
-        PostBgRefreshDoneOnce(done_posted);
     }
+    bg_refresh::RunDeadlineCompletion(
+        [flag]() { return flag && flag->load(std::memory_order_acquire); },
+        [flag]() { return bg_refresh::TryClaimCompletion(flag); },
+        [&ctx, &done_posted]() {
+            ctx.reset();
+            done_posted.reset();
+        },
+        []() { PostBgRefreshDone(); });
     vTaskDelete(nullptr);
 }
 
@@ -99,11 +100,12 @@ void BgRefreshScene::OnEnter(SceneContext& ctx) {
     force_full_refresh_     = false;
     previous_screen_seeded_ = SeedPreviousFrame(ctx);
     state_                  = State::kWaiting;
+    ClearPendingFrameCommit();
     StartDeadlineWatchdog();
 }
 
 void BgRefreshScene::StartDeadlineWatchdog() {
-    auto* ctx = new (std::nothrow) WatcherContext{nullptr, done_posted_, false, 0, {}};
+    auto* ctx = new (std::nothrow) WatcherContext{nullptr, done_posted_};
     if (!ctx) {
         ESP_LOGW(kTag, "deadline watchdog alloc failed");
         return;  // 退化到 SleepManager 的 idle/看门狗兜底
@@ -116,10 +118,27 @@ void BgRefreshScene::StartDeadlineWatchdog() {
 }
 
 void BgRefreshScene::OnExit(SceneContext& ctx) {
+    done_posted_->store(true, std::memory_order_release);
+    ClearPendingFrameCommit();
     DestroyRoot(ctx, root_, [this] { status_bar_.reset(); });
 }
 
 void BgRefreshScene::OnEvent(SceneContext& ctx, const UiEvent& e) {
+    if (e.kind == UiEventKind::kBgRefreshDisplayIdle) {
+        if (state_ == State::kRendering && pending_frame_commit_) {
+            bg_refresh::CompleteDisplayIdleOnUiTask(
+                [this]() {
+                    UpdateFrameSchedule(pending_seq_, pending_meta_);
+                    ClearPendingFrameCommit();
+                },
+                [this]() { FinishAfterCompletionClaimed(); });
+        } else {
+            ClearPendingFrameCommit();
+            FinishAfterCompletionClaimed();
+        }
+        return;
+    }
+
     if (e.kind != UiEventKind::kSyncFinished || state_ != State::kWaiting)
         return;
 
@@ -273,12 +292,15 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
     }
     ctx.epd->Unlock();
 
-    StartWatcher(ctx.epd, seq, meta);
+    pending_frame_commit_ = true;
+    pending_seq_          = seq;
+    pending_meta_         = meta;
+    StartWatcher(ctx.epd);
     return true;
 }
 
-void BgRefreshScene::StartWatcher(display::Display* display, int seq, const cache::FrameMeta& meta) {
-    auto* ctx = new (std::nothrow) WatcherContext{display, done_posted_, true, seq, meta};
+void BgRefreshScene::StartWatcher(display::Display* display) {
+    auto* ctx = new (std::nothrow) WatcherContext{display, done_posted_};
     if (!ctx) {
         ESP_LOGW(kTag, "watcher alloc failed action=finish");
         Finish();
@@ -295,6 +317,22 @@ void BgRefreshScene::StartWatcher(display::Display* display, int seq, const cach
 void BgRefreshScene::Finish() {
     if (state_ == State::kDone)
         return;
+    ClearPendingFrameCommit();
+    if (!bg_refresh::TryClaimCompletion(done_posted_.get()))
+        return;
+    FinishAfterCompletionClaimed();
+}
+
+void BgRefreshScene::FinishAfterCompletionClaimed() {
+    if (state_ == State::kDone)
+        return;
     state_ = State::kDone;
-    PostBgRefreshDoneOnce(done_posted_);
+    ClearPendingFrameCommit();
+    PostBgRefreshDone();
+}
+
+void BgRefreshScene::ClearPendingFrameCommit() {
+    pending_frame_commit_ = false;
+    pending_seq_          = 0;
+    pending_meta_         = {};
 }

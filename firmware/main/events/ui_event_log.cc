@@ -58,6 +58,8 @@ const char* KindName(UiEventKind kind) {
             return "secret_invalid";
         case UiEventKind::kBgRefreshDone:
             return "bg_refresh_done";
+        case UiEventKind::kBgRefreshDisplayIdle:
+            return "bg_refresh_display_idle";
         case UiEventKind::kXiaozhiChanged:
             return "xiaozhi_changed";
         case UiEventKind::kXiaozhiChannelClosed:

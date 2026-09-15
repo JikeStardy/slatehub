@@ -67,6 +67,8 @@ enum class UiEventKind : uint8_t {
     kSecretInvalid,
     // RTC timer 唤醒后台刷新场景完成/放弃，App 可立即进入下一轮 deep sleep。
     kBgRefreshDone,
+    // 后台刷新 EPD refresh request 已 accepted 且 display idle，BgRefreshScene 在 UI task 提交调度状态。
+    kBgRefreshDisplayIdle,
     // Xiaozhi 子系统状态变化。Scene 收到后从 XiaozhiService 读取最新快照。
     kXiaozhiChanged,
     // Xiaozhi 网络/服务端主动关闭。App 收到后转交 XiaozhiService 收束对应会话。

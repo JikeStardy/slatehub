@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 
 #include "bsp/board_platform.h"
@@ -203,6 +204,21 @@ struct BgRefreshTransactionFake {
     }
 };
 
+struct CleanupProbe {
+    bool* destroyed = nullptr;
+
+    explicit CleanupProbe(bool* out) : destroyed(out) {
+    }
+
+    ~CleanupProbe() {
+        if (destroyed)
+            *destroyed = true;
+    }
+
+    CleanupProbe(const CleanupProbe&)            = delete;
+    CleanupProbe& operator=(const CleanupProbe&) = delete;
+};
+
 void TestNote4PlatformInfo() {
     const board::BoardPlatform& platform = board::CurrentPlatform();
     const display::DisplayInfo& info     = platform.Display();
@@ -397,25 +413,169 @@ void TestFrameLoadTransactionSuccessCommitsAfterUnlock() {
     CHECK(ops.state_idx == 3);
 }
 
-void TestBgRefreshCommitsOnlyAfterIdle() {
-    BgRefreshTransactionFake ops;
+void TestFrameLoadTransactionSeesAudioLoadedSetByPrepare() {
+    bool audio_loaded = false;
+    int  play_count   = 0;
+    int  stop_count   = 0;
 
-    ops.UnlockDisplay();
-    bg_refresh::CompleteAcceptedRefreshAfterIdle(
-        [&ops]() { return ops.WaitForIdle(); }, [&ops]() { ops.Commit(); }, [&ops]() { ops.PostDone(); });
-    CHECK(ops.wait_order > ops.unlock_order);
-    CHECK(ops.commit_order > ops.wait_order);
-    CHECK(ops.done_order > ops.commit_order);
+    const frame_scene::FrameLoadRequest request{2, 3, false, true, true};
+    CHECK(frame_scene::RunFrameLoadTransaction(
+        request,
+        [&audio_loaded](int /*candidate_idx*/) {
+            audio_loaded = true;
+            return true;
+        },
+        []() { return true; },
+        []() {},
+        []() {},
+        [](display::PresentMode /*mode*/) { return true; },
+        []() {},
+        []() {},
+        [&audio_loaded, &play_count, &stop_count](int /*candidate_idx*/) {
+            if (audio_loaded)
+                ++play_count;
+            else
+                ++stop_count;
+        }));
+    CHECK(play_count == 1);
+    CHECK(stop_count == 0);
 
-    BgRefreshTransactionFake failed;
-    failed.idle_result = false;
-    failed.UnlockDisplay();
-    bg_refresh::CompleteAcceptedRefreshAfterIdle(
-        [&failed]() { return failed.WaitForIdle(); }, [&failed]() { failed.Commit(); },
-        [&failed]() { failed.PostDone(); });
-    CHECK(failed.wait_order > failed.unlock_order);
-    CHECK(failed.commit_order == 0);
-    CHECK(failed.done_order > failed.wait_order);
+    audio_loaded = false;
+    play_count   = 0;
+    stop_count   = 0;
+    CHECK(!frame_scene::RunFrameLoadTransaction(
+        request,
+        [&audio_loaded](int /*candidate_idx*/) {
+            audio_loaded = true;
+            return true;
+        },
+        []() { return true; },
+        []() {},
+        []() {},
+        [](display::PresentMode /*mode*/) { return false; },
+        []() {},
+        []() {},
+        [&play_count, &stop_count](int /*candidate_idx*/) {
+            ++play_count;
+            ++stop_count;
+        }));
+    CHECK(play_count == 0);
+    CHECK(stop_count == 0);
+}
+
+void TestBgRefreshWatcherCleanupBeforePostAndNoPersistence() {
+    bool destroyed          = false;
+    bool display_idle_event = false;
+    bool done_event         = false;
+    int  persistence_count  = 0;
+    bool completion_claimed = false;
+    auto ctx = std::make_unique<CleanupProbe>(&destroyed);
+
+    bg_refresh::RunWatcherCompletion(
+        []() { return true; },
+        [&completion_claimed]() {
+            if (completion_claimed)
+                return false;
+            completion_claimed = true;
+            return true;
+        },
+        [&ctx]() { ctx.reset(); },
+        [&]() {
+            CHECK(destroyed);
+            display_idle_event = true;
+            return true;
+        },
+        [&]() {
+            CHECK(destroyed);
+            done_event = true;
+        });
+
+    CHECK(destroyed);
+    CHECK(display_idle_event);
+    CHECK(!done_event);
+    CHECK(persistence_count == 0);
+
+    bg_refresh::CompleteDisplayIdleOnUiTask(
+        [&]() { ++persistence_count; },
+        [&]() { done_event = true; });
+    CHECK(persistence_count == 1);
+    CHECK(done_event);
+}
+
+void TestBgRefreshDeadlineWinnerPreventsWatcherCommit() {
+    bool completion_claimed = false;
+    int  done_count         = 0;
+    int  idle_event_count   = 0;
+
+    bg_refresh::RunDeadlineCompletion(
+        []() { return false; },
+        [&completion_claimed]() {
+            if (completion_claimed)
+                return false;
+            completion_claimed = true;
+            return true;
+        },
+        []() {},
+        [&]() { ++done_count; });
+
+    bg_refresh::RunWatcherCompletion(
+        []() { return true; },
+        [&completion_claimed]() {
+            if (completion_claimed)
+                return false;
+            completion_claimed = true;
+            return true;
+        },
+        []() {},
+        [&]() {
+            ++idle_event_count;
+            return true;
+        },
+        [&]() { ++done_count; });
+
+    CHECK(done_count == 1);
+    CHECK(idle_event_count == 0);
+}
+
+void TestBgRefreshWatcherWinnerUiCommitOnce() {
+    bool completion_claimed = false;
+    int  done_count         = 0;
+    int  idle_event_count   = 0;
+    int  persistence_count  = 0;
+
+    bg_refresh::RunWatcherCompletion(
+        []() { return true; },
+        [&completion_claimed]() {
+            if (completion_claimed)
+                return false;
+            completion_claimed = true;
+            return true;
+        },
+        []() {},
+        [&]() {
+            ++idle_event_count;
+            return true;
+        },
+        [&]() { ++done_count; });
+
+    bg_refresh::RunDeadlineCompletion(
+        []() { return false; },
+        [&completion_claimed]() {
+            if (completion_claimed)
+                return false;
+            completion_claimed = true;
+            return true;
+        },
+        []() {},
+        [&]() { ++done_count; });
+
+    CHECK(idle_event_count == 1);
+    CHECK(done_count == 0);
+    bg_refresh::CompleteDisplayIdleOnUiTask(
+        [&]() { ++persistence_count; },
+        [&]() { ++done_count; });
+    CHECK(persistence_count == 1);
+    CHECK(done_count == 1);
 }
 
 void TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange() {
@@ -442,7 +602,10 @@ int main() {
     TestFrameLoadTransactionRollbackLeavesOldState();
     TestFrameLoadTransactionPrepareFailureIsSideEffectFree();
     TestFrameLoadTransactionSuccessCommitsAfterUnlock();
-    TestBgRefreshCommitsOnlyAfterIdle();
+    TestFrameLoadTransactionSeesAudioLoadedSetByPrepare();
+    TestBgRefreshWatcherCleanupBeforePostAndNoPersistence();
+    TestBgRefreshDeadlineWinnerPreventsWatcherCommit();
+    TestBgRefreshWatcherWinnerUiCommitOnce();
     TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
     return g_failures == 0 ? 0 : 1;
 }

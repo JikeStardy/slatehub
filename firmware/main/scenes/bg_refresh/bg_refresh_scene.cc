@@ -88,9 +88,9 @@ void WatcherEntry(void* arg) {
     vTaskDelete(nullptr);
 }
 
-// 截止看护任务：等到 kBgRefreshDeadlineMs；其间一旦 done_posted 置位(正常 finish)就提前退出，
-// 否则到点通过 CAS 取得完成权并投递 kBgRefreshDone。复用 WatcherContext(epd 置空,只用 done_posted)。
-// 自删除 + unique_ptr 释放 ctx,与 WatcherEntry 同模式,无泄漏。
+// 截止看护任务：等到 kBgRefreshDeadlineMs；其间一旦 completion 终态(正常 finish)就提前退出，
+// 否则到点通过状态机取得完成权并投递 kBgRefreshDone。FreeRTOS vTaskDelete(nullptr) 不会展开
+// 当前 C++ 栈，因此所有 C++ owning locals 必须在自删前显式 reset。
 void DeadlineEntry(void* arg) {
     std::unique_ptr<WatcherContext> ctx(static_cast<WatcherContext*>(arg));
     auto                            state  = ctx ? ctx->completion : std::shared_ptr<bg_refresh::CompletionState>();
@@ -117,6 +117,7 @@ void DeadlineEntry(void* arg) {
         []() { YieldCompletionContention(); },
         kBgRefreshPostAttempts,
         kBgRefreshClaimAttempts);
+    state_for_retry.reset();
     vTaskDelete(nullptr);
 }
 

@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { ContentKind } from '@prisma/client';
-import { getBoardDefinition, getDisplayProfile, type ContentSummaryT } from 'shared';
+import type { ContentSummaryT } from 'shared';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { formatError } from '../../common/utils/error-format';
 import { DynamicContentRendererService } from '../dynamic-content/dynamic-content-renderer.service';
+import { GroupsService } from '../groups/groups.service';
 import type { DevicePollSnapshot } from '../devices/device-types';
 import {
   contentToSummary,
@@ -11,6 +12,7 @@ import {
   type ContentReadProfileTarget,
 } from './content-presenter';
 import { CONTENT_SELECT, type ContentSelectRow } from './content-select';
+import { ContentReadTargetResolver } from './content-read-target-resolver';
 
 export interface CurrentContentRequest {
   deviceId: string;
@@ -28,7 +30,9 @@ export class DeviceCurrentContentService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly dynamicRenderer: DynamicContentRendererService
+    private readonly dynamicRenderer: DynamicContentRendererService,
+    private readonly readTargets: ContentReadTargetResolver,
+    private readonly groups: GroupsService
   ) {}
 
   async resolveCurrentContentRequest(
@@ -94,7 +98,7 @@ export class DeviceCurrentContentService {
       contentId: content.id,
       manifestEtag: telemetry.manifest_etag,
       content,
-      readTarget: this.readTargetForDevice(device),
+      readTarget: this.readTargets.resolveSnapshot(device),
     };
   }
 
@@ -103,7 +107,9 @@ export class DeviceCurrentContentService {
     if (!content || content.groupId !== request.groupId || content.sortOrder !== request.seq) {
       return null;
     }
-    return contentToSummary(content, request.readTarget);
+    const summary = contentToSummary(content, request.readTarget);
+    if (summary.variant_status !== 'ready') return null;
+    return summary;
   }
 
   async refreshCurrentContentForDeviceIfDue(
@@ -156,7 +162,7 @@ export class DeviceCurrentContentService {
           ...request,
           manifestEtag: await this.manifestEtagForDeviceGroup(device, request.groupId),
           content: updatedContent,
-          readTarget: this.readTargetForDevice(device),
+          readTarget: this.readTargets.resolveSnapshot(device),
         };
       } catch (err) {
         this.logger.warn(
@@ -168,13 +174,17 @@ export class DeviceCurrentContentService {
   }
 
   async manifestEtagForDeviceGroup(
-    device: Pick<DevicePollSnapshot, 'boardId' | 'displayProfileId'>,
+    device: Pick<DevicePollSnapshot, 'boardId' | 'displayProfileId' | 'protocolVersion'>,
     groupId: string
   ): Promise<string> {
-    const readTarget = this.readTargetForDevice(device);
+    const readTarget = this.readTargets.resolveSnapshot(device);
     const group = await this.prisma.group.findUnique({
       where: { id: groupId },
       select: {
+        id: true,
+        ownerUserId: true,
+        name: true,
+        sortOrder: true,
         structureEtag: true,
         contents: {
           orderBy: { sortOrder: 'asc' },
@@ -183,21 +193,24 @@ export class DeviceCurrentContentService {
       },
     });
     if (!group) return '';
+    const position =
+      group.ownerUserId === null
+        ? { current: 1, total: 1 }
+        : await this.groups.ownerGroupPosition(group.ownerUserId, group.sortOrder);
+    const contents = group.contents
+      .map((content) => contentToSummary(content, readTarget))
+      .filter((content) => content.variant_status === 'ready');
     return manifestReadEtag({
       profileId: readTarget.profile.id,
+      group: {
+        id: group.id,
+        name: group.name,
+        sort_order: group.sortOrder,
+        position,
+      },
       groupStructureEtag: group.structureEtag,
-      contents: group.contents.map((content) => contentToSummary(content, readTarget)),
+      contents,
     });
-  }
-
-  private readTargetForDevice(
-    device: Pick<DevicePollSnapshot, 'boardId' | 'displayProfileId'>
-  ): ContentReadProfileTarget {
-    const board = getBoardDefinition(device.boardId);
-    return {
-      profile: getDisplayProfile(device.displayProfileId),
-      audio: board.capabilities.audio,
-    };
   }
 }
 

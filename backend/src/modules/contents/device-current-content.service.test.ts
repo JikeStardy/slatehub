@@ -2,14 +2,33 @@ import { describe, expect, it } from 'bun:test';
 import { computeETag } from '../../common/utils/etag';
 import type { PrismaService } from '../../infra/prisma/prisma.service';
 import type { DynamicContentRendererService } from '../dynamic-content/dynamic-content-renderer.service';
+import { ContentReadTargetResolver } from './content-read-target-resolver';
 import { DeviceCurrentContentService } from './device-current-content.service';
+import { contentToSummary, manifestReadEtag } from './content-presenter';
+import type { GroupsService } from '../groups/groups.service';
 
 const NOTE4_PROFILE = 'zectrix-note4-400x300-mono';
-const VIRTUAL_PROFILE = 'virtual-mono-296x128';
-
-function contentRow() {
+function contentRow(
+  status: 'ready' | 'pending' | 'failed' | 'missing' = 'ready',
+  deviceProfileId = NOTE4_PROFILE
+) {
   const note4Frame = Buffer.alloc(15_000, 0x11);
-  const virtualFrame = Buffer.alloc(4_736, 0x22);
+  const note4Variant = {
+    profileId: NOTE4_PROFILE,
+    status: status === 'missing' ? ('ready' as const) : status,
+    pixelFormat: 'mono1',
+    frameCodec: 'raw_mono1_msb',
+    width: 400,
+    height: 300,
+    frameEtag: status === 'ready' ? computeETag(note4Frame) : null,
+    frameSize: status === 'ready' ? note4Frame.byteLength : null,
+    storageKey: status === 'ready' ? `frames/${NOTE4_PROFILE}/group-1/content-1.img` : null,
+    lastError: status === 'failed' ? 'render failed' : null,
+  };
+  const variants =
+    status === 'missing' && deviceProfileId === NOTE4_PROFILE
+      ? []
+      : [deviceProfileId === NOTE4_PROFILE ? note4Variant : note4Variant];
   return {
     id: 'content-1',
     groupId: 'group-1',
@@ -32,43 +51,22 @@ function contentRow() {
     dynamicLastRunAt: null,
     audioLastError: null,
     audioUpdatedAt: null,
-    variants: [
-      {
-        profileId: NOTE4_PROFILE,
-        status: 'ready' as const,
-        pixelFormat: 'mono1',
-        frameCodec: 'raw_mono1_msb',
-        width: 400,
-        height: 300,
-        frameEtag: computeETag(note4Frame),
-        frameSize: note4Frame.byteLength,
-        storageKey: `frames/${NOTE4_PROFILE}/group-1/content-1.img`,
-        lastError: null,
-      },
-      {
-        profileId: VIRTUAL_PROFILE,
-        status: 'ready' as const,
-        pixelFormat: 'mono1',
-        frameCodec: 'raw_mono1_msb',
-        width: 296,
-        height: 128,
-        frameEtag: computeETag(virtualFrame),
-        frameSize: virtualFrame.byteLength,
-        storageKey: `frames/${VIRTUAL_PROFILE}/group-1/content-1.img`,
-        lastError: null,
-      },
-    ],
+    variants,
   };
 }
 
-function createService() {
-  const content = contentRow();
+function createService(
+  status: 'ready' | 'pending' | 'failed' | 'missing' = 'ready',
+  deviceProfileId = NOTE4_PROFILE,
+  groupPosition = { current: 1, total: 1 }
+) {
+  const content = contentRow(status, deviceProfileId);
   const device = {
     id: 'device-1',
     selectedGroupId: 'group-1',
     selectedGroup: { manifestEtag: 'legacy-manifest' },
     boardId: 'zectrix-note4',
-    displayProfileId: VIRTUAL_PROFILE,
+    displayProfileId: deviceProfileId,
     protocolVersion: 2,
   };
   const prisma = {
@@ -77,6 +75,10 @@ function createService() {
     },
     group: {
       findUnique: async () => ({
+        id: 'group-1',
+        ownerUserId: 'user-1',
+        name: 'Group',
+        sortOrder: 0,
         structureEtag: 'structure-etag',
         contents: [content],
       }),
@@ -92,9 +94,17 @@ function createService() {
           : null,
     },
   };
+  const readTargets = new ContentReadTargetResolver(
+    prisma as unknown as PrismaService,
+    { nodeEnv: 'test' } as never
+  );
   return new DeviceCurrentContentService(
     prisma as unknown as PrismaService,
-    {} as DynamicContentRendererService
+    {} as DynamicContentRendererService,
+    readTargets,
+    {
+      ownerGroupPosition: async () => groupPosition,
+    } as unknown as GroupsService
   );
 }
 
@@ -104,7 +114,8 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
     const manifestEtag = await service.manifestEtagForDeviceGroup(
       {
         boardId: 'zectrix-note4',
-        displayProfileId: VIRTUAL_PROFILE,
+        displayProfileId: NOTE4_PROFILE,
+        protocolVersion: 2,
       },
       'group-1'
     );
@@ -119,11 +130,11 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
     expect(request?.manifestEtag).toBe(manifestEtag);
     expect(summary).toMatchObject({
       id: 'content-1',
-      image_size: 4_736,
+      image_size: 15_000,
       audio_etag: 'audio-etag',
       frame: {
-        profile_id: VIRTUAL_PROFILE,
-        byte_length: 4_736,
+        profile_id: NOTE4_PROFILE,
+        byte_length: 15_000,
       },
     });
   });
@@ -139,4 +150,66 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
 
     expect(request).toBeNull();
   });
+
+  it('uses the real group position in the device manifest validator', async () => {
+    const service = createService('ready', NOTE4_PROFILE, { current: 2, total: 3 });
+    const expected = manifestReadEtag({
+      profileId: NOTE4_PROFILE,
+      group: {
+        id: 'group-1',
+        name: 'Group',
+        sort_order: 0,
+        position: { current: 2, total: 3 },
+      },
+      groupStructureEtag: 'structure-etag',
+      contents: [
+        contentToSummary(contentRow('ready', NOTE4_PROFILE), {
+          profile: {
+            id: NOTE4_PROFILE,
+            width: 400,
+            height: 300,
+            pixel_format: 'mono1',
+            frame_codec: 'raw_mono1_msb',
+            availability: ['production', 'development', 'test'],
+          },
+          audio: true,
+          device: true,
+        }),
+      ],
+    });
+
+    await expect(
+      service.manifestEtagForDeviceGroup(
+        {
+          boardId: 'zectrix-note4',
+          displayProfileId: NOTE4_PROFILE,
+          protocolVersion: 2,
+        },
+        'group-1'
+      )
+    ).resolves.toBe(expected);
+  });
+
+  it.each(['missing', 'pending', 'failed'] as const)(
+    'returns null current_content for a %s device variant',
+    async (status) => {
+      const service = createService(status);
+      const manifestEtag = await service.manifestEtagForDeviceGroup(
+        {
+          boardId: 'zectrix-note4',
+          displayProfileId: NOTE4_PROFILE,
+          protocolVersion: 2,
+        },
+        'group-1'
+      );
+
+      const request = await service.resolveCurrentContentRequest('device-1', {
+        current_group: 'group-1',
+        current_content_seq: 2,
+        manifest_etag: manifestEtag,
+      });
+
+      expect(request ? service.currentContentForDevice(request) : null).toBeNull();
+    }
+  );
 });

@@ -41,10 +41,11 @@ export class ContentsReadController {
   @Get('groups/:groupId/contents')
   list(
     @Param('groupId') groupId: string,
+    @Query('display_profile_id') displayProfileId: string | undefined,
     @CurrentUser() user: WebUserContext | undefined,
     @CurrentDevice() device: DeviceContext | undefined
   ): Promise<ContentDetailT[]> {
-    return this.reads.list(groupId, contentAuthScope(user, device));
+    return this.reads.list(groupId, contentAuthScope(user, device, displayProfileId));
   }
 
   @Public()

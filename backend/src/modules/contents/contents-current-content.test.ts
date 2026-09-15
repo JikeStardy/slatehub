@@ -6,6 +6,7 @@ import { ContentMutationCoordinator } from '../../common/worker/content-mutation
 import { DynamicContentService } from '../dynamic-content/dynamic-content.service';
 import { ContentsService } from './contents.service';
 import { DeviceCurrentContentService } from './device-current-content.service';
+import { ContentReadTargetResolver } from './content-read-target-resolver';
 
 describe('ContentsService current content refresh', () => {
   it('runs dynamic mutations for the same content id serially after failures', async () => {
@@ -49,35 +50,43 @@ describe('ContentsService current content refresh', () => {
 
   it('skips timer current-frame refresh after the device manifest changes', async () => {
     let renderCalls = 0;
+    const prisma = {
+      device: {
+        findUnique: async () => ({
+          id: 'device-1',
+          selectedGroupId: 'group-1',
+          selectedGroup: { manifestEtag: 'new-manifest' },
+          boardId: 'zectrix-note4',
+          displayProfileId: 'zectrix-note4-400x300-mono',
+          protocolVersion: 2,
+        }),
+      },
+      group: {
+        findUnique: async () => ({
+          id: 'group-1',
+          name: 'Group',
+          sortOrder: 0,
+          structureEtag: 'new-structure',
+          contents: [],
+        }),
+      },
+      content: {
+        findUnique: async () => {
+          throw new Error('content lookup should be skipped');
+        },
+      },
+    } as never;
     const service = new DeviceCurrentContentService(
-      {
-        device: {
-          findUnique: async () => ({
-            id: 'device-1',
-            selectedGroupId: 'group-1',
-            selectedGroup: { manifestEtag: 'new-manifest' },
-            boardId: 'zectrix-note4',
-            displayProfileId: 'zectrix-note4-400x300-mono',
-            protocolVersion: 2,
-          }),
-        },
-        group: {
-          findUnique: async () => ({
-            structureEtag: 'new-structure',
-            contents: [],
-          }),
-        },
-        content: {
-          findUnique: async () => {
-            throw new Error('content lookup should be skipped');
-          },
-        },
-      } as never,
+      prisma,
       {
         renderDynamicContent: async () => {
           renderCalls += 1;
           return { groupEtag: 'rendered-manifest' };
         },
+      } as never,
+      new ContentReadTargetResolver(prisma, { nodeEnv: 'test' } as never),
+      {
+        ownerGroupPosition: async () => ({ current: 1, total: 1 }),
       } as never
     );
 

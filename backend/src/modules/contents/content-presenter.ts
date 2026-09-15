@@ -57,6 +57,7 @@ export interface ContentVariantRow {
 export interface ContentReadProfileTarget {
   profile: DisplayProfileT;
   audio: boolean;
+  device?: boolean;
 }
 
 const DEFAULT_NOTE4_TARGET: ContentReadProfileTarget = {
@@ -88,6 +89,8 @@ export function contentToSummary(
     kind: contentKind(row.kind),
     dynamic_type: (row.dynamicType as DynamicTypeT | null) ?? null,
     next_wake_sec: nextWakeSec(row.dynamicNextRunAt ?? null),
+    dynamic_next_run_at: row.dynamicNextRunAt?.toISOString() ?? null,
+    dynamic_refresh_due_at: row.dynamicRefreshDueAt?.toISOString() ?? null,
     frame: selected.frame,
   };
 }
@@ -102,22 +105,49 @@ export function contentSummaryEtag(profileId: string, frameEtag: string): string
 
 export function manifestReadEtag(input: {
   profileId: string;
+  group?: {
+    id: string;
+    name: string;
+    sort_order: number;
+    position: { current: number; total: number };
+  };
   groupStructureEtag: string;
   contents: ContentSummaryT[];
 }): string {
   return compactReadEtag([
     'manifest',
     input.profileId,
+    input.group?.id ?? '',
+    input.group?.name ?? '',
+    input.group?.sort_order ?? '',
+    input.group?.position.current ?? '',
+    input.group?.position.total ?? '',
     input.groupStructureEtag,
     ...input.contents.map((content) =>
       [
         content.id,
         content.seq,
+        content.frame_name ?? '',
+        content.device_status_bar_text,
+        content.content_etag,
         content.variant_status,
         content.image_etag,
+        content.image_size,
+        content.frame.profile_id,
+        content.frame.width,
+        content.frame.height,
+        content.frame.pixel_format,
+        content.frame.frame_codec,
+        content.frame.byte_length,
         content.audio_etag ?? '',
+        content.audio_size ?? '',
         content.audio_status,
-        content.next_wake_sec ?? '',
+        content.audio_source ?? '',
+        content.audio_voice ?? '',
+        content.kind,
+        content.dynamic_type ?? '',
+        content.dynamic_next_run_at ?? '',
+        content.dynamic_refresh_due_at ?? '',
       ].join(':')
     ),
   ]);

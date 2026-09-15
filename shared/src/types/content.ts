@@ -42,6 +42,8 @@ export const ContentSummary = z.object({
   kind: ContentKind,
   dynamic_type: DynamicType.nullable(),
   next_wake_sec: z.number().int().nonnegative().nullable(),
+  dynamic_next_run_at: z.string().datetime().nullable(),
+  dynamic_refresh_due_at: z.string().datetime().nullable(),
   frame: FrameDescriptor,
 });
 export type ContentSummaryT = z.infer<typeof ContentSummary>;

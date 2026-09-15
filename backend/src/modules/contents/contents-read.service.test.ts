@@ -10,6 +10,7 @@ import {
   contentSummaryEtag,
   manifestReadEtag,
 } from './content-presenter';
+import { ContentReadTargetResolver } from './content-read-target-resolver';
 import { ContentsReadService } from './contents-read.service';
 
 const NOTE4_PROFILE = 'zectrix-note4-400x300-mono';
@@ -106,6 +107,7 @@ function content(overrides: Partial<ContentRow> = {}): ContentRow {
 function createService(opts: {
   content?: ContentRow;
   groupOwnerUserId?: string | null;
+  nodeEnv?: 'development' | 'production' | 'test';
   device?: {
     id: string;
     ownerUserId: string | null;
@@ -115,7 +117,8 @@ function createService(opts: {
     protocolVersion: number;
   };
   blobs?: Record<string, Buffer>;
-  calls?: { blobStorageReads: string[]; legacyBlobReads: number };
+  audioBlob?: Buffer | null;
+  calls?: { blobStorageReads: string[]; legacyBlobReads: number; audioRepairs?: number };
 }): ContentsReadService {
   const row = opts.content ?? content();
   const device =
@@ -176,6 +179,8 @@ function createService(opts: {
     },
   };
   const blob = {
+    frameKey: (groupId: string, contentId: string, profileId: string) =>
+      `frames/${profileId}/${groupId}/${contentId}.img`,
     readStorageKey: async (storageKey: string) => {
       opts.calls?.blobStorageReads.push(storageKey);
       return blobs[storageKey] ?? null;
@@ -188,11 +193,22 @@ function createService(opts: {
   const groups = {
     ownerGroupPosition: async () => ({ current: 1, total: 1 }),
   };
+  const audioBlobs = {
+    read: async () => opts.audioBlob ?? null,
+    repairMissingAudioBlob: async () => {
+      if (opts.calls) opts.calls.audioRepairs = (opts.calls.audioRepairs ?? 0) + 1;
+    },
+  };
+  const readTargets = new ContentReadTargetResolver(
+    prisma as unknown as PrismaService,
+    { nodeEnv: opts.nodeEnv ?? 'test' } as never
+  );
   return new ContentsReadService(
     prisma as unknown as PrismaService,
     blob as unknown as BlobService,
     groups as unknown as GroupsService,
-    {} as ContentAudioBlobService
+    audioBlobs as unknown as ContentAudioBlobService,
+    readTargets
   );
 }
 
@@ -225,6 +241,12 @@ describe('ContentsReadService profile-scoped resources', () => {
     expect(manifest.group.manifest_etag).toBe(
       manifestReadEtag({
         profileId: NOTE4_PROFILE,
+        group: {
+          id: 'group-1',
+          name: 'Group',
+          sort_order: 0,
+          position: { current: 1, total: 1 },
+        },
         groupStructureEtag: 'structure-etag',
         contents: manifest.contents,
       })
@@ -266,7 +288,7 @@ describe('ContentsReadService profile-scoped resources', () => {
     expect(manifest.manifestEtag).not.toContain('legacy-manifest');
   });
 
-  it('serves a device manifest from a different persisted profile without falling back to Note4', async () => {
+  it('rejects a device whose persisted profile does not match its board', async () => {
     const virtual = variant(VIRTUAL_PROFILE);
     const service = createService({
       content: content({ variants: [variant(NOTE4_PROFILE), virtual] }),
@@ -280,23 +302,52 @@ describe('ContentsReadService profile-scoped resources', () => {
       },
     });
 
-    const manifest = await service.manifest('group-1', { deviceId: 'device-1' });
+    await expect(service.manifest('group-1', { deviceId: 'device-1' })).rejects.toThrow(
+      ValidationError
+    );
+  });
 
-    expect(manifest.display_profile.id).toBe(VIRTUAL_PROFILE);
-    expect(manifest.contents[0]).toMatchObject({
-      image_etag: contentFrameResourceEtag(VIRTUAL_PROFILE, virtual.frameEtag!),
-      image_size: virtual.frameSize,
-      frame: {
-        profile_id: VIRTUAL_PROFILE,
-        byte_length: 4_736,
+  it('rejects device reads for unsupported persisted protocol versions', async () => {
+    const service = createService({
+      device: {
+        id: 'device-1',
+        ownerUserId: 'user-1',
+        selectedGroupId: 'group-1',
+        boardId: 'zectrix-note4',
+        displayProfileId: NOTE4_PROFILE,
+        protocolVersion: 7,
       },
     });
+
+    await expect(service.manifest('group-1', { deviceId: 'device-1' })).rejects.toThrow(
+      ValidationError
+    );
+  });
+
+  it('rejects device reads for unknown persisted board ids with validation errors', async () => {
+    const service = createService({
+      device: {
+        id: 'device-1',
+        ownerUserId: 'user-1',
+        selectedGroupId: 'group-1',
+        boardId: 'unknown-board',
+        displayProfileId: NOTE4_PROFILE,
+        protocolVersion: 2,
+      },
+    });
+
+    await expect(service.manifest('group-1', { deviceId: 'device-1' })).rejects.toThrow(
+      ValidationError
+    );
   });
 
   it('serves an explicit Web Note4 raw frame independently from virtual frames', async () => {
-    const note4 = variant(NOTE4_PROFILE);
+    const note4Bytes = Buffer.alloc(15_000, 0x33);
+    const note4 = variant(NOTE4_PROFILE, {
+      frameEtag: computeETag(note4Bytes),
+      frameSize: note4Bytes.byteLength,
+    });
     const virtual = variant(VIRTUAL_PROFILE);
-    const note4Bytes = Buffer.alloc(note4.frameSize!, 0x33);
     const service = createService({
       content: content({ variants: [note4, virtual] }),
       blobs: {
@@ -336,10 +387,25 @@ describe('ContentsReadService profile-scoped resources', () => {
     });
   });
 
+  it('omits non-ready variants from device manifests instead of sending unavailable placeholders', async () => {
+    const service = createService({
+      content: content({
+        variants: [variant(NOTE4_PROFILE, { status: 'pending', frameEtag: null })],
+      }),
+    });
+
+    const manifest = await service.manifest('group-1', { deviceId: 'device-1' });
+
+    expect(manifest.contents).toEqual([]);
+  });
+
   it('reads raw frames from the selected Web profile storage key', async () => {
     const note4 = variant(NOTE4_PROFILE);
-    const virtual = variant(VIRTUAL_PROFILE);
-    const virtualBytes = Buffer.alloc(virtual.frameSize!, 0x44);
+    const virtualBytes = Buffer.alloc(4_736, 0x44);
+    const virtual = variant(VIRTUAL_PROFILE, {
+      frameEtag: computeETag(virtualBytes),
+      frameSize: virtualBytes.byteLength,
+    });
     const service = createService({
       content: content({ variants: [note4, virtual] }),
       blobs: {
@@ -357,6 +423,55 @@ describe('ContentsReadService profile-scoped resources', () => {
       data: virtualBytes,
       etag: contentFrameResourceEtag(VIRTUAL_PROFILE, virtual.frameEtag!),
     });
+  });
+
+  it('rejects ready variants stored under the wrong group content or profile key', async () => {
+    const note4 = variant(NOTE4_PROFILE, {
+      storageKey: `frames/${NOTE4_PROFILE}/other-group/content-1.img`,
+    });
+    const service = createService({
+      content: content({ variants: [note4] }),
+      blobs: { [note4.storageKey!]: Buffer.alloc(note4.frameSize!, 0x11) },
+    });
+
+    await expect(
+      service.readImage('content-1', { userId: 'user-1', displayProfileId: NOTE4_PROFILE })
+    ).rejects.toThrow(InternalError);
+  });
+
+  it('keeps the migrated Note4 legacy storage key as the only non-canonical frame exception', async () => {
+    const bytes = Buffer.alloc(15_000, 0x11);
+    const note4 = variant(NOTE4_PROFILE, {
+      storageKey: 'group-1/content-1.img',
+      frameEtag: computeETag(bytes),
+      frameSize: bytes.byteLength,
+    });
+    const service = createService({
+      content: content({ variants: [note4] }),
+      blobs: { [note4.storageKey!]: bytes },
+    });
+
+    await expect(
+      service.readImage('content-1', { userId: 'user-1', displayProfileId: NOTE4_PROFILE })
+    ).resolves.toMatchObject({
+      data: bytes,
+      etag: contentFrameResourceEtag(NOTE4_PROFILE, note4.frameEtag!),
+    });
+  });
+
+  it('rejects same-size frame bytes whose digest does not match variant metadata', async () => {
+    const note4 = variant(NOTE4_PROFILE, {
+      frameEtag: computeETag(Buffer.alloc(15_000, 0x11)),
+      frameSize: 15_000,
+    });
+    const service = createService({
+      content: content({ variants: [note4] }),
+      blobs: { [note4.storageKey!]: Buffer.alloc(15_000, 0x12) },
+    });
+
+    await expect(
+      service.readImage('content-1', { userId: 'user-1', displayProfileId: NOTE4_PROFILE })
+    ).rejects.toThrow(InternalError);
   });
 
   it('rejects a device profile override instead of serving a different frame', async () => {
@@ -404,6 +519,49 @@ describe('ContentsReadService profile-scoped resources', () => {
     expect(calls).toEqual({ blobStorageReads: [], legacyBlobReads: 0 });
   });
 
+  it('uses the requested Web profile for list details', async () => {
+    const virtual = variant(VIRTUAL_PROFILE);
+    const service = createService({
+      content: content({ variants: [variant(NOTE4_PROFILE), virtual] }),
+    });
+
+    const rows = await service.list('group-1', {
+      userId: 'user-1',
+      displayProfileId: VIRTUAL_PROFILE,
+    });
+
+    expect(rows[0]).toMatchObject({
+      image_etag: contentFrameResourceEtag(VIRTUAL_PROFILE, virtual.frameEtag!),
+      audio_etag: null,
+      frame: {
+        profile_id: VIRTUAL_PROFILE,
+        byte_length: 4_736,
+      },
+    });
+  });
+
+  it('treats omitted Web profile and explicit Note4 as equivalent board-capability reads', async () => {
+    const service = createService({});
+
+    const omitted = await service.manifest('group-1', { userId: 'user-1' });
+    const explicit = await service.manifest('group-1', {
+      userId: 'user-1',
+      displayProfileId: NOTE4_PROFILE,
+    });
+
+    expect(omitted.contents[0]?.audio_etag).toBe('audio-etag');
+    expect(explicit.contents[0]?.audio_etag).toBe('audio-etag');
+    expect(explicit.contents[0]?.image_etag).toBe(omitted.contents[0]?.image_etag);
+  });
+
+  it('rejects production Web requests for development-only virtual profiles', async () => {
+    const service = createService({ nodeEnv: 'production' });
+
+    await expect(
+      service.manifest('group-1', { userId: 'user-1', displayProfileId: VIRTUAL_PROFILE })
+    ).rejects.toThrow(ValidationError);
+  });
+
   it('rejects corrupted variant metadata before reading frame bytes', async () => {
     const broken = variant(VIRTUAL_PROFILE, { width: 400, frameSize: 15_000 });
     const service = createService({ content: content({ variants: [broken] }) });
@@ -423,5 +581,15 @@ describe('ContentsReadService profile-scoped resources', () => {
     await expect(
       service.readImage('content-1', { userId: 'user-1', displayProfileId: VIRTUAL_PROFILE })
     ).rejects.toThrow(NotFoundError);
+  });
+
+  it('returns not found for missing audio blobs without repairing rows during GET', async () => {
+    const calls = { blobStorageReads: [] as string[], legacyBlobReads: 0, audioRepairs: 0 };
+    const service = createService({ calls, audioBlob: null });
+
+    await expect(service.readAudio('content-1', { userId: 'user-1' })).rejects.toThrow(
+      NotFoundError
+    );
+    expect(calls.audioRepairs).toBe(0);
   });
 });

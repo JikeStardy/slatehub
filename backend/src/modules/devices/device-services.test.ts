@@ -573,8 +573,6 @@ describe('DeviceManagementService.claimByPairCode', () => {
       device({
         ownerUserId: null,
         selectedGroupId: null,
-        displayProfileId: 'virtual-mono-296x128',
-        protocolVersion: 7,
       })
     );
 
@@ -586,8 +584,8 @@ describe('DeviceManagementService.claimByPairCode', () => {
     expect(result.sort_order).toBe(2);
     expect(result).toMatchObject({
       board_id: 'zectrix-note4',
-      display_profile_id: 'virtual-mono-296x128',
-      protocol_version: 7,
+      display_profile_id: 'zectrix-note4-400x300-mono',
+      protocol_version: 2,
     });
     expect(getRecord()?.pairCode).not.toBe('ABC234');
   });

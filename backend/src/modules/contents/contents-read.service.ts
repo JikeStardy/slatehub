@@ -1,18 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import {
-  DEFAULT_BOARD_ID,
   DEFAULT_DISPLAY_PROFILE_ID,
-  getBoardDefinition,
-  getDisplayProfile,
   frameDescriptorForProfile,
-  type DisplayProfileT,
   type ContentDetailT,
   type ManifestResponseT,
 } from 'shared';
 import { BlobService } from '../../infra/blob/blob.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { InternalError, NotFoundError, ValidationError } from '../../common/errors';
+import { computeETag } from '../../common/utils/etag';
 import { GroupsService } from '../groups/groups.service';
 import { ContentAudioBlobService } from './content-audio-blob.service';
 import {
@@ -23,13 +20,8 @@ import {
   validateReadyVariantForProfile,
   type ContentReadProfileTarget,
 } from './content-presenter';
+import { ContentReadTargetResolver, type ContentReadScope } from './content-read-target-resolver';
 import { CONTENT_SELECT, contentSelect } from './content-select';
-
-export interface ContentReadScope {
-  userId?: string;
-  deviceId?: string;
-  displayProfileId?: string;
-}
 
 @Injectable()
 export class ContentsReadService {
@@ -37,7 +29,8 @@ export class ContentsReadService {
     private readonly prisma: PrismaService,
     private readonly blob: BlobService,
     private readonly groups: GroupsService,
-    private readonly audioBlobs: ContentAudioBlobService
+    private readonly audioBlobs: ContentAudioBlobService,
+    private readonly readTargets: ContentReadTargetResolver
   ) {}
 
   async assertReadable(gid: string, scope: ContentReadScope): Promise<void> {
@@ -93,9 +86,17 @@ export class ContentsReadService {
         ? { current: 1, total: 1 }
         : await this.groups.ownerGroupPosition(group.ownerUserId, group.sortOrder);
 
-    const contents = group.contents.map((content) => contentToSummary(content, target));
+    const contents = group.contents
+      .map((content) => contentToSummary(content, target))
+      .filter((content) => !target.device || content.variant_status === 'ready');
     const manifestEtag = manifestReadEtag({
       profileId: target.profile.id,
+      group: {
+        id: group.id,
+        name: group.name,
+        sort_order: group.sortOrder,
+        position,
+      },
       groupStructureEtag: group.structureEtag,
       contents,
     });
@@ -115,13 +116,14 @@ export class ContentsReadService {
   }
 
   async list(gid: string, scope: ContentReadScope): Promise<ContentDetailT[]> {
+    const target = await this.resolveReadTarget(scope);
     await this.assertReadable(gid, scope);
     const rows = await this.prisma.content.findMany({
       where: { groupId: gid },
       orderBy: { sortOrder: 'asc' },
       select: contentSelect({ dynamicLastError: true, audioText: true }),
     });
-    return rows.map((row) => contentToDetail(row));
+    return rows.map((row) => contentToDetail(row, target));
   }
 
   async get(contentId: string, scope: ContentReadScope): Promise<ContentDetailT> {
@@ -165,10 +167,14 @@ export class ContentsReadService {
     } catch (err) {
       throw new InternalError('内容帧元数据损坏', { cause: String(err) });
     }
+    this.validateStorageKey(variant.storageKey!, content.groupId, content.id, target.profile.id);
     const data = await this.blob.readStorageKey(variant.storageKey!);
     if (!data) throw new NotFoundError('图片文件丢失');
     if (data.byteLength !== variant.frameSize) {
       throw new InternalError('内容帧文件大小与元数据不一致');
+    }
+    if (computeETag(data) !== variant.frameEtag) {
+      throw new InternalError('内容帧文件摘要与元数据不一致');
     }
     return { data, etag: contentFrameResourceEtag(target.profile.id, variant.frameEtag!) };
   }
@@ -190,7 +196,6 @@ export class ContentsReadService {
     if (!content.audioEtag || !content.audioSize) throw new NotFoundError('该内容没有音频');
     const data = await this.audioBlobs.read(content.groupId, content.id, content.audioEtag);
     if (!data) {
-      await this.audioBlobs.repairMissingAudioBlob(content);
       throw new NotFoundError('音频文件丢失');
     }
     return { data, etag: content.audioEtag };
@@ -212,39 +217,30 @@ export class ContentsReadService {
   }
 
   private async resolveReadTarget(scope: ContentReadScope): Promise<ContentReadProfileTarget> {
-    if (scope.deviceId !== undefined) {
-      const device = await this.prisma.device.findUnique({
-        where: { id: scope.deviceId },
-        select: {
-          boardId: true,
-          displayProfileId: true,
-          protocolVersion: true,
-        },
-      });
-      if (!device) throw new NotFoundError('设备不存在');
-      if (
-        scope.displayProfileId !== undefined &&
-        scope.displayProfileId !== device.displayProfileId
-      ) {
-        throw new ValidationError('设备不能覆盖已注册的显示配置', {
-          requested_display_profile_id: scope.displayProfileId,
-          device_display_profile_id: device.displayProfileId,
+    try {
+      return await this.readTargets.resolve(scope);
+    } catch (err) {
+      if (err instanceof ValidationError || err instanceof NotFoundError) throw err;
+      if (scope.displayProfileId !== undefined) {
+        throw new ValidationError('未知 display_profile_id', {
+          display_profile_id: scope.displayProfileId,
         });
       }
-      const board = getBoardDefinition(device.boardId);
-      return {
-        profile: getDisplayProfile(device.displayProfileId),
-        audio: board.capabilities.audio,
-      };
+      throw err;
     }
+  }
 
-    const profile: DisplayProfileT = getDisplayProfile(
-      scope.displayProfileId ?? DEFAULT_DISPLAY_PROFILE_ID
-    );
-    const boardAudio =
-      scope.displayProfileId === undefined
-        ? getBoardDefinition(DEFAULT_BOARD_ID).capabilities.audio
-        : false;
-    return { profile, audio: boardAudio };
+  private validateStorageKey(
+    storageKey: string,
+    groupId: string,
+    contentId: string,
+    profileId: string
+  ): void {
+    const canonical = this.blob.frameKey(groupId, contentId, profileId);
+    const migratedNote4Legacy =
+      profileId === DEFAULT_DISPLAY_PROFILE_ID && storageKey === `${groupId}/${contentId}.img`;
+    if (storageKey !== canonical && !migratedNote4Legacy) {
+      throw new InternalError('内容帧存储键与请求目标不一致');
+    }
   }
 }

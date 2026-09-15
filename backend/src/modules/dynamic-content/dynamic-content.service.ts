@@ -115,6 +115,15 @@ export class DynamicContentService {
     raw: CreateDynamicContentRequestT
   ): Promise<ContentMutationResponseT> {
     await this.groups.assertOwned(gid, ownerUserId);
+    const contentId = createId();
+    return this.runMutation(contentId, () => this.appendUnqueued(gid, raw, contentId));
+  }
+
+  private async appendUnqueued(
+    gid: string,
+    raw: CreateDynamicContentRequestT,
+    contentId: string
+  ): Promise<ContentMutationResponseT> {
     const { config, frame_name } = raw;
     const dynamicType = config.type;
     const entry = this.registry.get(dynamicType);
@@ -130,7 +139,6 @@ export class DynamicContentService {
         ? this.parseDashboardData(raw.initial_data, 'dashboard 初始数据不能为空')
         : undefined;
 
-    const contentId = createId();
     const placeholderEtag = computeETag(`dynamic-init:${contentId}`);
     const audioEnabled = isAudioDynamicConfig(validatedConfig) && validatedConfig.audio_enabled;
     const audioVoice = isAudioDynamicConfig(validatedConfig) ? validatedConfig.audio_voice : null;

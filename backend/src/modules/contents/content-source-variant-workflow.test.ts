@@ -487,7 +487,7 @@ describe('ContentsService source and variant workflow', () => {
     const migratedLegacyKey = 'group-1/content-1.img';
     const audioDeletes: Array<{ groupId: string; contentId: string; audioEtag: string | null }> =
       [];
-    blobs.storage.set(migratedLegacyKey, Buffer.from('migrated legacy frame'));
+    blobs.legacy.set(migratedLegacyKey, Buffer.from('migrated legacy frame'));
     store.seedVariant('content-1', 'legacy-note4', {
       contentId: 'content-1',
       profileId: 'legacy-note4',
@@ -520,7 +520,7 @@ describe('ContentsService source and variant workflow', () => {
       leaseUntil: null,
       attempts: 0,
     });
-    blobs.failDeleteStorageKeys.add(migratedLegacyKey);
+    blobs.failDeleteStorageKeys.add(note4Key);
     const warn = spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const service = createContentsService({
       store,
@@ -541,9 +541,9 @@ describe('ContentsService source and variant workflow', () => {
       expect(store.sourceCount()).toBe(0);
       expect(store.variantsFor('content-1')).toEqual([]);
       expect(blobs.storage.has(sourceKey)).toBe(false);
-      expect(blobs.storage.has(note4Key)).toBe(false);
-      expect(blobs.storage.has(migratedLegacyKey)).toBe(true);
-      expect(blobs.legacy.has('group-1/content-1.img')).toBe(true);
+      expect(blobs.storage.has(note4Key)).toBe(true);
+      expect(await blobs.readStorageKey(migratedLegacyKey)).toBeNull();
+      expect(await blobs.read('group-1', 'content-1', 'image')).toBeNull();
       expect(audioDeletes).toEqual([
         {
           groupId: 'group-1',
@@ -565,6 +565,42 @@ describe('ContentsService source and variant workflow', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('cleans a migrated legacy image key once through both blob APIs', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    const migratedLegacyKey = 'group-1/content-1.img';
+    blobs.legacy.set(migratedLegacyKey, Buffer.from('migrated legacy frame'));
+    store.seedVariant('content-1', 'legacy-note4', {
+      contentId: 'content-1',
+      profileId: 'legacy-note4',
+      status: 'ready',
+      pixelFormat: 'mono',
+      frameCodec: 'raw',
+      width: 400,
+      height: 300,
+      frameEtag: 'legacy-etag',
+      frameSize: 15_000,
+      storageKey: migratedLegacyKey,
+      renderVersion: 1,
+      lastError: null,
+      leaseUntil: null,
+      attempts: 0,
+    });
+    const service = createContentsService({
+      store,
+      blobs,
+      renders: [],
+      onBlobDelete: (key) => {
+        blobs.deleteAttempts.push(key);
+      },
+    });
+
+    await service.delete('content-1', 'user-1');
+
+    expect(await blobs.readStorageKey(migratedLegacyKey)).toBeNull();
+    expect(await blobs.read('group-1', 'content-1', 'image')).toBeNull();
+    expect(blobs.deleteAttempts.filter((key) => key === migratedLegacyKey)).toHaveLength(1);
   });
 
   it('restores missing old source and variant blobs by deleting replacement blobs', async () => {
@@ -1071,12 +1107,12 @@ class FakeBlobService {
       this.failWritesFor.delete(key);
       throw new Error(`storage write failed for ${key}`);
     }
-    this.storage.set(key, Buffer.from(data));
+    this.blobsForKey(key).set(key, Buffer.from(data));
     return { path: key, size: data.byteLength };
   }
 
   async readStorageKey(key: string): Promise<Buffer | null> {
-    const data = this.storage.get(key);
+    const data = this.blobsForKey(key).get(key);
     return data ? Buffer.from(data) : null;
   }
 
@@ -1085,7 +1121,7 @@ class FakeBlobService {
     if (this.failDeleteStorageKeys.has(key)) {
       throw new Error(`storage delete failed for ${key}`);
     }
-    this.storage.delete(key);
+    this.blobsForKey(key).delete(key);
   }
 
   async write(
@@ -1109,7 +1145,8 @@ class FakeBlobService {
   }
 
   async read(groupId: string, contentId: string, kind: string): Promise<Buffer | null> {
-    const data = this.legacy.get(this.blobKey(groupId, contentId, kind));
+    const key = this.blobKey(groupId, contentId, kind);
+    const data = this.legacy.get(key);
     return data ? Buffer.from(data) : null;
   }
 
@@ -1121,6 +1158,14 @@ class FakeBlobService {
 
   private blobKey(groupId: string, contentId: string, kind: string): string {
     return `${groupId}/${contentId}.${kind === 'image' ? 'img' : 'pcm'}`;
+  }
+
+  private isLegacyKey(key: string): boolean {
+    return /^[^/]+\/[^/]+\.(img|pcm)$/.test(key);
+  }
+
+  private blobsForKey(key: string): Map<string, Buffer> {
+    return this.isLegacyKey(key) ? this.legacy : this.storage;
   }
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { DASHBOARD_CUSTOM_STARTER_TEMPLATE } from 'shared';
 import { computeETag } from '../../common/utils/etag';
 import { InternalError } from '../../common/errors';
+import { ContentMutationCoordinator } from '../../common/worker/content-mutation-coordinator';
 import { DynamicContentService } from '../dynamic-content/dynamic-content.service';
 import { ContentsService } from './contents.service';
 import { DeviceCurrentContentService } from './device-current-content.service';
@@ -607,4 +608,146 @@ describe('ContentsService current content refresh', () => {
       });
     }
   });
+
+  it('keeps scheduler renders queued until appendDynamic compensation finishes', async () => {
+    const coordinator = new ContentMutationCoordinator();
+    const firstRenderStarted = deferred<void>();
+    const firstRenderMayFail = deferred<void>();
+    const rollbackStarted = deferred<void>();
+    const rollbackMayFinish = deferred<void>();
+    const frameBlobs = new Set<string>();
+    const variants = new Set<string>();
+    let contentId = '';
+    let contentExists = false;
+    let legacyImageExists = false;
+    let audioBlobExists = false;
+    let renderCalls = 0;
+    let secondRenderStarted = false;
+
+    const renderer = {
+      renderDynamicContent: (id: string) =>
+        coordinator.run(
+          id,
+          async () => {
+            renderCalls += 1;
+            if (renderCalls === 1) {
+              frameBlobs.add(`${id}/note4-frame`);
+              variants.add(`${id}/note4`);
+              legacyImageExists = true;
+              audioBlobExists = true;
+              firstRenderStarted.resolve();
+              try {
+                await firstRenderMayFail.promise;
+              } catch (err) {
+                frameBlobs.clear();
+                variants.clear();
+                legacyImageExists = false;
+                audioBlobExists = false;
+                throw err;
+              }
+              throw new Error('expected first render to fail');
+            }
+            secondRenderStarted = true;
+            if (!contentExists) throw new Error('content missing after rollback');
+            return {
+              contentId: id,
+              imageEtag: 'image-etag',
+              audioEtag: null,
+              groupEtag: 'group-etag',
+              contentEtag: 'content-etag',
+              renderedAt: new Date(),
+              unchanged: false,
+            };
+          },
+          { continueAfterFailure: true }
+        ),
+    };
+    const prisma = {
+      content: {
+        findUnique: async () => (contentExists ? { audioEtag: null } : null),
+      },
+      $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          $queryRaw: async () => [{ id: 'group-1' }],
+          content: {
+            findFirst: async () => null,
+            findMany: async () => [],
+            create: async ({ data }: { data: { id: string } }) => {
+              contentId = data.id;
+              contentExists = true;
+              return {};
+            },
+            delete: async ({ where }: { where: { id: string } }) => {
+              if (where.id !== contentId) throw new Error('wrong content deleted');
+              rollbackStarted.resolve();
+              await rollbackMayFinish.promise;
+              contentExists = false;
+              variants.clear();
+              return {};
+            },
+          },
+        }),
+    };
+    const service = new DynamicContentService(
+      prisma as never,
+      {
+        delete: async () => {
+          legacyImageExists = false;
+          audioBlobExists = false;
+        },
+      } as never,
+      {
+        assertOwned: async () => undefined,
+        recomputeManifestEtag: async () => 'group-etag',
+      } as never,
+      {
+        get: () => ({ provider: {} }),
+      } as never,
+      renderer as never,
+      coordinator
+    );
+
+    const append = service.append('group-1', 'user-1', {
+      frame_name: null,
+      config: {
+        type: 'dashboard',
+        template: { kind: 'system', id: 'ai_usage_stats' },
+      },
+      initial_data: { total_requests: 1 },
+    });
+    await firstRenderStarted.promise;
+    firstRenderMayFail.reject(new Error('initial render failed'));
+    await rollbackStarted.promise;
+    const scheduled = renderer.renderDynamicContent(contentId);
+
+    await tick();
+    expect(secondRenderStarted).toBe(false);
+
+    rollbackMayFinish.resolve();
+    await expect(append).rejects.toThrow('initial render failed');
+    await expect(scheduled).rejects.toThrow('content missing after rollback');
+    expect(contentExists).toBe(false);
+    expect(variants.size).toBe(0);
+    expect(frameBlobs.size).toBe(0);
+    expect(legacyImageExists).toBe(false);
+    expect(audioBlobExists).toBe(false);
+  });
 });
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (err: Error) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (err: Error) => void;
+  const promise = new Promise<T>((resolveFn, rejectFn) => {
+    resolve = resolveFn;
+    reject = rejectFn;
+  });
+  return { promise, resolve, reject };
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}

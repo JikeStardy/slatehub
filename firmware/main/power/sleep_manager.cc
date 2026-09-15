@@ -6,16 +6,16 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <array>
 #include <utility>
-#include <vector>
 
 #include "bsp/board.h"
+#include "bsp/board_platform.h"
 #include "bsp/charge_status.h"
 #include "bsp/config.h"
 #include "events/event_bus.h"
 #include "power/power_state.h"
 #include "power/shutdown.h"
-#include "ui/theme.h"
 #include "utils/gpio_util.h"
 #include "utils/time_utils.h"
 
@@ -65,21 +65,22 @@ void LockVbatPowerHigh() {
 void SaveStatusBarSnapshot(display::Display* display) {
     if (!display)
         return;
-    const display::FrameDescriptor& frame = display->Info().frame;
-    const display::FrameRegion      status_region{0, 0, frame.width, theme::kStatusBarHeight};
-    const std::size_t               status_bytes = display::ExpectedRegionBytes(status_region, frame);
-    if (status_bytes == 0) {
+    const board::BoardPlatform&     platform      = Board::Get().platform();
+    const display::FrameDescriptor& frame         = display->Info().frame;
+    const display::FrameRegion      status_region = platform.StatusBarSnapshotRegion();
+    const std::size_t               status_bytes  = platform.StatusBarSnapshotBytes();
+    std::array<uint8_t, board::kStatusBarSnapshotCapacityBytes> snapshot{};
+    if (status_bytes == 0 || status_bytes > snapshot.size() || !display::ValidateRegion(status_region, frame)) {
         ESP_LOGW(kTag, "status snapshot skipped reason=invalid_shape");
         power_state::ClearStatusBarSnapshot();
         return;
     }
-    std::vector<uint8_t> snapshot(status_bytes);
-    if (!display::ReadPreviousIfSupported(*display, status_region, snapshot.data(), snapshot.size())) {
+    if (!display::ReadPreviousIfSupported(*display, status_region, snapshot.data(), status_bytes)) {
         ESP_LOGW(kTag, "status snapshot skipped reason=previous_buffer_not_synced");
         power_state::ClearStatusBarSnapshot();
         return;
     }
-    power_state::SaveStatusBarSnapshot(snapshot.data(), snapshot.size());
+    power_state::SaveStatusBarSnapshot(display->Info(), snapshot.data(), status_bytes);
 }
 
 }  // namespace

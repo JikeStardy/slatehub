@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "bsp/board_platform.h"
 #include "bsp/config.h"
 #include "drivers/display/framebuffer_ops.h"
 #include "utils/gpio_util.h"
@@ -89,7 +90,7 @@ EpdSsd1683::~EpdSsd1683() {
 }
 
 const display::DisplayInfo& EpdSsd1683::Info() const {
-    return display::kZectrixNote4DisplayInfo;
+    return board::CurrentPlatform().Display();
 }
 
 void EpdSsd1683::Init() {

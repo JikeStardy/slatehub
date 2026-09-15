@@ -13,4 +13,8 @@ add_executable(display_contract_test
 )
 
 target_include_directories(display_contract_test PRIVATE ../main)
+target_compile_definitions(display_contract_test PRIVATE "SLATE_BOARD_ID=\"zectrix-note4\"")
+target_compile_options(display_contract_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 
+enable_testing()
+add_test(NAME display_contract_test COMMAND display_contract_test)

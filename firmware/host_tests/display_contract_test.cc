@@ -8,6 +8,35 @@
 
 namespace {
 
+constexpr display::FrameDescriptor kFakeFrame{
+    296, 128, display::PixelFormat::kMono1, display::FrameCodec::kRawMono1Msb, 4736};
+constexpr display::DisplayInfo kFakeDisplayInfo{
+    "fake-board-296x128", "fake-board-296x128-mono", kFakeFrame, {false, true, true}};
+constexpr display::FrameRegion kFakeStatusRegion{0, 0, 296, 24};
+
+class FakePlatform final : public board::BoardPlatform {
+   public:
+    const char* BoardId() const override {
+        return kFakeDisplayInfo.board_id;
+    }
+
+    const char* LegacyUserAgentBoardName() const override {
+        return "fake-board-legacy";
+    }
+
+    const display::DisplayInfo& Display() const override {
+        return kFakeDisplayInfo;
+    }
+
+    display::FrameRegion StatusBarSnapshotRegion() const override {
+        return kFakeStatusRegion;
+    }
+
+    std::size_t StatusBarSnapshotBytes() const override {
+        return display::ExpectedRegionBytes(kFakeStatusRegion, kFakeFrame);
+    }
+};
+
 class FakeDisplay final : public display::Display {
    public:
     explicit FakeDisplay(const display::DisplayInfo& info) : info_(info) {
@@ -42,12 +71,12 @@ class FakeDisplay final : public display::Display {
         last_region = region;
         last_len    = len;
         last_mode   = mode;
-        return data != nullptr && len == display::ExpectedRegionBytes(region, info_.frame);
+        return present_result && data != nullptr && len == display::ExpectedRegionBytes(region, info_.frame);
     }
 
     bool SeedPrevious(const display::FrameRegion& /*region*/, const uint8_t* /*data*/, std::size_t /*len*/) override {
         ++seed_count;
-        return true;
+        return seed_result;
     }
 
     bool ReadPrevious(const display::FrameRegion& /*region*/, uint8_t* out, std::size_t len) override {
@@ -59,6 +88,8 @@ class FakeDisplay final : public display::Display {
     }
 
     display::DisplayInfo info_;
+    bool                 present_result = true;
+    bool                 seed_result    = true;
     int                  lock_count    = 0;
     int                  unlock_count  = 0;
     int                  wait_count    = 0;
@@ -76,6 +107,8 @@ void TestNote4PlatformInfo() {
     const display::DisplayInfo& info     = platform.Display();
 
     assert(std::strcmp(platform.BoardId(), "zectrix-note4") == 0);
+    assert(std::strcmp(platform.LegacyUserAgentBoardName(), "zectrix-s3-epaper-4.2") == 0);
+    assert(platform.StatusBarSnapshotBytes() == 1200);
     assert(std::strcmp(info.board_id, "zectrix-note4") == 0);
     assert(std::strcmp(info.profile_id, "zectrix-note4-400x300-mono") == 0);
     assert(info.frame.width == 400);
@@ -87,6 +120,20 @@ void TestNote4PlatformInfo() {
     assert(info.capabilities.partial_refresh);
     assert(info.capabilities.previous_frame_seed);
     assert(display::ValidateFrameDescriptor(info.frame));
+}
+
+void TestIndependentFakePlatformInfo() {
+    const FakePlatform platform;
+    const display::DisplayInfo& info = platform.Display();
+
+    assert(std::strcmp(platform.BoardId(), "fake-board-296x128") == 0);
+    assert(std::strcmp(platform.LegacyUserAgentBoardName(), "fake-board-legacy") == 0);
+    assert(std::strcmp(info.profile_id, "fake-board-296x128-mono") == 0);
+    assert(info.frame.width == 296);
+    assert(info.frame.height == 128);
+    assert(info.frame.byte_size == 4736);
+    assert(platform.StatusBarSnapshotRegion().height == 24);
+    assert(platform.StatusBarSnapshotBytes() == 296 * 24 / 8);
 }
 
 void TestDescriptorByteSizeValidation() {
@@ -109,31 +156,62 @@ void TestDescriptorByteSizeValidation() {
 
     constexpr FrameDescriptor wrong_size{400, 300, PixelFormat::kMono1, FrameCodec::kRawMono1Msb, 14999};
     static_assert(!display::ValidateFrameDescriptor(wrong_size), "wrong byte size rejected");
+
+    constexpr FrameDescriptor overflow{524288, 65537, PixelFormat::kMono1, FrameCodec::kRawMono1Msb, 65536};
+    static_assert(!display::ValidateFrameDescriptor(overflow), "32-bit overflow descriptor rejected");
 }
 
 void TestCapabilityDegradeHelpers() {
-    display::DisplayInfo info = board::CurrentPlatform().Display();
+    display::DisplayInfo info = kFakeDisplayInfo;
     info.capabilities.partial_refresh      = false;
     info.capabilities.previous_frame_seed  = false;
     FakeDisplay display{info};
 
-    const display::FrameRegion region{0, 24, 400, 276};
-    uint8_t                    body[400 * 276 / 8] = {};
-    uint8_t                    snapshot[400 * 24 / 8] = {};
+    const display::FrameRegion region{0, 24, 296, 104};
+    uint8_t                    body[296 * 104 / 8] = {};
+    uint8_t                    snapshot[296 * 24 / 8] = {};
 
     assert(!display::SeedPreviousIfSupported(display, region, body, sizeof(body)));
     assert(display.seed_count == 0);
-    assert(!display::ReadPreviousIfSupported(display, {0, 0, 400, 24}, snapshot, sizeof(snapshot)));
+    assert(!display::ReadPreviousIfSupported(display, {0, 0, 296, 24}, snapshot, sizeof(snapshot)));
     assert(display.read_count == 0);
 
     assert(display::PresentWithFallback(display, region, body, sizeof(body), display::PresentMode::kPartial));
     assert(display.present_count == 1);
     assert(display.last_mode == display::PresentMode::kFull);
+    display::RequestRefreshWithFallback(display, display::PresentMode::kPartial);
+    assert(display.refresh_count == 1);
+    assert(display.last_mode == display::PresentMode::kFull);
+}
+
+void TestNoSeedDisplayCanPresentFullFrame() {
+    display::DisplayInfo info = kFakeDisplayInfo;
+    info.capabilities.previous_frame_seed = false;
+    FakeDisplay display{info};
+    uint8_t     raw[4736] = {};
+
+    assert(!display::SeedPreviousIfSupported(display, {0, 0, 296, 24}, raw, 296 * 24 / 8));
+    assert(display.seed_count == 0);
+    assert(display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kFull));
+    assert(display.present_count == 1);
+    assert(display.last_mode == display::PresentMode::kFull);
+}
+
+void TestPresentFailureDoesNotCommitFrame() {
+    FakeDisplay display{kFakeDisplayInfo};
+    display.present_result = false;
+    uint8_t raw[4736] = {};
+
+    assert(!display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kPartial));
+    assert(display.lock_count == 1);
+    assert(display.unlock_count == 1);
+    assert(display.present_count == 1);
+    assert(display.last_mode == display::PresentMode::kPartial);
 }
 
 void TestFakeDisplayDrivesGenericFramePresentation() {
-    FakeDisplay display{board::CurrentPlatform().Display()};
-    uint8_t     raw[15000] = {};
+    FakeDisplay display{kFakeDisplayInfo};
+    uint8_t     raw[4736] = {};
 
     assert(display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kPartial));
     assert(display.lock_count == 1);
@@ -141,21 +219,35 @@ void TestFakeDisplayDrivesGenericFramePresentation() {
     assert(display.present_count == 1);
     assert(display.last_region.x == 0);
     assert(display.last_region.y == 24);
-    assert(display.last_region.width == 400);
-    assert(display.last_region.height == 276);
-    assert(display.last_len == 400 * 276 / 8);
+    assert(display.last_region.width == 296);
+    assert(display.last_region.height == 104);
+    assert(display.last_len == 296 * 104 / 8);
 
-    uint8_t too_short[14999] = {};
+    uint8_t too_short[4735] = {};
     assert(!display::PresentFrameBody(display, too_short, sizeof(too_short), 24, display::PresentMode::kPartial));
     assert(display.present_count == 1);
+}
+
+void TestRegionOffsetOverflowProtection() {
+    FakeDisplay display{kFakeDisplayInfo};
+    uint8_t     raw[4736] = {};
+
+    assert(!display::PresentFrameBody(display, raw, sizeof(raw), 128, display::PresentMode::kPartial));
+    assert(display.present_count == 0);
+    assert(display::ExpectedRegionOffsetBytes({0, 24, 296, 104}, kFakeFrame) == 888);
+    assert(display::ExpectedRegionBytes({0, 24, 296, 104}, kFakeFrame) == 3848);
 }
 
 }  // namespace
 
 int main() {
     TestNote4PlatformInfo();
+    TestIndependentFakePlatformInfo();
     TestDescriptorByteSizeValidation();
     TestCapabilityDegradeHelpers();
+    TestNoSeedDisplayCanPresentFullFrame();
+    TestPresentFailureDoesNotCommitFrame();
     TestFakeDisplayDrivesGenericFramePresentation();
+    TestRegionOffsetOverflowProtection();
     return 0;
 }

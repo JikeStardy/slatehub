@@ -18,14 +18,38 @@ static_assert(StringEquals(SLATE_BOARD_ID, "zectrix-note4"),
 namespace board {
 namespace {
 
+constexpr display::FrameDescriptor kNote4Frame{
+    400, 300, display::PixelFormat::kMono1, display::FrameCodec::kRawMono1Msb, 15000};
+
+constexpr display::DisplayInfo kNote4DisplayInfo{
+    "zectrix-note4",
+    "zectrix-note4-400x300-mono",
+    kNote4Frame,
+    display::DisplayCapabilities{true, true, true},
+};
+
+constexpr display::FrameRegion kNote4StatusBarSnapshotRegion{0, 0, 400, 24};
+
 class Note4BoardPlatform final : public BoardPlatform {
    public:
     const char* BoardId() const override {
-        return display::kZectrixNote4DisplayInfo.board_id;
+        return kNote4DisplayInfo.board_id;
+    }
+
+    const char* LegacyUserAgentBoardName() const override {
+        return "zectrix-s3-epaper-4.2";
     }
 
     const display::DisplayInfo& Display() const override {
-        return display::kZectrixNote4DisplayInfo;
+        return kNote4DisplayInfo;
+    }
+
+    display::FrameRegion StatusBarSnapshotRegion() const override {
+        return kNote4StatusBarSnapshotRegion;
+    }
+
+    std::size_t StatusBarSnapshotBytes() const override {
+        return display::ExpectedRegionBytes(kNote4StatusBarSnapshotRegion, kNote4Frame);
     }
 };
 

@@ -41,17 +41,19 @@ bool PresentFrameBody(Display& display, const uint8_t* raw, std::size_t len, int
     if (raw == nullptr || len != frame.byte_size)
         return false;
 
-    const int bytes_per_row = frame.width / 8;
     const FrameRegion body{0, status_bar_height, frame.width, frame.height - status_bar_height};
-    const uint8_t* body_data =
-        raw + static_cast<std::size_t>(status_bar_height) * static_cast<std::size_t>(bytes_per_row);
-    const std::size_t body_len = ExpectedRegionBytes(body, frame);
-    if (body_len == 0)
+    const ByteCountResult body_offset = CalculateRegionOffsetBytes(body, frame);
+    const ByteCountResult body_len    = CalculateRegionBytes(body, frame);
+    std::size_t           body_end    = 0;
+    if (!body_offset.ok || !body_len.ok || !CheckedAdd(body_offset.bytes, body_len.bytes, &body_end) ||
+        body_end > len) {
         return false;
+    }
+    const uint8_t* body_data = raw + body_offset.bytes;
 
     if (!display.Lock(lock_timeout_ms))
         return false;
-    const bool ok = PresentWithFallback(display, body, body_data, body_len, mode);
+    const bool ok = PresentWithFallback(display, body, body_data, body_len.bytes, mode);
     display.Unlock();
     return ok;
 }

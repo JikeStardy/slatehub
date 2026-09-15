@@ -140,4 +140,4 @@ idf_component_register(
         spi_flash
 )
 
-target_compile_definitions(${COMPONENT_LIB} PRIVATE SLATE_BOARD_ID="${CONFIG_SLATE_BOARD_ID}")
+target_compile_definitions(${COMPONENT_LIB} PRIVATE "SLATE_BOARD_ID=\"${CONFIG_SLATE_BOARD_ID}\"")

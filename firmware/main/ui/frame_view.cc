@@ -20,18 +20,20 @@ FrameView::FrameView(lv_obj_t* parent) {
     lv_obj_clear_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-void FrameView::SetFrame(display::Display* display, const std::vector<uint8_t>& raw, display::PresentMode mode) {
+bool FrameView::SetFrame(display::Display* display, const std::vector<uint8_t>& raw, display::PresentMode mode) {
     if (!display)
-        return;
+        return false;
     const display::FrameDescriptor& frame = display->Info().frame;
     if (!display::ValidateFrameDescriptor(frame) || raw.size() != frame.byte_size) {
         ESP_LOGW(kTag, "raw size mismatch bytes=%u expected=%u", static_cast<unsigned>(raw.size()),
                  static_cast<unsigned>(frame.byte_size));
-        return;
+        return false;
     }
     if (!display::PresentFrameBody(*display, raw.data(), raw.size(), kStatusBarH, mode)) {
         ESP_LOGW(kTag, "raw present failed bytes=%u", static_cast<unsigned>(raw.size()));
+        return false;
     }
+    return true;
 }
 
 void FrameView::Show() {

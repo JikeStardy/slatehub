@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace display {
 
@@ -50,30 +51,54 @@ struct DisplayInfo {
     DisplayCapabilities capabilities{};
 };
 
-constexpr FrameDescriptor kZectrixNote4Frame{400, 300, PixelFormat::kMono1, FrameCodec::kRawMono1Msb, 15000};
-
-constexpr DisplayInfo kZectrixNote4DisplayInfo{
-    "zectrix-note4",
-    "zectrix-note4-400x300-mono",
-    kZectrixNote4Frame,
-    DisplayCapabilities{true, true, true},
+struct ByteCountResult {
+    bool        ok    = false;
+    std::size_t bytes = 0;
 };
+
+constexpr std::size_t kMaxFrameBytes = std::numeric_limits<uint32_t>::max();
 
 constexpr bool IsImplementedDescriptor(const FrameDescriptor& descriptor) noexcept {
     return descriptor.pixel_format == PixelFormat::kMono1 && descriptor.codec == FrameCodec::kRawMono1Msb;
 }
 
-constexpr std::size_t ExpectedFrameBytes(const FrameDescriptor& descriptor) noexcept {
+constexpr bool CheckedMul(std::size_t lhs, std::size_t rhs, std::size_t* out) noexcept {
+    if (out == nullptr)
+        return false;
+    if (lhs != 0 && rhs > kMaxFrameBytes / lhs)
+        return false;
+    *out = lhs * rhs;
+    return true;
+}
+
+constexpr bool CheckedAdd(std::size_t lhs, std::size_t rhs, std::size_t* out) noexcept {
+    if (out == nullptr || lhs > kMaxFrameBytes - rhs)
+        return false;
+    *out = lhs + rhs;
+    return true;
+}
+
+constexpr ByteCountResult CalculateFrameBytes(const FrameDescriptor& descriptor) noexcept {
     if (!IsImplementedDescriptor(descriptor) || descriptor.width <= 0 || descriptor.height <= 0 ||
         descriptor.width % 8 != 0) {
-        return 0;
+        return {};
     }
-    return static_cast<std::size_t>(descriptor.width / 8) * static_cast<std::size_t>(descriptor.height);
+    std::size_t bytes = 0;
+    if (!CheckedMul(static_cast<std::size_t>(descriptor.width / 8), static_cast<std::size_t>(descriptor.height),
+                    &bytes)) {
+        return {};
+    }
+    return {true, bytes};
+}
+
+constexpr std::size_t ExpectedFrameBytes(const FrameDescriptor& descriptor) noexcept {
+    const ByteCountResult result = CalculateFrameBytes(descriptor);
+    return result.ok ? result.bytes : 0;
 }
 
 constexpr bool ValidateFrameDescriptor(const FrameDescriptor& descriptor) noexcept {
-    const std::size_t expected = ExpectedFrameBytes(descriptor);
-    return expected > 0 && descriptor.byte_size == expected;
+    const ByteCountResult expected = CalculateFrameBytes(descriptor);
+    return expected.ok && expected.bytes > 0 && descriptor.byte_size == expected.bytes;
 }
 
 constexpr bool ValidateRegion(const FrameRegion& region, const FrameDescriptor& descriptor) noexcept {
@@ -81,19 +106,56 @@ constexpr bool ValidateRegion(const FrameRegion& region, const FrameDescriptor& 
         region.height <= 0 || region.x % 8 != 0 || region.width % 8 != 0) {
         return false;
     }
-    return region.x <= descriptor.width && region.y <= descriptor.height && region.width <= descriptor.width - region.x &&
-           region.height <= descriptor.height - region.y;
+    return region.x <= descriptor.width && region.width <= descriptor.width - region.x &&
+           region.y <= descriptor.height && region.height <= descriptor.height - region.y;
+}
+
+constexpr ByteCountResult CalculateRegionBytes(const FrameRegion& region, const FrameDescriptor& descriptor) noexcept {
+    if (!ValidateRegion(region, descriptor))
+        return {};
+    std::size_t bytes = 0;
+    if (!CheckedMul(static_cast<std::size_t>(region.width / 8), static_cast<std::size_t>(region.height), &bytes))
+        return {};
+    return {true, bytes};
 }
 
 constexpr std::size_t ExpectedRegionBytes(const FrameRegion& region, const FrameDescriptor& descriptor) noexcept {
+    const ByteCountResult result = CalculateRegionBytes(region, descriptor);
+    return result.ok ? result.bytes : 0;
+}
+
+constexpr ByteCountResult CalculateRegionOffsetBytes(const FrameRegion& region,
+                                                     const FrameDescriptor& descriptor) noexcept {
     if (!ValidateRegion(region, descriptor))
-        return 0;
-    return static_cast<std::size_t>(region.width / 8) * static_cast<std::size_t>(region.height);
+        return {};
+    std::size_t bytes_per_row = 0;
+    if (!CheckedMul(static_cast<std::size_t>(descriptor.width / 8), static_cast<std::size_t>(region.y),
+                    &bytes_per_row)) {
+        return {};
+    }
+    std::size_t x_offset = 0;
+    if (!CheckedMul(static_cast<std::size_t>(region.x / 8), 1, &x_offset))
+        return {};
+    std::size_t offset = 0;
+    if (!CheckedAdd(bytes_per_row, x_offset, &offset))
+        return {};
+    return {true, offset};
+}
+
+constexpr std::size_t ExpectedRegionOffsetBytes(const FrameRegion& region,
+                                                const FrameDescriptor& descriptor) noexcept {
+    const ByteCountResult result = CalculateRegionOffsetBytes(region, descriptor);
+    return result.ok ? result.bytes : 0;
 }
 
 class Display {
    public:
+    Display() = default;
     virtual ~Display() = default;
+    Display(const Display&) = delete;
+    Display& operator=(const Display&) = delete;
+    Display(Display&&) = delete;
+    Display& operator=(Display&&) = delete;
 
     virtual const DisplayInfo& Info() const = 0;
     virtual bool               Lock(int timeout_ms = 0) = 0;

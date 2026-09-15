@@ -59,7 +59,7 @@ std::string ActivationClient::DeviceId() const {
 
 std::string ActivationClient::UserAgent() const {
     const auto* app = esp_app_get_description();
-    std::string ua  = Board::Get().platform().BoardId();
+    std::string ua  = Board::Get().platform().LegacyUserAgentBoardName();
     ua += "/";
     ua += app ? app->version : "unknown";
     return ua;

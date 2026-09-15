@@ -24,7 +24,11 @@ class EpdSsd1683 : public display::Display {
     static constexpr int kBufferLen = ((kWidth + 7) / 8) * kHeight;
 
     EpdSsd1683();
-    ~EpdSsd1683();
+    ~EpdSsd1683() override;
+    EpdSsd1683(const EpdSsd1683&) = delete;
+    EpdSsd1683& operator=(const EpdSsd1683&) = delete;
+    EpdSsd1683(EpdSsd1683&&) = delete;
+    EpdSsd1683& operator=(EpdSsd1683&&) = delete;
 
     void Init();
 

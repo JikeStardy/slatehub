@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "drivers/display/display_contract.h"
 #include "storage/cache/cache.h"
 
 namespace power_state {
@@ -57,8 +58,8 @@ void RecordTimerWakeResult(bool success);
 
 // 睡前最后一次刷到物理屏上的状态栏 1bpp 快照。用于 timer wake 后重建
 // prev_buffer_ 的 0~24 行，让后台 partial refresh 的 old/new 输入真实一致。
-bool SaveStatusBarSnapshot(const uint8_t* data, size_t len);
-bool LoadStatusBarSnapshot(uint8_t* out, size_t len);
+bool SaveStatusBarSnapshot(const display::DisplayInfo& display_info, const uint8_t* data, size_t len);
+bool LoadStatusBarSnapshot(const display::DisplayInfo& display_info, uint8_t* out, size_t len);
 void ClearStatusBarSnapshot();
 
 }  // namespace power_state

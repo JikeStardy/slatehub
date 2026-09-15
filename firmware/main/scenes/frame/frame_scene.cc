@@ -378,15 +378,18 @@ void FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
     ESP_LOGD(kTag, "lvgl refresh begin scene=frame idx=%d", idx);
     if (status_bar_)
         status_bar_->SetCaption(meta.status_bar_text);
-    cached_status_bar_text_ = meta.status_bar_text;
     lv_refr_now(NULL);
     ESP_LOGD(kTag, "lvgl refresh done scene=frame idx=%d", idx);
     ctx.epd->Unlock();
 
     const bool full = force_full || (!first_loaded_ && first_load_full_refresh_);
-    first_loaded_   = true;
-    if (frame_view_)
-        frame_view_->SetFrame(ctx.epd, raw, full ? display::PresentMode::kFull : display::PresentMode::kPartial);
+    if (!frame_view_ ||
+        !frame_view_->SetFrame(ctx.epd, raw, full ? display::PresentMode::kFull : display::PresentMode::kPartial)) {
+        ESP_LOGW(kTag, "load frame failed idx=%d reason=display_present", idx);
+        return;
+    }
+    cached_status_bar_text_ = meta.status_bar_text;
+    first_loaded_           = true;
     ESP_LOGD(kTag, "load frame refresh idx=%d full=%d first_loaded=%d", idx, full ? 1 : 0, first_loaded_ ? 1 : 0);
 
     if (ctx.audio) {

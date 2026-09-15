@@ -7,6 +7,7 @@
 
 #include <cstring>
 
+#include "bsp/board_platform.h"
 #include "utils/scoped_mutex_lock.h"
 
 namespace power_state {
@@ -32,10 +33,16 @@ constexpr uint32_t kMaxBackoffShift   = 6;
 constexpr uint64_t kMaxBackoffWakeSec = 3600;
 
 constexpr uint32_t     kStatusBarSnapshotMagic                             = 0x53544231u;  // "STB1"
-constexpr size_t       kStatusBarSnapshotBytes                             = 1200;
 RTC_DATA_ATTR uint32_t s_status_bar_magic                                  = 0;
 RTC_DATA_ATTR uint32_t s_status_bar_hash                                   = 0;
-RTC_DATA_ATTR uint8_t  s_status_bar_snapshot[kStatusBarSnapshotBytes]       = {};
+RTC_DATA_ATTR uint32_t s_status_bar_len                                    = 0;
+RTC_DATA_ATTR uint32_t s_status_bar_board_hash                             = 0;
+RTC_DATA_ATTR uint32_t s_status_bar_profile_hash                           = 0;
+RTC_DATA_ATTR int      s_status_bar_width                                  = 0;
+RTC_DATA_ATTR int      s_status_bar_height                                 = 0;
+RTC_DATA_ATTR uint32_t s_status_bar_pixel_format                           = 0;
+RTC_DATA_ATTR uint32_t s_status_bar_codec                                  = 0;
+RTC_DATA_ATTR uint8_t  s_status_bar_snapshot[board::kStatusBarSnapshotCapacityBytes] = {};
 
 SemaphoreHandle_t StateMutex() {
     static StaticSemaphore_t s_mutex_buf;
@@ -56,6 +63,26 @@ uint32_t HashBytes(const uint8_t* data, size_t len) {
     return h;
 }
 
+uint32_t HashString(const char* value) {
+    if (!value)
+        return 0;
+    uint32_t h = 2166136261u;
+    while (*value != '\0') {
+        h ^= static_cast<uint8_t>(*value);
+        h *= 16777619u;
+        ++value;
+    }
+    return h;
+}
+
+bool SnapshotIdentityMatches(const display::DisplayInfo& display_info, size_t len) {
+    return s_status_bar_len == len && s_status_bar_board_hash == HashString(display_info.board_id) &&
+           s_status_bar_profile_hash == HashString(display_info.profile_id) &&
+           s_status_bar_width == display_info.frame.width && s_status_bar_height == display_info.frame.height &&
+           s_status_bar_pixel_format == static_cast<uint32_t>(display_info.frame.pixel_format) &&
+           s_status_bar_codec == static_cast<uint32_t>(display_info.frame.codec);
+}
+
 }  // namespace
 
 void Init(bool cold_boot) {
@@ -68,6 +95,13 @@ void Init(bool cold_boot) {
     s_timer_wake_fail_count = 0;
     s_status_bar_magic      = 0;
     s_status_bar_hash       = 0;
+    s_status_bar_len        = 0;
+    s_status_bar_board_hash = 0;
+    s_status_bar_profile_hash = 0;
+    s_status_bar_width      = 0;
+    s_status_bar_height     = 0;
+    s_status_bar_pixel_format = 0;
+    s_status_bar_codec      = 0;
     std::memset(s_status_bar_snapshot, 0, sizeof(s_status_bar_snapshot));
 }
 
@@ -176,22 +210,29 @@ void RecordTimerWakeResult(bool success) {
     }
 }
 
-bool SaveStatusBarSnapshot(const uint8_t* data, size_t len) {
-    if (!data || len != kStatusBarSnapshotBytes)
+bool SaveStatusBarSnapshot(const display::DisplayInfo& display_info, const uint8_t* data, size_t len) {
+    if (!data || len == 0 || len > board::kStatusBarSnapshotCapacityBytes)
         return false;
     const uint32_t  hash = HashBytes(data, len);
     ScopedMutexLock lock(StateMutex());
     // magic 是提交标记:先清无效,写完 snapshot/hash 后再恢复,Load 只接受完整快照。
     s_status_bar_magic = 0;
-    std::memcpy(s_status_bar_snapshot, data, kStatusBarSnapshotBytes);
-    s_status_bar_hash  = hash;
-    s_status_bar_magic = kStatusBarSnapshotMagic;
+    std::memcpy(s_status_bar_snapshot, data, len);
+    s_status_bar_hash         = hash;
+    s_status_bar_len          = static_cast<uint32_t>(len);
+    s_status_bar_board_hash   = HashString(display_info.board_id);
+    s_status_bar_profile_hash = HashString(display_info.profile_id);
+    s_status_bar_width        = display_info.frame.width;
+    s_status_bar_height       = display_info.frame.height;
+    s_status_bar_pixel_format = static_cast<uint32_t>(display_info.frame.pixel_format);
+    s_status_bar_codec        = static_cast<uint32_t>(display_info.frame.codec);
+    s_status_bar_magic        = kStatusBarSnapshotMagic;
     ESP_LOGD(kTag, "saved status bar snapshot hash=%08lx", static_cast<unsigned long>(hash));
     return true;
 }
 
-bool LoadStatusBarSnapshot(uint8_t* out, size_t len) {
-    if (!out || len != kStatusBarSnapshotBytes)
+bool LoadStatusBarSnapshot(const display::DisplayInfo& display_info, uint8_t* out, size_t len) {
+    if (!out || len == 0 || len > board::kStatusBarSnapshotCapacityBytes)
         return false;
     uint32_t magic = 0;
     uint32_t hash  = 0;
@@ -199,8 +240,11 @@ bool LoadStatusBarSnapshot(uint8_t* out, size_t len) {
         ScopedMutexLock lock(StateMutex());
         magic = s_status_bar_magic;
         hash  = s_status_bar_hash;
-        if (magic == kStatusBarSnapshotMagic) {
-            std::memcpy(out, s_status_bar_snapshot, kStatusBarSnapshotBytes);
+        if (magic == kStatusBarSnapshotMagic && SnapshotIdentityMatches(display_info, len)) {
+            std::memcpy(out, s_status_bar_snapshot, len);
+        } else if (magic == kStatusBarSnapshotMagic) {
+            s_status_bar_magic = 0;
+            magic              = 0;
         }
     }
     if (magic != kStatusBarSnapshotMagic)
@@ -210,8 +254,15 @@ bool LoadStatusBarSnapshot(uint8_t* out, size_t len) {
 
 void ClearStatusBarSnapshot() {
     ScopedMutexLock lock(StateMutex());
-    s_status_bar_magic = 0;
-    s_status_bar_hash  = 0;
+    s_status_bar_magic        = 0;
+    s_status_bar_hash         = 0;
+    s_status_bar_len          = 0;
+    s_status_bar_board_hash   = 0;
+    s_status_bar_profile_hash = 0;
+    s_status_bar_width        = 0;
+    s_status_bar_height       = 0;
+    s_status_bar_pixel_format = 0;
+    s_status_bar_codec        = 0;
 }
 
 }  // namespace power_state

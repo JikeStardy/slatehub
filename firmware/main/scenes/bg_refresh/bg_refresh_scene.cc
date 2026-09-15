@@ -4,12 +4,15 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <memory>
 #include <new>
 #include <vector>
 
+#include "bsp/board.h"
+#include "bsp/board_platform.h"
 #include "events/event_bus.h"
 #include "power/power_state.h"
 #include "storage/cache/cache.h"
@@ -83,6 +86,7 @@ BgRefreshScene::~BgRefreshScene() = default;
 
 void BgRefreshScene::OnEnter(SceneContext& ctx) {
     done_posted_->store(false, std::memory_order_release);
+    force_full_refresh_     = false;
     previous_screen_seeded_ = SeedPreviousFrame(ctx);
     state_                  = State::kWaiting;
     StartDeadlineWatchdog();
@@ -133,19 +137,26 @@ void BgRefreshScene::OnEvent(SceneContext& ctx, const UiEvent& e) {
 bool BgRefreshScene::SeedPreviousFrame(SceneContext& ctx) {
     if (!ctx.epd)
         return false;
-    const display::FrameDescriptor& frame = ctx.epd->Info().frame;
+    const board::BoardPlatform&     platform = Board::Get().platform();
+    const display::FrameDescriptor& frame    = ctx.epd->Info().frame;
     if (!display::ValidateFrameDescriptor(frame))
         return false;
     const int                      bpr = frame.width / 8;
-    const display::FrameRegion     status_region{0, 0, frame.width, theme::kStatusBarHeight};
-    const std::size_t              status_bytes = display::ExpectedRegionBytes(status_region, frame);
+    const display::FrameRegion     status_region = platform.StatusBarSnapshotRegion();
+    const std::size_t              status_bytes  = platform.StatusBarSnapshotBytes();
 
-    if (status_bytes == 0) {
+    if (!ctx.epd->Info().capabilities.previous_frame_seed) {
+        ESP_LOGW(kTag, "seed skipped reason=unsupported action=full_refresh");
+        force_full_refresh_ = true;
+        return true;
+    }
+
+    std::array<uint8_t, board::kStatusBarSnapshotCapacityBytes> status_bar{};
+    if (status_bytes == 0 || status_bytes > status_bar.size() || !display::ValidateRegion(status_region, frame)) {
         ESP_LOGW(kTag, "seed skipped reason=status_snapshot_shape");
         return false;
     }
-    std::vector<uint8_t> status_bar(status_bytes);
-    const bool           status_ok = power_state::LoadStatusBarSnapshot(status_bar.data(), status_bar.size());
+    const bool status_ok = power_state::LoadStatusBarSnapshot(ctx.epd->Info(), status_bar.data(), status_bytes);
     if (!status_ok) {
         ESP_LOGW(kTag, "seed skipped reason=status_snapshot_missing");
         return false;
@@ -179,7 +190,7 @@ bool BgRefreshScene::SeedPreviousFrame(SceneContext& ctx) {
     const int y = theme::kStatusBarHeight;
     const display::FrameRegion body_region{0, y, frame.width, frame.height - y};
     const std::size_t          body_bytes = display::ExpectedRegionBytes(body_region, frame);
-    return display::SeedPreviousIfSupported(*ctx.epd, status_region, status_bar.data(), status_bar.size()) &&
+    return display::SeedPreviousIfSupported(*ctx.epd, status_region, status_bar.data(), status_bytes) &&
            display::SeedPreviousIfSupported(*ctx.epd, body_region, raw.data() + y * bpr, body_bytes);
 }
 
@@ -242,8 +253,9 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
     const int y = theme::kStatusBarHeight;
     const int bpr = frame.width / 8;
     const display::FrameRegion body_region{0, y, frame.width, frame.height - y};
+    const display::PresentMode mode = force_full_refresh_ ? display::PresentMode::kFull : display::PresentMode::kPartial;
     if (!display::PresentWithFallback(*ctx.epd, body_region, raw.data() + y * bpr,
-                                      display::ExpectedRegionBytes(body_region, frame), display::PresentMode::kPartial)) {
+                                      display::ExpectedRegionBytes(body_region, frame), mode)) {
         ctx.epd->Unlock();
         ESP_LOGW(kTag, "render failed reason=display_present");
         return false;

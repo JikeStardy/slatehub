@@ -73,8 +73,38 @@ function stepBlock(workflow, name) {
 
 function yamlBlockScalar(block, key) {
   const lines = block.split('\n');
-  const start = lines.findIndex((line) =>
-    new RegExp(`^\\s*${key}:\\s*[>|][+-]?(?:[1-9])?\\s*$`).test(line)
+  const directIndent = Math.min(
+    ...lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length)
+  );
+  const start = lines.findIndex(
+    (line) =>
+      line.length - line.trimStart().length === directIndent &&
+      new RegExp(`^\\s*${key}:\\s*[>|][+-]?(?:[1-9])?\\s*$`).test(line)
+  );
+  if (start === -1) {
+    return '';
+  }
+
+  const indent = lines[start].length - lines[start].trimStart().length;
+  let end = start + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    const lineIndent = line.length - line.trimStart().length;
+    if (line.trim() && lineIndent <= indent) {
+      break;
+    }
+    end += 1;
+  }
+  return lines.slice(start + 1, end).join('\n');
+}
+
+function yamlMappingBlock(block, key) {
+  const lines = block.split('\n');
+  const directIndent = Math.min(
+    ...lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length)
+  );
+  const start = lines.findIndex(
+    (line) => line.length - line.trimStart().length === directIndent && line.trim() === `${key}:`
   );
   if (start === -1) {
     return '';
@@ -101,9 +131,15 @@ function shellFunctionBlocks(script, name) {
   return [...matches].map((match) => match[2]);
 }
 
+function shellFunctionHeaderCount(script, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...script.matchAll(new RegExp(`(?:^|\\n)\\s*${escapedName}\\(\\)\\s*\\{`, 'g'))].length;
+}
+
 function hasBoardSdkconfigCommand(workflow) {
   const block = stepBlock(workflow, 'ESP-IDF build');
-  const command = yamlBlockScalar(block, 'command');
+  const withBlock = yamlMappingBlock(block, 'with');
+  const command = yamlBlockScalar(withBlock, 'command');
   return (
     /uses:\s*espressif\/esp-idf-ci-action@v1/.test(block) &&
     containsCompact(
@@ -133,6 +169,14 @@ const lockWorkspaceVersionFunctions = shellFunctionBlocks(
 );
 const packageVersionFunction = packageVersionFunctions[0] ?? '';
 const lockWorkspaceVersionFunction = lockWorkspaceVersionFunctions[0] ?? '';
+const packageVersionFunctionCount = shellFunctionHeaderCount(
+  repositoryVersionsBlock,
+  'check_package_version'
+);
+const lockWorkspaceVersionFunctionCount = shellFunctionHeaderCount(
+  repositoryVersionsBlock,
+  'check_lock_workspace_version'
+);
 
 const boardProfileErrors = displayRegistry.boards
   .map((board) => {
@@ -241,7 +285,8 @@ assertContract(
 );
 
 assertContract(
-  packageVersionFunctions.length === 1 &&
+  packageVersionFunctionCount === 1 &&
+    packageVersionFunctions.length === 1 &&
     containsCompact(
       packageVersionFunction,
       `
@@ -256,7 +301,8 @@ assertContract(
 );
 
 assertContract(
-  lockWorkspaceVersionFunctions.length === 1 &&
+  lockWorkspaceVersionFunctionCount === 1 &&
+    lockWorkspaceVersionFunctions.length === 1 &&
     /awk -v workspace=/.test(lockWorkspaceVersionFunction) &&
     /' bun\.lock/.test(lockWorkspaceVersionFunction) &&
     /in_workspace &&/.test(lockWorkspaceVersionFunction) &&

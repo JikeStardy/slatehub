@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "scenes/bg_refresh/bg_refresh_transaction.h"
 #include "scenes/core/scene.h"
 #include "storage/cache/cache.h"
 #include "ui/status_bar.h"
@@ -44,7 +45,8 @@ class BgRefreshScene : public Scene {
     State                              state_                  = State::kWaiting;
     bool                               previous_screen_seeded_ = false;
     bool                               force_full_refresh_     = false;
-    std::shared_ptr<std::atomic<bool>> done_posted_            = std::make_shared<std::atomic<bool>>(false);
+    uint32_t                           next_generation_        = 0;
+    std::shared_ptr<bg_refresh::CompletionState> completion_;
     bool                               pending_frame_commit_   = false;
     int                                pending_seq_            = 0;
     cache::FrameMeta                   pending_meta_{};

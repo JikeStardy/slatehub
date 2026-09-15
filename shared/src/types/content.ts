@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DITHER_MODES } from '../dither.js';
+import { DisplayProfile, DisplayProfileId, FrameDescriptor } from '../display-profiles.js';
 import { DashboardDataPayload, DynamicConfig, DynamicType, TtsVoice } from './dynamic.js';
 
 export const ContentKind = z.enum(['image', 'dynamic']);
@@ -37,6 +38,7 @@ export const ContentSummary = z.object({
   kind: ContentKind,
   dynamic_type: DynamicType.nullable(),
   next_wake_sec: z.number().int().nonnegative().nullable(),
+  frame: FrameDescriptor,
 });
 export type ContentSummaryT = z.infer<typeof ContentSummary>;
 
@@ -88,6 +90,7 @@ export type PatchDynamicContentRequestT = z.infer<typeof PatchDynamicContentRequ
 
 export const PreviewDynamicContentRequest = z.object({
   config: DynamicConfig,
+  display_profile_id: DisplayProfileId,
   frame_name: z.string().max(64).nullable().optional(),
   data: DashboardDataPayload.optional(),
 });
@@ -111,6 +114,7 @@ export const ManifestResponse = z.object({
       total: z.number().int().positive(),
     }),
   }),
+  display_profile: DisplayProfile,
   contents: z.array(ContentSummary),
 });
 export type ManifestResponseT = z.infer<typeof ManifestResponse>;
@@ -120,5 +124,6 @@ export const RenderContentRequest = z.object({
   content: z.string(),
   threshold: z.number().int().min(0).max(255).optional(),
   mode: z.enum(DITHER_MODES).optional(),
+  display_profile_id: DisplayProfileId,
 });
 export type RenderContentRequestT = z.infer<typeof RenderContentRequest>;

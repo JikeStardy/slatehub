@@ -16,7 +16,14 @@ describe('DeviceFirmwareController', () => {
       {} as never
     );
 
-    await expect(controller.register({ mac: 'aa-bb-cc-dd-ee-ff' })).resolves.toMatchObject({
+    await expect(
+      controller.register({
+        mac: 'aa-bb-cc-dd-ee-ff',
+        board_id: 'zectrix-note4',
+        protocol_version: 2,
+        fw_version: '0.2.0',
+      })
+    ).resolves.toMatchObject({
       mac: 'AA:BB:CC:DD:EE:FF',
     });
   });

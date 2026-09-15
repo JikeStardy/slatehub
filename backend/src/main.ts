@@ -5,6 +5,7 @@ import { Logger as NestLogger, RequestMethod } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Logger as PinoLogger } from 'nestjs-pino';
+import { API_PREFIX } from 'shared';
 import { AppModule } from './app.module';
 import { AppConfig } from './infra/config/app.config';
 import { isStaticAssetPath } from './infra/assets/static-assets';
@@ -32,7 +33,7 @@ async function bootstrap(): Promise<void> {
   // route-level Fastify config，全局 rate-limit 不便单独保护 ingest 端点。
   // 改在 common/rate-limit/rate-limit-guard.ts 实现按路由元数据维度限速。
 
-  app.setGlobalPrefix('api/v1', {
+  app.setGlobalPrefix(API_PREFIX.slice(1), {
     exclude: [{ path: 'healthz', method: RequestMethod.GET }],
   });
 

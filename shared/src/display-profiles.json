@@ -1,0 +1,30 @@
+{
+  "boards": [
+    {
+      "id": "zectrix-note4",
+      "display_profile_id": "zectrix-note4-400x300-mono",
+      "capabilities": {
+        "audio": true,
+        "partial_refresh": false
+      }
+    }
+  ],
+  "display_profiles": [
+    {
+      "id": "zectrix-note4-400x300-mono",
+      "width": 400,
+      "height": 300,
+      "pixel_format": "mono_1bpp_msb",
+      "frame_codec": "raw",
+      "availability": ["production", "development", "test"]
+    },
+    {
+      "id": "virtual-mono-296x128",
+      "width": 296,
+      "height": 128,
+      "pixel_format": "mono_1bpp_msb",
+      "frame_codec": "raw",
+      "availability": ["development", "test"]
+    }
+  ]
+}

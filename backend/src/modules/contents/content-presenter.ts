@@ -1,6 +1,8 @@
 import type { ContentAudioSource, ContentAudioStatus, ContentKind, Prisma } from '@prisma/client';
 import {
+  DEFAULT_DISPLAY_PROFILE_ID,
   DynamicConfig,
+  frameDescriptorForProfile,
   TtsVoice,
   type ContentDetailT,
   type ContentSummaryT,
@@ -52,6 +54,7 @@ export function contentToSummary(row: ContentRow): ContentSummaryT {
     kind: contentKind(row.kind),
     dynamic_type: (row.dynamicType as DynamicTypeT | null) ?? null,
     next_wake_sec: nextWakeSec(row.dynamicNextRunAt ?? null),
+    frame: frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID),
   };
 }
 

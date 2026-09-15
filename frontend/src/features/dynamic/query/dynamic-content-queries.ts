@@ -1,9 +1,10 @@
 import { useMutation } from '@tanstack/react-query';
-import type {
-  ContentMutationResponseT,
-  CreateDynamicContentRequestT,
-  DynamicConfigT,
-  IngestResponseT,
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  type ContentMutationResponseT,
+  type CreateDynamicContentRequestT,
+  type DynamicConfigT,
+  type IngestResponseT,
 } from 'shared';
 import { API_PREFIX, api } from '@/lib/http';
 import { useInvalidateContentDependencies } from '@/features/contents/query/content-cache-helpers';
@@ -85,7 +86,12 @@ export function usePreviewDynamicContent(contentId: string | undefined) {
       const url = contentId
         ? `${API_PREFIX}/contents/${contentId}/preview`
         : `${API_PREFIX}/contents/preview`;
-      const body = { config, frame_name: frameName, data: previewData };
+      const body = {
+        config,
+        display_profile_id: DEFAULT_DISPLAY_PROFILE_ID,
+        frame_name: frameName,
+        data: previewData,
+      };
       const { data } = await api.post<ArrayBuffer>(url, body, {
         responseType: 'arraybuffer',
         signal,

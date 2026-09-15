@@ -1,4 +1,5 @@
 export * from './api.js';
+export * from './display-profiles.js';
 export * from './types/device.js';
 export * from './types/group.js';
 export * from './types/content.js';

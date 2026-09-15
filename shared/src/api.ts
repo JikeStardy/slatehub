@@ -2,15 +2,21 @@
 // 设备协议 schema 在 types/device.ts 和 types/content.ts。
 
 import { z } from 'zod';
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  frameByteLength,
+  getDisplayProfile,
+} from './display-profiles.js';
 
-// 单一前缀:Web、设备、外部 webhook 都挂在 /api/v1 下,鉴权按端点区分。
-export const API_VERSION = 'v1';
-export const API_PREFIX = '/api/v1';
+// 单一前缀:Web、设备、外部 webhook 都挂在 /api/v2 下,鉴权按端点区分。
+export const API_VERSION = 'v2';
+export const API_PREFIX = '/api/v2';
 
 // EPD 物理像素（zectrix Note4 4.2"）
-export const FRAME_WIDTH = 400;
-export const FRAME_HEIGHT = 300;
-export const FRAME_BYTES = (FRAME_WIDTH * FRAME_HEIGHT) / 8; // 15000
+const defaultDisplayProfile = getDisplayProfile(DEFAULT_DISPLAY_PROFILE_ID);
+export const FRAME_WIDTH = defaultDisplayProfile.width;
+export const FRAME_HEIGHT = defaultDisplayProfile.height;
+export const FRAME_BYTES = frameByteLength(defaultDisplayProfile);
 export const BW_THRESHOLD_DEFAULT = 128; // 后端 sharp pipeline 默认阈值（与固件 bw_threshold_=200 是两套独立通路，不联动）
 
 // 音频:16kHz mono 16-bit raw PCM

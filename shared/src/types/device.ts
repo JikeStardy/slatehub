@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BoardId, DisplayProfileId } from '../display-profiles.js';
 import { ContentSummary } from './content.js';
 
 export const MacAddress = z
@@ -62,13 +63,13 @@ export const PollRequest = z.object({
 });
 export type PollRequestT = z.infer<typeof PollRequest>;
 
-// 设备选指定组：PUT /api/v1/devices/current/group  body: {id}
+// 设备选指定组：PUT /api/v2/devices/current/group  body: {id}
 export const SelectGroupByDeviceRequest = z.object({
   id: z.string(),
 });
 export type SelectGroupByDeviceRequestT = z.infer<typeof SelectGroupByDeviceRequest>;
 
-// POST /api/v1/devices/current/group/next | /prev — direction 入 path，无 body。
+// POST /api/v2/devices/current/group/next | /prev — direction 入 path，无 body。
 export const CycleDirection = z.enum(['next', 'prev']);
 export type CycleDirectionT = z.infer<typeof CycleDirection>;
 
@@ -77,6 +78,9 @@ export type CycleDirectionT = z.infer<typeof CycleDirection>;
 // name 由 Web 端 claim 完成后通过 PUT /devices/:id 设置，注册阶段不带。
 export const RegisterDeviceRequest = z.object({
   mac: MacAddress,
+  board_id: BoardId,
+  protocol_version: z.number().int().positive(),
+  fw_version: z.string().min(1).max(32),
 });
 export type RegisterDeviceRequestT = z.infer<typeof RegisterDeviceRequest>;
 
@@ -118,6 +122,9 @@ export const DeviceSummary = z.object({
   battery_pct: z.number().int().nullable(),
   rssi_dbm: z.number().int().nullable(),
   fw_version: z.string().nullable(),
+  board_id: BoardId,
+  display_profile_id: DisplayProfileId,
+  protocol_version: z.number().int().positive(),
   owner_user_id: z.string().nullable(),
   sort_order: z.number().int(),
 });

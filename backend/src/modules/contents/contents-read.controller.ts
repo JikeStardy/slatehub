@@ -29,6 +29,7 @@ export class ContentsReadController {
     const m = await this.reads.manifest(groupId, contentAuthScope(user, device));
     const body: ManifestResponseT = {
       group: m.group,
+      display_profile: m.display_profile,
       contents: m.contents,
     };
     respondJsonWithEtag(req, reply, m.manifestEtag, body);

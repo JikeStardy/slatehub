@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import type { ContentDetailT, ManifestResponseT } from 'shared';
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  getDisplayProfile,
+  type ContentDetailT,
+  type ManifestResponseT,
+} from 'shared';
 import { BlobService } from '../../infra/blob/blob.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { NotFoundError } from '../../common/errors';
@@ -79,6 +84,7 @@ export class ContentsReadService {
         sort_order: group.sortOrder,
         position,
       },
+      display_profile: getDisplayProfile(DEFAULT_DISPLAY_PROFILE_ID),
       contents: group.contents.map((content) => contentToSummary(content)),
       manifestEtag: group.manifestEtag,
     };

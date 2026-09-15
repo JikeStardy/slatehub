@@ -3,7 +3,7 @@
 // LittleFS 缓存:挂在 /littlefs,目录布局:
 //   /littlefs/state.json                 {selected_group_id, last_etag}
 //   /littlefs/groups/{gid}/manifest.json {group_id, group_name, manifest_etag, content_count, last_access_seq}
-//   /littlefs/groups/{gid}/frames/{idx}.img  15000 字节 1bpp
+//   /littlefs/groups/{gid}/frames/{idx}.img  descriptor-defined raw frame bytes
 //   /littlefs/groups/{gid}/frames/{idx}.pcm  16k mono raw PCM
 
 #include <cstddef>
@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "drivers/display/display_contract.h"
+#include "storage/cache/cache_staging.h"
 
 namespace cache {
 
@@ -85,6 +86,7 @@ struct FrameMeta {
 };
 bool WriteFrameMeta(const std::string& gid, int idx, const FrameMeta& meta);
 bool ReadFrameMeta(const std::string& gid, int idx, FrameMeta& out);
+bool ReadFrameMeta(const std::string& gid, int idx, FrameMeta& out, const display::DisplayInfo& display_info);
 
 class CacheWriter {
    public:
@@ -99,17 +101,21 @@ class CacheWriter {
     bool WriteFrameImage(int idx, const std::vector<uint8_t>& bytes, const std::string& etag,
                          const std::string& profile_id, const display::FrameDescriptor& descriptor);
     bool FrameAudioExists(int idx, const std::string& expected_etag, const display::DisplayInfo& display_info) const;
-    bool WriteFrameAudio(int idx, const std::vector<uint8_t>& bytes, const std::string& etag);
+    bool WriteFrameAudio(int idx, const std::vector<uint8_t>& bytes, const std::string& etag,
+                         const std::string& profile_id, const display::FrameDescriptor& descriptor);
     bool WriteFrameMeta(int idx, const FrameMeta& meta);
     bool CommitFrame(int idx, const std::string& image_etag, const std::string& audio_etag,
                      const display::DisplayInfo& display_info);
+    bool CommitManifest(const std::string& manifest_etag, int content_count, const std::string& name,
+                        const display::DisplayInfo& display_info);
     bool Commit();
     void Rollback();
 
    private:
     std::string gid_;
-    bool        begun_     = false;
-    bool        committed_ = false;
+    std::vector<staging::Swap> swaps_;
+    bool                       begun_     = false;
+    bool                       committed_ = false;
 };
 
 }  // namespace cache

@@ -33,7 +33,7 @@ api::Telemetry BuildTelemetry(const std::string& current_group, const std::strin
         std::string      manifest_etag;
         cache::FrameMeta meta;
         if (cache::ReadStateMeta(gid, manifest_etag) && !gid.empty() &&
-            cache::ReadFrameMeta(gid, tel.current_content_seq, meta)) {
+            cache::ReadFrameMeta(gid, tel.current_content_seq, meta, Board::Get().platform().Display())) {
             tel.current_content_etag = meta.content_etag;
         }
     }

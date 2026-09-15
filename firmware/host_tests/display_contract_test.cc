@@ -837,6 +837,37 @@ void TestApiV2PrefixAndRegisterPayload() {
     CHECK(body.find("\"fw_version\":\"0.1.1\"") != std::string::npos);
     const std::string old_prefix = std::string("/api/") + "v1";
     CHECK(body.find(old_prefix) == std::string::npos);
+    CHECK(sync_contract::ResolveFirmwareVersion("1.2.3", "0.1.1") == "1.2.3");
+    CHECK(sync_contract::ResolveFirmwareVersion("", "0.1.1") == "0.1.1");
+    CHECK(sync_contract::ResolveFirmwareVersion(nullptr, nullptr) == "unknown");
+}
+
+void TestStrictNumericFieldsRejectFractionalAndOverflowValues() {
+    int         int_out  = -1;
+    std::size_t size_out = 7;
+    uint32_t    u32_out  = 9;
+
+    CHECK(sync_contract::ReadIntField({true, 400.0}, 0, 1000, int_out));
+    CHECK(int_out == 400);
+    CHECK(!sync_contract::ReadIntField({true, 400.5}, 0, 1000, int_out));
+    CHECK(!sync_contract::ReadIntField({false, 400.0}, 0, 1000, int_out));
+    CHECK(!sync_contract::ReadIntField({true, -1.0}, 0, 1000, int_out));
+    CHECK(!sync_contract::ReadIntField({true, static_cast<double>(std::numeric_limits<int>::max()) + 1.0}, 0,
+                                       std::numeric_limits<int>::max(), int_out));
+    CHECK(!sync_contract::ReadIntField({true, std::numeric_limits<double>::infinity()}, 0, 1000, int_out));
+    CHECK(!sync_contract::ReadIntField({true, std::numeric_limits<double>::quiet_NaN()}, 0, 1000, int_out));
+
+    CHECK(sync_contract::ReadSizeField({true, 15000.0}, display::kMaxFrameBytes, size_out));
+    CHECK(size_out == 15000);
+    CHECK(!sync_contract::ReadSizeField({true, 15000.9}, display::kMaxFrameBytes, size_out));
+    CHECK(!sync_contract::ReadSizeField({true, 1.0e300}, display::kMaxFrameBytes, size_out));
+
+    CHECK(sync_contract::ReadUint32Field({true, static_cast<double>(std::numeric_limits<uint32_t>::max())},
+                                         u32_out));
+    CHECK(u32_out == std::numeric_limits<uint32_t>::max());
+    CHECK(!sync_contract::ReadUint32Field({true, static_cast<double>(std::numeric_limits<uint32_t>::max()) + 1.0},
+                                          u32_out));
+    CHECK(!sync_contract::ReadUint32Field({true, 12.25}, u32_out));
 }
 
 void TestManifestDescriptorValidation() {
@@ -851,6 +882,7 @@ void TestManifestDescriptorValidation() {
                                              valid.display_profile_id, info.frame});
 
     CHECK(sync_contract::ValidateManifestIdentity(valid, info));
+    CHECK(sync_contract::ValidateManifestContentSet(valid));
 
     ManifestIdentity missing_profile = valid;
     missing_profile.display_profile_id.clear();
@@ -896,6 +928,14 @@ void TestManifestDescriptorValidation() {
     overflow.frame.height = 65537;
     overflow.frame.byte_size = 65536;
     CHECK(!sync_contract::ValidateManifestIdentity(overflow, info));
+
+    ManifestIdentity duplicate_seq = valid;
+    duplicate_seq.contents.push_back(duplicate_seq.contents[0]);
+    CHECK(!sync_contract::ValidateManifestContentSet(duplicate_seq));
+
+    ManifestIdentity negative_seq = valid;
+    negative_seq.contents[0].seq = -1;
+    CHECK(!sync_contract::ValidateManifestContentSet(negative_seq));
 }
 
 void TestImagePayloadAndCacheIdentityValidation() {
@@ -992,6 +1032,7 @@ int main() {
     TestBgRefreshGenerationDoesNotReuseAcrossSceneInstances();
     TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
     TestApiV2PrefixAndRegisterPayload();
+    TestStrictNumericFieldsRejectFractionalAndOverflowValues();
     TestManifestDescriptorValidation();
     TestImagePayloadAndCacheIdentityValidation();
     TestAudioCapabilityFiltering();

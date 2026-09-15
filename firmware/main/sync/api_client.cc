@@ -8,9 +8,9 @@
 #include <sdkconfig.h>
 
 #include <atomic>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <utility>
 
@@ -126,7 +126,6 @@ void ApiClient::SetUnauthorizedHandler(UnauthorizedCb cb) {
 namespace {
 
 using json_utils::JsonBool;
-using json_utils::JsonInt;
 using json_utils::JsonString;
 
 // 从 esp_http_client 读响应头里的 ETag。
@@ -168,6 +167,11 @@ void LogErrorEnvelope(const std::string& path, int status, const std::vector<uin
     cJSON_Delete(root);
 }
 
+sync_contract::NumericField JsonNumberField(cJSON* item, const char* key) {
+    cJSON* value = cJSON_GetObjectItemCaseSensitive(item, key);
+    return sync_contract::NumericField{cJSON_IsNumber(value), cJSON_IsNumber(value) ? value->valuedouble : 0.0};
+}
+
 std::string UrlEncodePathSegment(const std::string& value) {
     static constexpr char kHex[] = "0123456789ABCDEF";
     std::string           out;
@@ -196,17 +200,22 @@ bool ParseFrameDescriptor(cJSON* item, std::string& profile_id, display::FrameDe
         !sync_contract::ParseFrameCodec(JsonString(item, proto::kFrameCodec), frame_codec)) {
         return false;
     }
-    cJSON* byte_length = cJSON_GetObjectItemCaseSensitive(item, proto::kByteLength);
-    if (!cJSON_IsNumber(byte_length) || !std::isfinite(byte_length->valuedouble) || byte_length->valuedouble < 0.0 ||
-        byte_length->valuedouble > static_cast<double>(display::kMaxFrameBytes) ||
-        std::floor(byte_length->valuedouble) != byte_length->valuedouble) {
+    int         width       = 0;
+    int         height      = 0;
+    std::size_t byte_length = 0;
+    if (!sync_contract::ReadIntField(JsonNumberField(item, proto::kWidth), 1, std::numeric_limits<int>::max(),
+                                     width) ||
+        !sync_contract::ReadIntField(JsonNumberField(item, proto::kHeight), 1, std::numeric_limits<int>::max(),
+                                     height) ||
+        !sync_contract::ReadSizeField(JsonNumberField(item, proto::kByteLength), display::kMaxFrameBytes,
+                                      byte_length)) {
         return false;
     }
-    out.width        = JsonInt(item, proto::kWidth, 0);
-    out.height       = JsonInt(item, proto::kHeight, 0);
+    out.width        = width;
+    out.height       = height;
     out.pixel_format = pixel_format;
     out.codec        = frame_codec;
-    out.byte_size    = static_cast<std::size_t>(byte_length->valuedouble);
+    out.byte_size    = byte_length;
     return display::ValidateFrameDescriptor(out);
 }
 
@@ -220,8 +229,16 @@ bool ParseDisplayProfile(cJSON* item, std::string& profile_id, display::FrameDes
         !sync_contract::ParseFrameCodec(JsonString(item, proto::kFrameCodec), frame_codec)) {
         return false;
     }
-    out.width        = JsonInt(item, proto::kWidth, 0);
-    out.height       = JsonInt(item, proto::kHeight, 0);
+    int width  = 0;
+    int height = 0;
+    if (!sync_contract::ReadIntField(JsonNumberField(item, proto::kWidth), 1, std::numeric_limits<int>::max(),
+                                     width) ||
+        !sync_contract::ReadIntField(JsonNumberField(item, proto::kHeight), 1, std::numeric_limits<int>::max(),
+                                     height)) {
+        return false;
+    }
+    out.width        = width;
+    out.height       = height;
     out.pixel_format = pixel_format;
     out.codec        = frame_codec;
     out.byte_size    = display::ExpectedFrameBytes(out);
@@ -229,14 +246,24 @@ bool ParseDisplayProfile(cJSON* item, std::string& profile_id, display::FrameDes
 }
 
 bool ParseContentMeta(cJSON* item, const display::DisplayInfo& display_info, ContentMeta& out) {
-    out.seq                    = JsonInt(item, proto::kSeq, 0);
+    if (!sync_contract::ReadIntField(JsonNumberField(item, proto::kSeq), 0, std::numeric_limits<int>::max(), out.seq) ||
+        !sync_contract::ReadIntField(JsonNumberField(item, proto::kImageSize), 0, std::numeric_limits<int>::max(),
+                                     out.image_size)) {
+        return false;
+    }
     out.id                     = JsonString(item, proto::kId);
     out.content_etag           = JsonString(item, proto::kContentEtag);
     out.device_status_bar_text = JsonString(item, proto::kDeviceStatusBarText);
     out.image_etag             = JsonString(item, proto::kImageEtag);
     out.audio_etag             = JsonString(item, proto::kAudioEtag);
-    out.image_size             = JsonInt(item, proto::kImageSize, 0);
-    out.audio_size             = JsonInt(item, proto::kAudioSize, 0);
+    if (!out.audio_etag.empty()) {
+        if (!sync_contract::ReadIntField(JsonNumberField(item, proto::kAudioSize), 0,
+                                         std::numeric_limits<int>::max(), out.audio_size)) {
+            return false;
+        }
+    } else {
+        out.audio_size = 0;
+    }
     out.variant_status         = JsonString(item, proto::kVariantStatus);
     out.kind                   = JsonString(item, proto::kKind);
     cJSON* frame               = cJSON_GetObjectItemCaseSensitive(item, proto::kFrame);
@@ -246,11 +273,20 @@ bool ParseContentMeta(cJSON* item, const display::DisplayInfo& display_info, Con
     }
     if (out.variant_status != "ready" || out.image_size != static_cast<int>(out.frame.byte_size))
         return false;
-    if (!display_info.capabilities.audio)
-        out.audio_etag.clear();
-    cJSON* next_wake           = cJSON_GetObjectItemCaseSensitive(item, proto::kNextWakeSec);
-    out.has_next_wake_sec      = cJSON_IsNumber(next_wake);
-    out.next_wake_sec          = out.has_next_wake_sec ? next_wake->valueint : 0;
+    sync_contract::ContentIdentity identity{out.seq,          out.id,         out.image_etag, out.audio_etag,
+                                            out.variant_status, out.image_size, out.frame_profile_id, out.frame};
+    if (!sync_contract::SanitizeAudioForDisplay(identity, display_info))
+        return false;
+    out.audio_etag        = identity.audio_etag;
+    cJSON* next_wake      = cJSON_GetObjectItemCaseSensitive(item, proto::kNextWakeSec);
+    out.has_next_wake_sec = cJSON_IsNumber(next_wake);
+    if (next_wake && !cJSON_IsNull(next_wake) && !cJSON_IsNumber(next_wake))
+        return false;
+    if (out.has_next_wake_sec &&
+        !sync_contract::ReadIntField({true, next_wake->valuedouble}, 0, std::numeric_limits<int>::max(),
+                                     out.next_wake_sec)) {
+        return false;
+    }
     if (out.kind.empty())
         out.kind = "image";
     return true;
@@ -530,12 +566,21 @@ bool ParseDeviceState(const std::string& json, DeviceState& out) {
             cJSON_Delete(root);
             return false;
         }
-        out.content_count    = JsonInt(group, proto::kContentCount, 0);
-        out.group_sort_order = JsonInt(group, proto::kSortOrder, 0);
+        if (!sync_contract::ReadIntField(JsonNumberField(group, proto::kContentCount), 0,
+                                         std::numeric_limits<int>::max(), out.content_count) ||
+            !sync_contract::ReadIntField(JsonNumberField(group, proto::kSortOrder), 0,
+                                         std::numeric_limits<int>::max(), out.group_sort_order)) {
+            cJSON_Delete(root);
+            return false;
+        }
         cJSON* pos           = cJSON_GetObjectItemCaseSensitive(group, proto::kPosition);
-        if (cJSON_IsObject(pos)) {
-            out.position_current = JsonInt(pos, proto::kCurrent, 0);
-            out.position_total   = JsonInt(pos, proto::kTotal, 0);
+        if (!cJSON_IsObject(pos) ||
+            !sync_contract::ReadIntField(JsonNumberField(pos, proto::kCurrent), 1,
+                                         std::numeric_limits<int>::max(), out.position_current) ||
+            !sync_contract::ReadIntField(JsonNumberField(pos, proto::kTotal), 1, std::numeric_limits<int>::max(),
+                                         out.position_total)) {
+            cJSON_Delete(root);
+            return false;
         }
     } else {
         out.has_group = false;
@@ -566,8 +611,9 @@ bool ApiClient::Register(RegisterResult& out) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         mac = mac_;
     }
-    const esp_app_desc_t* app        = esp_app_get_description();
-    const std::string     fw_version = (app && app->version[0] != '\0') ? app->version : CONFIG_APP_PROJECT_VER;
+    const esp_app_desc_t* app = esp_app_get_description();
+    const std::string     fw_version =
+        sync_contract::ResolveFirmwareVersion(app ? app->version : nullptr, CONFIG_APP_PROJECT_VER);
     const std::string     body       = sync_contract::BuildRegisterPayload(mac, Board::Get().platform().Display(),
                                                                            fw_version);
     std::string resp;
@@ -705,7 +751,7 @@ bool ApiClient::GetManifest(const std::string& group_id, const std::string& if_n
     if (!root)
         return false;
 
-    // 协议 v3：group 子对象 { id, structure_etag, manifest_etag, name, sort_order, position }
+    // 协议 v2：group 子对象 { id, structure_etag, manifest_etag, name, sort_order, position }
     cJSON* group = cJSON_GetObjectItemCaseSensitive(root, proto::kGroup);
     if (!cJSON_IsObject(group)) {
         ESP_LOGW(kTag, "manifest response invalid reason=group_missing");
@@ -756,7 +802,8 @@ bool ApiClient::GetManifest(const std::string& group_id, const std::string& if_n
                                                                    content.frame_profile_id,
                                                                    content.frame});
     }
-    if (!sync_contract::ValidateManifestIdentity(identity, Board::Get().platform().Display())) {
+    if (!sync_contract::ValidateManifestIdentity(identity, Board::Get().platform().Display()) ||
+        !sync_contract::ValidateManifestContentSet(identity)) {
         ESP_LOGW(kTag, "manifest response invalid reason=descriptor_mismatch");
         cJSON_Delete(root);
         return false;

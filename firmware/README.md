@@ -215,10 +215,10 @@ std::string device_secret;
 3. 如果 NVS 没有 `device_secret`，调用：
 
 ```text
-POST /api/v1/devices
+POST /api/v2/devices
 ```
 
-4. 保存后端返回的 `device_id` 与 64 字符 `device_secret`。
+4. 请求体会带上 `mac`、`board_id`、`protocol_version: 2` 与 `fw_version`。保存后端返回的 `device_id` 与 64 字符 `device_secret`。
 5. 屏幕显示 `pair_code`，等待 Web claim。
 
 后续所有受保护设备 API 都使用：
@@ -477,7 +477,7 @@ firmware/tools/gen_zfull_fonts.sh
 
 - HTTP base URL 接受 `http://` 和 `https://`；authenticated HTTP 会打印警告。
 - HTTPS 需要 SNTP 时间同步，否则证书校验可能失败。
-- `/api/v1` 前缀写死在 `sync/api_client.cc`，要与 shared/backend 保持一致。
+- `/api/v2` 前缀写死在 `sync/manifest_contract.cc`，要与 shared/backend 保持一致。
 - EPD BUSY 是低忙高闲，调试新屏或新板时不要按 SSD1683 datasheet 默认极性判断。
 - AVDD_3V3 关闭后 I2C 上拉消失，任何 I2C 操作都会失败。
 - deep sleep 前 GPIO17 必须切 RTC GPIO hold 高，否则会整机断电，按键唤不醒。

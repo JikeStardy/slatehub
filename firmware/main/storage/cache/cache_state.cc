@@ -135,9 +135,14 @@ bool NextCacheAccessSeq(uint32_t& out) {
         return false;
     LoadStateCacheUnlocked();
     auto& cache            = StateCacheUnlocked();
+    const StateCache old   = cache;
     out                    = cache.cache_access_seq == UINT32_MAX ? UINT32_MAX : cache.cache_access_seq + 1;
     cache.cache_access_seq = out;
-    return PersistStateCacheUnlocked();
+    if (!PersistStateCacheUnlocked()) {
+        cache = old;
+        return false;
+    }
+    return true;
 }
 
 }  // namespace cache::internal
@@ -162,9 +167,14 @@ bool WriteStateMeta(const std::string& selected_group_id, const std::string& eta
         return false;
     internal::LoadStateCacheUnlocked();
     auto& cache             = internal::StateCacheUnlocked();
+    const auto old          = cache;
     cache.selected_group_id = selected_group_id;
     cache.last_etag         = etag;
-    return internal::PersistStateCacheUnlocked();
+    if (!internal::PersistStateCacheUnlocked()) {
+        cache = old;
+        return false;
+    }
+    return true;
 }
 
 std::string ReadCurrentManifestEtag(const display::DisplayInfo& display_info) {
@@ -199,8 +209,13 @@ bool WriteCurrentFrameSeq(int seq) {
         return false;
     internal::LoadStateCacheUnlocked();
     auto& cache             = internal::StateCacheUnlocked();
+    const auto old          = cache;
     cache.current_frame_seq = seq < 0 ? 0 : seq;
-    return internal::PersistStateCacheUnlocked();
+    if (!internal::PersistStateCacheUnlocked()) {
+        cache = old;
+        return false;
+    }
+    return true;
 }
 
 bool ReadCachedGroupSummary(CachedGroupSummary& out, const display::DisplayInfo& display_info) {

@@ -180,7 +180,7 @@ bool RestoreCurrentFrameScheduleFromCache() {
         seq = 0;
 
     cache::FrameMeta meta;
-    if (!cache::ReadFrameMeta(gid, seq, meta)) {
+    if (!cache::ReadFrameMeta(gid, seq, meta, Board::Get().platform().Display())) {
         SetCurrentFrameSchedule({});
         SetCurrentFrameSeq(seq);
         return false;

@@ -16,6 +16,26 @@ using sync_internal::kCacheMinFreeBytes;
 using sync_internal::kMaxCachedGroups;
 using sync_internal::kTag;
 
+namespace {
+
+bool MakeCachedManifestIdentity(const cache::ManifestMeta& meta, sync_contract::CacheIdentity& out) {
+    display::PixelFormat pixel_format{};
+    display::FrameCodec  frame_codec{};
+    if (!sync_contract::ParsePixelFormat(meta.pixel_format, pixel_format) ||
+        !sync_contract::ParseFrameCodec(meta.frame_codec, frame_codec)) {
+        return false;
+    }
+    out.profile_id   = meta.profile_id;
+    out.width        = meta.width;
+    out.height       = meta.height;
+    out.pixel_format = pixel_format;
+    out.frame_codec  = frame_codec;
+    out.byte_length  = meta.byte_length;
+    return true;
+}
+
+}  // namespace
+
 bool SyncService::HandleCachedManifestHit(const std::string& gid, const std::string& expected_etag,
                                           const std::string& status_name, int content_count,
                                           const std::string& previous_current, const std::string& selected_group_id,
@@ -135,7 +155,7 @@ bool SyncService::DownloadFramesToStage(cache::CacheWriter& writer, const std::s
                 if (nm) {
                     ESP_LOGW(kTag, "frame audio unexpected not_modified seq=%d", f.seq);
                     complete = false;
-                } else if (!writer.WriteFrameAudio(f.seq, download_buf_, f.audio_etag)) {
+                } else if (!writer.WriteFrameAudio(f.seq, download_buf_, f.audio_etag, f.frame_profile_id, f.frame)) {
                     ESP_LOGW(kTag, "frame audio write failed seq=%d", f.seq);
                     complete = false;
                 }
@@ -196,8 +216,8 @@ bool SyncService::CommitStagedFrames(cache::CacheWriter& writer, const std::stri
         ++saved;
         evt::PostGroupSyncStatus(saving_mode, gid, synced_name, ClampProgressCount(saved), ClampProgressCount(total));
     }
-    if (!cache::WriteManifest(gid, manifest.manifest_etag, manifest.contents.size(), synced_name,
-                              Board::Get().platform().Display())) {
+    if (!writer.CommitManifest(manifest.manifest_etag, manifest.contents.size(), synced_name,
+                               Board::Get().platform().Display())) {
         ESP_LOGW(kTag, "manifest write failed action=rollback");
         writer.Rollback();
         return false;
@@ -207,6 +227,7 @@ bool SyncService::CommitStagedFrames(cache::CacheWriter& writer, const std::stri
         writer.Rollback();
         return false;
     }
+    writer.Commit();
     cache::TouchGroup(gid);
     cache::PruneOldGroups(selected_group_id, gid, kCacheMinFreeBytes, kMaxCachedGroups);
     for (const auto& f : manifest.contents) {
@@ -216,7 +237,6 @@ bool SyncService::CommitStagedFrames(cache::CacheWriter& writer, const std::stri
     for (int idx = total; idx < old_content_count; ++idx) {
         cache::DeleteFrameFiles(gid, idx);
     }
-    writer.Commit();
     SetCurrentGroup(gid);
     if (reason == SyncReason::kCycle && total_updates == 0)
         evt::PostGroupSyncStatus(GroupSyncStatusMode::kCycleCacheHit, gid, synced_name);
@@ -241,16 +261,20 @@ bool SyncService::SyncManifestAndFrames(const std::string& gid, const std::strin
 
     cache::ManifestMeta cached_meta;
     bool                cached_meta_ok = cache::ReadManifestMeta(gid, cached_meta);
-    cached_meta_ok = cached_meta_ok && cache::ManifestIdentityMatches(cached_meta, Board::Get().platform().Display());
+    sync_contract::CacheIdentity cached_identity;
+    cached_meta_ok = cached_meta_ok && MakeCachedManifestIdentity(cached_meta, cached_identity) &&
+                     sync_contract::CacheIdentityMatches(cached_identity, Board::Get().platform().Display());
     if (cached_meta_ok && !group_name.empty() && cached_meta.name != group_name) {
         cache::WriteManifest(gid, cached_meta.manifest_etag, cached_meta.content_count, group_name,
                              Board::Get().platform().Display());
         cached_meta_ok = cache::ReadManifestMeta(gid, cached_meta);
-        cached_meta_ok = cached_meta_ok && cache::ManifestIdentityMatches(cached_meta, Board::Get().platform().Display());
+        cached_meta_ok = cached_meta_ok && MakeCachedManifestIdentity(cached_meta, cached_identity) &&
+                         sync_contract::CacheIdentityMatches(cached_identity, Board::Get().platform().Display());
     }
     const std::string status_name = !group_name.empty() ? group_name : cached_meta.name;
 
-    if (cached_meta_ok && cached_meta.manifest_etag == expected_etag) {
+    if (cached_meta_ok && sync_contract::CachedManifestCanUseEtag(cached_identity, Board::Get().platform().Display(),
+                                                                  cached_meta.manifest_etag, expected_etag)) {
         const int content_count = expected_content_count >= 0 ? expected_content_count : cached_meta.content_count;
         return HandleCachedManifestHit(gid, expected_etag, status_name, content_count, previous_current,
                                        selected_group_id, reason);

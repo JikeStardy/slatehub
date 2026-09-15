@@ -30,13 +30,16 @@ bool RemoveIfExists(const std::string& path) {
     return false;
 }
 
-void RollbackSwaps(std::vector<Swap>& swaps) {
+}  // namespace
+
+bool RollbackSwaps(std::vector<Swap>& swaps) {
+    bool ok = true;
     for (auto it = swaps.rbegin(); it != swaps.rend(); ++it) {
         if (it->installed) {
             if (rename(it->target.c_str(), it->staged.c_str()) != 0 && errno != ENOENT) {
                 ESP_LOGW(kTag, "rollback move failed from=%s to=%s errno=%d", it->target.c_str(), it->staged.c_str(),
                          errno);
-                RemoveIfExists(it->target);
+                ok = RemoveIfExists(it->target) && ok;
             }
             it->installed = false;
         }
@@ -44,18 +47,20 @@ void RollbackSwaps(std::vector<Swap>& swaps) {
             if (rename(it->backup.c_str(), it->target.c_str()) != 0) {
                 ESP_LOGE(kTag, "rollback restore failed from=%s to=%s errno=%d", it->backup.c_str(), it->target.c_str(),
                          errno);
+                ok = false;
             }
             it->had_target = false;
         } else {
-            RemoveIfExists(it->backup);
+            ok = RemoveIfExists(it->backup) && ok;
         }
     }
+    return ok;
 }
 
-}  // namespace
-
-bool CommitSwaps(std::vector<Swap>& swaps) {
+bool InstallSwaps(std::vector<Swap>& swaps) {
     for (auto& swap : swaps) {
+        if (swap.installed)
+            continue;
         if (!RemoveIfExists(swap.backup)) {
             RollbackSwaps(swaps);
             return false;
@@ -80,13 +85,24 @@ bool CommitSwaps(std::vector<Swap>& swaps) {
         }
         swap.installed = true;
     }
+    return true;
+}
+
+bool FinalizeSwaps(std::vector<Swap>& swaps) {
+    bool ok = true;
     for (auto& swap : swaps) {
         if (swap.had_target)
-            RemoveIfExists(swap.backup);
+            ok = RemoveIfExists(swap.backup) && ok;
         swap.had_target = false;
         swap.installed  = false;
     }
-    return true;
+    return ok;
+}
+
+bool CommitSwaps(std::vector<Swap>& swaps) {
+    if (!InstallSwaps(swaps))
+        return false;
+    return FinalizeSwaps(swaps);
 }
 
 }  // namespace cache::staging

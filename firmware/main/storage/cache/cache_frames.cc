@@ -9,6 +9,7 @@
 #include <cstring>
 #include <utility>
 
+#include "storage/cache/cache_internal.h"
 #include "storage/cache/cache_io.h"
 #include "storage/cache/cache_paths.h"
 #include "storage/cache/cache_staging.h"
@@ -74,22 +75,48 @@ bool ReadFrameMetaFile(const std::string& path, cache::FrameMeta& out) {
         out.audio_etag = audio_etag->valuestring;
     if (cJSON_IsString(profile_id) && profile_id->valuestring)
         out.profile_id = profile_id->valuestring;
-    if (cJSON_IsNumber(width) && width->valueint >= 0)
-        out.width = width->valueint;
-    if (cJSON_IsNumber(height) && height->valueint >= 0)
-        out.height = height->valueint;
+    if (!sync_contract::ReadIntField({cJSON_IsNumber(width), cJSON_IsNumber(width) ? width->valuedouble : 0.0}, 1,
+                                     INT32_MAX, out.width) ||
+        !sync_contract::ReadIntField({cJSON_IsNumber(height), cJSON_IsNumber(height) ? height->valuedouble : 0.0},
+                                     1, INT32_MAX, out.height)) {
+        cJSON_Delete(root);
+        out = {};
+        return false;
+    }
     if (cJSON_IsString(format) && format->valuestring)
         out.pixel_format = format->valuestring;
     if (cJSON_IsString(codec) && codec->valuestring)
         out.frame_codec = codec->valuestring;
-    if (cJSON_IsNumber(byte_len) && byte_len->valuedouble >= 0.0)
-        out.byte_length = static_cast<size_t>(byte_len->valuedouble);
+    display::PixelFormat parsed_format{};
+    display::FrameCodec  parsed_codec{};
+    if (out.profile_id.empty() || !sync_contract::ParsePixelFormat(out.pixel_format, parsed_format) ||
+        !sync_contract::ParseFrameCodec(out.frame_codec, parsed_codec)) {
+        cJSON_Delete(root);
+        out = {};
+        return false;
+    }
+    std::size_t parsed_byte_len = 0;
+    if (!sync_contract::ReadSizeField({cJSON_IsNumber(byte_len), cJSON_IsNumber(byte_len) ? byte_len->valuedouble : 0.0},
+                                      display::kMaxFrameBytes, parsed_byte_len)) {
+        cJSON_Delete(root);
+        out = {};
+        return false;
+    }
+    out.byte_length = parsed_byte_len;
+    if (ttl && !cJSON_IsNull(ttl) && !cJSON_IsNumber(ttl)) {
+        cJSON_Delete(root);
+        out = {};
+        return false;
+    }
     if (cJSON_IsNumber(ttl)) {
-        const double v = ttl->valuedouble;
-        if (v >= 0.0 && v <= static_cast<double>(UINT32_MAX)) {
-            out.has_ttl = true;
-            out.ttl_sec = static_cast<uint32_t>(v);
+        uint32_t ttl_value = 0;
+        if (!sync_contract::ReadUint32Field({true, ttl->valuedouble}, ttl_value)) {
+            cJSON_Delete(root);
+            out = {};
+            return false;
         }
+        out.has_ttl = true;
+        out.ttl_sec = ttl_value;
     }
     cJSON_Delete(root);
     return true;
@@ -216,6 +243,10 @@ bool ReadFrameMeta(const std::string& gid, int idx, FrameMeta& out) {
     return ReadFrameMetaFile(internal::MetaPath(gid, idx), out);
 }
 
+bool ReadFrameMeta(const std::string& gid, int idx, FrameMeta& out, const display::DisplayInfo& display_info) {
+    return ReadFrameMetaFile(internal::MetaPath(gid, idx), out) && FrameMetaIdentityMatches(out, display_info);
+}
+
 namespace {
 bool BeginFrameStage(const std::string& gid) {
     if (gid.empty())
@@ -277,12 +308,13 @@ bool StagedFrameAudioExists(const std::string& gid, int idx, const std::string& 
 }
 
 bool WriteStagedFrameAudio(const std::string& gid, int idx, const std::vector<uint8_t>& bytes,
-                           const std::string& etag) {
+                           const std::string& etag, const std::string& profile_id,
+                           const display::FrameDescriptor& descriptor) {
     internal::DirEnsure(internal::StageDir(gid));
     if (!internal::WriteAll(internal::StageAudioPath(gid, idx), bytes.data(), bytes.size()))
         return false;
     internal::RemoveIfExists(internal::StageDir(gid) + "/" + std::to_string(idx) + ".pcm.etag");
-    return UpdateStagedFrameEtag(gid, idx, "", etag);
+    return UpdateStagedFrameEtag(gid, idx, "", etag, profile_id, &descriptor);
 }
 
 bool WriteStagedFrameMeta(const std::string& gid, int idx, const FrameMeta& meta) {
@@ -291,7 +323,7 @@ bool WriteStagedFrameMeta(const std::string& gid, int idx, const FrameMeta& meta
 }
 
 bool CommitStagedFrame(const std::string& gid, int idx, const std::string& image_etag, const std::string& audio_etag,
-                       const display::DisplayInfo& display_info) {
+                       const display::DisplayInfo& display_info, std::vector<staging::Swap>& swaps) {
     internal::DirEnsure(internal::GroupDir(gid));
     internal::DirEnsure(internal::FramesDir(gid));
 
@@ -326,7 +358,7 @@ bool CommitStagedFrame(const std::string& gid, int idx, const std::string& image
         }
     }
 
-    std::vector<staging::Swap> swaps;
+    const std::size_t first_new_swap = swaps.size();
     if (internal::PathExists(staged_image)) {
         swaps.push_back({staged_image, internal::ImagePath(gid, idx), internal::ImagePath(gid, idx) + ".bak"});
     }
@@ -335,10 +367,12 @@ bool CommitStagedFrame(const std::string& gid, int idx, const std::string& image
     }
     swaps.push_back({staged_meta, internal::MetaPath(gid, idx), internal::MetaPath(gid, idx) + ".bak"});
 
-    const bool ok = staging::CommitSwaps(swaps);
+    const bool ok = staging::InstallSwaps(swaps);
     if (ok) {
         internal::RemoveIfExists(internal::EtagPath(gid, idx, "img"));
         internal::RemoveIfExists(internal::EtagPath(gid, idx, "pcm"));
+    } else {
+        swaps.resize(first_new_swap);
     }
     return ok;
 }
@@ -373,8 +407,9 @@ bool CacheWriter::FrameAudioExists(int idx, const std::string& expected_etag,
     return begun_ && StagedFrameAudioExists(gid_, idx, expected_etag, display_info);
 }
 
-bool CacheWriter::WriteFrameAudio(int idx, const std::vector<uint8_t>& bytes, const std::string& etag) {
-    return begun_ && WriteStagedFrameAudio(gid_, idx, bytes, etag);
+bool CacheWriter::WriteFrameAudio(int idx, const std::vector<uint8_t>& bytes, const std::string& etag,
+                                  const std::string& profile_id, const display::FrameDescriptor& descriptor) {
+    return begun_ && WriteStagedFrameAudio(gid_, idx, bytes, etag, profile_id, descriptor);
 }
 
 bool CacheWriter::WriteFrameMeta(int idx, const FrameMeta& meta) {
@@ -383,20 +418,44 @@ bool CacheWriter::WriteFrameMeta(int idx, const FrameMeta& meta) {
 
 bool CacheWriter::CommitFrame(int idx, const std::string& image_etag, const std::string& audio_etag,
                               const display::DisplayInfo& display_info) {
-    return begun_ && CommitStagedFrame(gid_, idx, image_etag, audio_etag, display_info);
+    return begun_ && CommitStagedFrame(gid_, idx, image_etag, audio_etag, display_info, swaps_);
+}
+
+bool CacheWriter::CommitManifest(const std::string& manifest_etag, int content_count, const std::string& name,
+                                 const display::DisplayInfo& display_info) {
+    if (!begun_)
+        return false;
+    ManifestMeta old;
+    ReadManifestMeta(gid_, old);
+    const std::string staged_manifest = internal::StageDir(gid_) + "/manifest.json";
+    if (!internal::WriteManifestFile(staged_manifest, gid_, manifest_etag, content_count,
+                                     name.empty() ? old.name : name, old.last_access_seq, display_info)) {
+        return false;
+    }
+    const std::size_t first_new_swap = swaps_.size();
+    swaps_.push_back({staged_manifest, internal::ManifestPath(gid_), internal::ManifestPath(gid_) + ".bak"});
+    if (!staging::InstallSwaps(swaps_)) {
+        swaps_.resize(first_new_swap);
+        return false;
+    }
+    return true;
 }
 
 bool CacheWriter::Commit() {
     if (!begun_)
         return false;
+    (void)staging::FinalizeSwaps(swaps_);
     committed_ = true;
     CleanupFrameStage(gid_);
     return true;
 }
 
 void CacheWriter::Rollback() {
-    if (begun_ && !committed_)
+    if (begun_ && !committed_) {
+        staging::RollbackSwaps(swaps_);
         CleanupFrameStage(gid_);
+    }
+    swaps_.clear();
     begun_ = false;
 }
 

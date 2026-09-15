@@ -45,15 +45,16 @@ bool WriteAll(const std::string& path, const void* data, size_t len) {
     return true;
 }
 
-bool ReadAll(const std::string& path, std::vector<uint8_t>& out, long max_read_bytes) {
+bool ReadAll(const std::string& path, std::vector<uint8_t>& out, size_t max_read_bytes) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
         return false;
     const off_t len = st.st_size;
     if (len < 0)
         return false;
-    if (len > max_read_bytes) {
-        ESP_LOGW(kTag, "read refused path=%s bytes=%ld limit=%ld", path.c_str(), len, max_read_bytes);
+    if (static_cast<uint64_t>(len) > static_cast<uint64_t>(max_read_bytes)) {
+        ESP_LOGW(kTag, "read refused path=%s bytes=%llu limit=%llu", path.c_str(),
+                 static_cast<unsigned long long>(len), static_cast<unsigned long long>(max_read_bytes));
         return false;
     }
     FILE* f = fopen(path.c_str(), "rb");

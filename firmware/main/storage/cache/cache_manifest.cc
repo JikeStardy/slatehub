@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <algorithm>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 
 #include "storage/cache/cache_internal.h"
@@ -26,17 +27,50 @@ bool ReadManifestMetaFile(const std::string& path, cache::ManifestMeta& out) {
     cJSON* root = cJSON_ParseWithLength(reinterpret_cast<const char*>(buf.data()), buf.size());
     if (!root)
         return false;
-    out.gid             = cache::internal::JsonStringField(root, "group_id");
-    out.name            = cache::internal::JsonStringField(root, "group_name");
-    out.manifest_etag   = cache::internal::JsonStringField(root, "manifest_etag");
-    out.content_count   = cache::internal::JsonNonNegativeIntField(root, "content_count", 0);
-    out.last_access_seq = cache::internal::JsonUint32Field(root, "last_access_seq", 0);
-    out.profile_id      = cache::internal::JsonStringField(root, "profile_id");
-    out.width           = cache::internal::JsonNonNegativeIntField(root, "width", 0);
-    out.height          = cache::internal::JsonNonNegativeIntField(root, "height", 0);
-    out.pixel_format    = cache::internal::JsonStringField(root, "pixel_format");
-    out.frame_codec     = cache::internal::JsonStringField(root, "frame_codec");
-    out.byte_length     = static_cast<size_t>(cache::internal::JsonNonNegativeIntField(root, "byte_length", 0));
+    out.gid           = cache::internal::JsonStringField(root, "group_id");
+    out.name          = cache::internal::JsonStringField(root, "group_name");
+    out.manifest_etag = cache::internal::JsonStringField(root, "manifest_etag");
+    out.profile_id    = cache::internal::JsonStringField(root, "profile_id");
+    out.pixel_format  = cache::internal::JsonStringField(root, "pixel_format");
+    out.frame_codec   = cache::internal::JsonStringField(root, "frame_codec");
+    display::PixelFormat parsed_format{};
+    display::FrameCodec  parsed_codec{};
+    if (out.profile_id.empty() || !sync_contract::ParsePixelFormat(out.pixel_format, parsed_format) ||
+        !sync_contract::ParseFrameCodec(out.frame_codec, parsed_codec)) {
+        cJSON_Delete(root);
+        out = {};
+        return false;
+    }
+
+    cJSON* content_count   = cJSON_GetObjectItemCaseSensitive(root, "content_count");
+    cJSON* last_access_seq = cJSON_GetObjectItemCaseSensitive(root, "last_access_seq");
+    cJSON* width           = cJSON_GetObjectItemCaseSensitive(root, "width");
+    cJSON* height          = cJSON_GetObjectItemCaseSensitive(root, "height");
+    if (!sync_contract::ReadIntField(
+            {cJSON_IsNumber(content_count), cJSON_IsNumber(content_count) ? content_count->valuedouble : 0.0}, 0,
+            INT32_MAX, out.content_count) ||
+        !sync_contract::ReadUint32Field(
+            {cJSON_IsNumber(last_access_seq), cJSON_IsNumber(last_access_seq) ? last_access_seq->valuedouble : 0.0},
+            out.last_access_seq) ||
+        !sync_contract::ReadIntField({cJSON_IsNumber(width), cJSON_IsNumber(width) ? width->valuedouble : 0.0}, 1,
+                                     INT32_MAX, out.width) ||
+        !sync_contract::ReadIntField({cJSON_IsNumber(height), cJSON_IsNumber(height) ? height->valuedouble : 0.0},
+                                     1, INT32_MAX, out.height)) {
+        cJSON_Delete(root);
+        out = {};
+        return false;
+    }
+
+    cJSON* byte_length = cJSON_GetObjectItemCaseSensitive(root, "byte_length");
+    std::size_t parsed_byte_length = 0;
+    if (!sync_contract::ReadSizeField(
+            {cJSON_IsNumber(byte_length), cJSON_IsNumber(byte_length) ? byte_length->valuedouble : 0.0},
+            display::kMaxFrameBytes, parsed_byte_length)) {
+        cJSON_Delete(root);
+        out = {};
+        return false;
+    }
+    out.byte_length = parsed_byte_length;
     cJSON_Delete(root);
     return !out.manifest_etag.empty();
 }
@@ -52,6 +86,38 @@ void WriteManifestIdentity(cJSON* root, const cache::ManifestMeta& meta) {
 
 }  // namespace
 
+namespace cache::internal {
+
+bool WriteManifestFile(const std::string& path, const std::string& gid, const std::string& manifest_etag,
+                       int content_count, const std::string& name, uint32_t last_access_seq,
+                       const display::DisplayInfo& display_info) {
+    cJSON* root = cJSON_CreateObject();
+    if (!root)
+        return false;
+    cJSON_AddStringToObject(root, "group_id", gid.c_str());
+    cJSON_AddStringToObject(root, "group_name", name.c_str());
+    cJSON_AddStringToObject(root, "manifest_etag", manifest_etag.c_str());
+    cJSON_AddNumberToObject(root, "content_count", content_count);
+    cJSON_AddNumberToObject(root, "last_access_seq", static_cast<double>(last_access_seq));
+    cache::ManifestMeta identity;
+    identity.profile_id   = display_info.profile_id ? display_info.profile_id : "";
+    identity.width        = display_info.frame.width;
+    identity.height       = display_info.frame.height;
+    identity.pixel_format = sync_contract::PixelFormatWire(display_info.frame.pixel_format);
+    identity.frame_codec  = sync_contract::FrameCodecWire(display_info.frame.codec);
+    identity.byte_length  = display_info.frame.byte_size;
+    WriteManifestIdentity(root, identity);
+    char* s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!s)
+        return false;
+    const bool ok = WriteAll(path, s, std::strlen(s));
+    cJSON_free(s);
+    return ok;
+}
+
+}  // namespace cache::internal
+
 namespace cache {
 
 bool WriteManifest(const std::string& gid, const std::string& manifest_etag, int content_count,
@@ -61,27 +127,8 @@ bool WriteManifest(const std::string& gid, const std::string& manifest_etag, int
     internal::DirEnsure(internal::FramesDir(gid));
     ManifestMeta old;
     ReadManifestMeta(gid, old);
-    cJSON* root = cJSON_CreateObject();
-    if (!root)
-        return false;
-    cJSON_AddStringToObject(root, "group_id", gid.c_str());
-    cJSON_AddStringToObject(root, "group_name", name.empty() ? old.name.c_str() : name.c_str());
-    cJSON_AddStringToObject(root, "manifest_etag", manifest_etag.c_str());
-    cJSON_AddNumberToObject(root, "content_count", content_count);
-    cJSON_AddNumberToObject(root, "last_access_seq", static_cast<double>(old.last_access_seq));
-    ManifestMeta identity = old;
-    identity.profile_id   = display_info.profile_id ? display_info.profile_id : "";
-    identity.width        = display_info.frame.width;
-    identity.height       = display_info.frame.height;
-    identity.pixel_format = sync_contract::PixelFormatWire(display_info.frame.pixel_format);
-    identity.frame_codec  = sync_contract::FrameCodecWire(display_info.frame.codec);
-    identity.byte_length  = display_info.frame.byte_size;
-    WriteManifestIdentity(root, identity);
-    char* s  = cJSON_PrintUnformatted(root);
-    bool  ok = s && internal::WriteAll(internal::ManifestPath(gid), s, std::strlen(s));
-    cJSON_free(s);
-    cJSON_Delete(root);
-    return ok;
+    return internal::WriteManifestFile(internal::ManifestPath(gid), gid, manifest_etag, content_count,
+                                       name.empty() ? old.name : name, old.last_access_seq, display_info);
 }
 
 bool ManifestIdentityMatches(const ManifestMeta& meta, const display::DisplayInfo& display_info) {

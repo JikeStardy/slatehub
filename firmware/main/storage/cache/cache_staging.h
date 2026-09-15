@@ -14,5 +14,8 @@ struct Swap {
 };
 
 bool CommitSwaps(std::vector<Swap>& swaps);
+bool InstallSwaps(std::vector<Swap>& swaps);
+bool FinalizeSwaps(std::vector<Swap>& swaps);
+bool RollbackSwaps(std::vector<Swap>& swaps);
 
 }  // namespace cache::staging

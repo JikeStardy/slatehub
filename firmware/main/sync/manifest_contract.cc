@@ -1,6 +1,9 @@
 #include "sync/manifest_contract.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace sync_contract {
 namespace {
@@ -115,16 +118,51 @@ bool ParseFrameCodec(const std::string& wire, display::FrameCodec& out) {
 
 std::string BuildRegisterPayload(const std::string& mac, const display::DisplayInfo& display_info,
                                  const std::string& fw_version) {
+    const char* board_id = display_info.board_id ? display_info.board_id : "";
     std::string body;
-    body.reserve(mac.size() + std::strlen(display_info.board_id) + fw_version.size() + 72);
+    body.reserve(mac.size() + std::strlen(board_id) + fw_version.size() + 72);
     body += "{\"mac\":\"";
     body += EscapeJsonString(mac);
     body += "\",\"board_id\":\"";
-    body += EscapeJsonString(display_info.board_id ? display_info.board_id : "");
+    body += EscapeJsonString(board_id);
     body += "\",\"protocol_version\":2,\"fw_version\":\"";
     body += EscapeJsonString(fw_version);
     body += "\"}";
     return body;
+}
+
+std::string ResolveFirmwareVersion(const char* app_version, const char* config_version) {
+    if (app_version && app_version[0] != '\0')
+        return app_version;
+    if (config_version && config_version[0] != '\0')
+        return config_version;
+    return "unknown";
+}
+
+bool ReadIntField(NumericField field, int min_value, int max_value, int& out) {
+    if (!field.present || !std::isfinite(field.value) || std::floor(field.value) != field.value ||
+        field.value < static_cast<double>(min_value) || field.value > static_cast<double>(max_value)) {
+        return false;
+    }
+    out = static_cast<int>(field.value);
+    return true;
+}
+
+bool ReadSizeField(NumericField field, std::size_t max_value, std::size_t& out) {
+    if (!field.present || !std::isfinite(field.value) || std::floor(field.value) != field.value || field.value < 0.0 ||
+        field.value > static_cast<double>(max_value)) {
+        return false;
+    }
+    out = static_cast<std::size_t>(field.value);
+    return true;
+}
+
+bool ReadUint32Field(NumericField field, uint32_t& out) {
+    std::size_t value = 0;
+    if (!ReadSizeField(field, std::numeric_limits<uint32_t>::max(), value))
+        return false;
+    out = static_cast<uint32_t>(value);
+    return true;
 }
 
 bool DescriptorMatchesDisplay(const std::string& profile_id, const display::FrameDescriptor& descriptor,
@@ -146,6 +184,19 @@ bool ValidateManifestIdentity(const ManifestIdentity& manifest, const display::D
             return false;
         if (!SameDescriptor(content.frame, manifest.frame))
             return false;
+    }
+    return true;
+}
+
+bool ValidateManifestContentSet(const ManifestIdentity& manifest) {
+    std::vector<int> seen;
+    seen.reserve(manifest.contents.size());
+    for (const ContentIdentity& content : manifest.contents) {
+        if (content.seq < 0)
+            return false;
+        if (std::find(seen.begin(), seen.end(), content.seq) != seen.end())
+            return false;
+        seen.push_back(content.seq);
     }
     return true;
 }

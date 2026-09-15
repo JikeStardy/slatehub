@@ -9,6 +9,7 @@ import type { VariantRenderService } from '../rendering/variant-render.service';
 import { renderTargetForProfile, type RenderTarget } from '../rendering/render-target';
 import type { AudioTranscoderService } from '../audio/audio-transcoder.service';
 import type { TtsService } from '../tts/tts.service';
+import { audioBlobContentId } from '../../infra/blob/content-audio-blobs';
 import type { ContentAudioBlobService } from './content-audio-blob.service';
 import { ContentsService } from './contents.service';
 
@@ -231,6 +232,176 @@ describe('ContentsService source and variant workflow', () => {
     expect(renders.map((target) => target.profileId)).toEqual([NOTE4_PROFILE]);
     expect([...blobs.storage.keys()].some((key) => key.includes(VIRTUAL_PROFILE))).toBe(false);
   });
+
+  it('restores a complete replacement snapshot when Note4 becomes unavailable', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    const renders: RenderTarget[] = [];
+    const service = createContentsService({
+      store,
+      blobs,
+      renders,
+      failProfiles: new Set([NOTE4_PROFILE]),
+      preservePreviousOnFailure: false,
+    });
+    const before = snapshotState(store, blobs, 'content-1');
+
+    await expect(
+      service.patchImage('content-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from('replacement source bytes'),
+        hasAudio: false,
+        audioBuf: null,
+        hasFrameName: true,
+        frameName: 'Replacement',
+      })
+    ).rejects.toThrow(/Note4 图片变体渲染失败/);
+
+    expect(snapshotState(store, blobs, 'content-1')).toEqual(before);
+  });
+
+  it('restores replacement content, source, variants, legacy, and audio when legacy mirror write fails', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    const renders: RenderTarget[] = [];
+    blobs.failLegacyWrite = true;
+    const service = createContentsService({ store, blobs, renders });
+    const before = snapshotState(store, blobs, 'content-1');
+
+    await expect(
+      service.patchImage('content-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from('replacement source bytes'),
+        hasAudio: false,
+        audioBuf: null,
+        hasFrameName: true,
+        frameName: 'Replacement',
+      })
+    ).rejects.toThrow(/legacy write failed/);
+
+    expect(snapshotState(store, blobs, 'content-1')).toEqual(before);
+  });
+
+  it('restores replacement content, source, variants, legacy, and audio when final content update fails', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    const renders: RenderTarget[] = [];
+    store.failFinalImageUpdate = true;
+    const service = createContentsService({ store, blobs, renders });
+    const before = snapshotState(store, blobs, 'content-1');
+
+    await expect(
+      service.patchImage('content-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from('replacement source bytes'),
+        hasAudio: false,
+        audioBuf: null,
+        hasFrameName: true,
+        frameName: 'Replacement',
+      })
+    ).rejects.toThrow(/final content update failed/);
+
+    expect(snapshotState(store, blobs, 'content-1')).toEqual(before);
+  });
+
+  it('keeps created content and blobs recoverable when create compensation DB fails', async () => {
+    const store = new FakeContentStore();
+    const blobs = new FakeBlobService();
+    const renders: RenderTarget[] = [];
+    store.failContentDelete = true;
+    const service = createContentsService({
+      store,
+      blobs,
+      renders,
+      failProfiles: new Set([NOTE4_PROFILE]),
+    });
+
+    await expect(
+      service.appendImage('group-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from('source bytes'),
+        hasAudio: true,
+        audioBuf: Buffer.from('audio bytes'),
+        hasFrameName: false,
+        frameName: null,
+      })
+    ).rejects.toThrow(/static_create_compensation_failed/);
+
+    const contentId = store.onlyContentId();
+    expect(store.source(contentId)).toMatchObject({ status: 'ready' });
+    expect(blobs.storage.get(blobs.sourceKey('group-1', contentId))).toEqual(
+      Buffer.from('source bytes')
+    );
+    expect([...blobs.storage.keys()].some((key) => key.includes(VIRTUAL_PROFILE))).toBe(true);
+    expect([...blobs.legacy.keys()].some((key) => key.includes(contentId))).toBe(true);
+  });
+
+  it('renders every static variant from the exact uploaded source bytes', async () => {
+    const original = Buffer.from('exact source consumed by renderer');
+    const store = new FakeContentStore();
+    const blobs = new FakeBlobService();
+    const renderSources: Buffer[] = [];
+    const service = createContentsService({ store, blobs, renders: [], renderSources });
+
+    await service.appendImage('group-1', 'user-1', {
+      hasImage: true,
+      imageBuf: original,
+      imageMimeType: 'image/png',
+      hasAudio: false,
+      audioBuf: null,
+      hasFrameName: false,
+      frameName: null,
+    });
+
+    expect(renderSources).toEqual([original, original]);
+  });
+
+  it('serializes replacement workflows per content id', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    const firstMayFinish = deferred<void>();
+    const firstStarted = deferred<void>();
+    const renders: RenderTarget[] = [];
+    let note4RenderCalls = 0;
+    const service = createContentsService({
+      store,
+      blobs,
+      renders,
+      beforeRender: async (target) => {
+        if (target.profileId !== NOTE4_PROFILE) return;
+        note4RenderCalls += 1;
+        if (note4RenderCalls === 1) {
+          firstStarted.resolve();
+          await firstMayFinish.promise;
+        }
+      },
+    });
+
+    const first = service.patchImage('content-1', 'user-1', {
+      hasImage: true,
+      imageBuf: Buffer.from('first replacement'),
+      hasAudio: false,
+      audioBuf: null,
+      hasFrameName: true,
+      frameName: 'First',
+    });
+    await firstStarted.promise;
+    const second = service.patchImage('content-1', 'user-1', {
+      hasImage: true,
+      imageBuf: Buffer.from('second replacement'),
+      hasAudio: false,
+      audioBuf: null,
+      hasFrameName: true,
+      frameName: 'Second',
+    });
+
+    await Promise.resolve();
+    expect(note4RenderCalls).toBe(1);
+    firstMayFinish.resolve();
+    await first;
+    await second;
+
+    expect(store.source('content-1').sourceEtag).toBe(
+      computeETag(Buffer.from('second replacement'))
+    );
+    expect(store.content('content-1').frameName).toBe('Second');
+  });
 });
 
 function createContentsService(input: {
@@ -239,6 +410,9 @@ function createContentsService(input: {
   renders: RenderTarget[];
   failProfiles?: Set<string>;
   profiles?: string[];
+  preservePreviousOnFailure?: boolean;
+  renderSources?: Buffer[];
+  beforeRender?: (target: RenderTarget) => Promise<void>;
 }): ContentsService {
   return new ContentsService(
     input.store.prisma as unknown as PrismaService,
@@ -253,8 +427,10 @@ function createContentsService(input: {
       }),
     } as unknown as GroupsService,
     {
-      renderTo1bpp: async (_source: Buffer, target: RenderTarget) => {
+      renderTo1bpp: async (source: Buffer, target: RenderTarget) => {
+        input.renderSources?.push(Buffer.from(source));
         input.renders.push(target);
+        await input.beforeRender?.(target);
         if (input.failProfiles?.has(target.profileId)) {
           throw new Error(`render failed for ${target.profileId}`);
         }
@@ -287,10 +463,27 @@ function createContentsService(input: {
         const results = [];
         for (const profileId of input.profiles ?? [NOTE4_PROFILE, VIRTUAL_PROFILE]) {
           const target = renderTargetForProfile(profileId);
+          const previous = input.store.variant(contentId, profileId);
           try {
             const frame = Buffer.from(await render(target));
             const storageKey = input.blobs.frameKey(groupId, contentId, profileId);
             await input.blobs.writeStorageKey(storageKey, 'frame', frame);
+            input.store.upsertVariant(contentId, profileId, {
+              contentId,
+              profileId,
+              status: 'ready',
+              pixelFormat: target.pixelFormat,
+              frameCodec: target.frameCodec,
+              width: target.width,
+              height: target.height,
+              frameEtag: computeETag(frame),
+              frameSize: frame.byteLength,
+              storageKey,
+              renderVersion: 1,
+              lastError: null,
+              leaseUntil: null,
+              attempts: 0,
+            });
             results.push({
               profileId,
               status: 'ready' as const,
@@ -301,11 +494,51 @@ function createContentsService(input: {
               renderVersion: 1,
             });
           } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            if (
+              input.preservePreviousOnFailure !== false &&
+              previous?.status === 'ready' &&
+              previous.frameEtag &&
+              previous.storageKey
+            ) {
+              input.store.upsertVariant(contentId, profileId, {
+                ...previous,
+                lastError: error,
+                attempts: Number(previous.attempts ?? 0) + 1,
+              });
+              results.push({
+                profileId,
+                status: 'ready' as const,
+                changed: false,
+                frameEtag: previous.frameEtag as string,
+                frameSize: previous.frameSize as number,
+                storageKey: previous.storageKey as string,
+                renderVersion: previous.renderVersion as number,
+                error,
+              });
+              continue;
+            }
+            input.store.upsertVariant(contentId, profileId, {
+              contentId,
+              profileId,
+              status: 'failed',
+              pixelFormat: target.pixelFormat,
+              frameCodec: target.frameCodec,
+              width: target.width,
+              height: target.height,
+              frameEtag: null,
+              frameSize: null,
+              storageKey: null,
+              renderVersion: 1,
+              lastError: error,
+              leaseUntil: null,
+              attempts: Number(previous?.attempts ?? 0) + 1,
+            });
             results.push({
               profileId,
               status: 'failed' as const,
               changed: true,
-              error: err instanceof Error ? err.message : String(err),
+              error,
             });
           }
         }
@@ -318,14 +551,20 @@ function createContentsService(input: {
 class FakeContentStore {
   private readonly contents = new Map<string, Record<string, unknown>>();
   private readonly sources = new Map<string, Record<string, unknown>>();
+  private readonly variants = new Map<string, Record<string, unknown>>();
+  failFinalImageUpdate = false;
+  failContentDelete = false;
 
   readonly prisma = {
     content: {
-      findUnique: async ({ where }: { where: { id: string } }) => this.contents.get(where.id),
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        cloneRow(this.contents.get(where.id)),
       update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        if (this.shouldFailFinalImageUpdate(data)) throw new Error('final content update failed');
         const current = this.content(where.id);
         this.applySourceMutation(where.id, data);
-        Object.assign(current, data, { contentEtag: 'content-etag-2' });
+        Object.assign(current, data);
+        if (data.contentEtag === undefined) current.contentEtag = 'content-etag-2';
         return {
           imageEtag: current.imageEtag,
           audioEtag: current.audioEtag,
@@ -337,7 +576,8 @@ class FakeContentStore {
       fn({
         $queryRaw: async () => [{ id: 'group-1' }],
         content: {
-          findUnique: async ({ where }: { where: { id: string } }) => this.contents.get(where.id),
+          findUnique: async ({ where }: { where: { id: string } }) =>
+            cloneRow(this.contents.get(where.id)),
           findFirst: async () => null,
           findMany: async () => [],
           create: async ({ data }: { data: Record<string, unknown> }) => {
@@ -357,9 +597,12 @@ class FakeContentStore {
             where: { id: string };
             data: Record<string, unknown>;
           }) => {
+            if (this.shouldFailFinalImageUpdate(data))
+              throw new Error('final content update failed');
             const current = this.content(where.id);
             this.applySourceMutation(where.id, data);
-            Object.assign(current, data, { contentEtag: 'content-etag-2' });
+            Object.assign(current, data);
+            if (data.contentEtag === undefined) current.contentEtag = 'content-etag-2';
             return {
               imageEtag: current.imageEtag,
               audioEtag: current.audioEtag,
@@ -367,13 +610,17 @@ class FakeContentStore {
             };
           },
           delete: async ({ where }: { where: { id: string } }) => {
+            if (this.failContentDelete) throw new Error('content compensation delete failed');
             this.contents.delete(where.id);
             this.sources.delete(where.id);
+            for (const key of [...this.variants.keys()]) {
+              if (key.startsWith(`${where.id}:`)) this.variants.delete(key);
+            }
           },
         },
         contentSource: {
           findUnique: async ({ where }: { where: { contentId: string } }) =>
-            this.sources.get(where.contentId) ?? null,
+            cloneRow(this.sources.get(where.contentId)),
           upsert: async ({
             where,
             create,
@@ -392,11 +639,13 @@ class FakeContentStore {
             return { count: 1 };
           },
         },
+        contentVariant: this.contentVariantApi(),
       }),
     contentSource: {
       findUnique: async ({ where }: { where: { contentId: string } }) =>
-        this.sources.get(where.contentId) ?? null,
+        cloneRow(this.sources.get(where.contentId)),
     },
+    contentVariant: this.contentVariantApi(),
   };
 
   content(id: string): Record<string, unknown> {
@@ -425,6 +674,24 @@ class FakeContentStore {
     this.sources.set(id, { ...row });
   }
 
+  seedVariant(contentId: string, profileId: string, row: Record<string, unknown>): void {
+    this.upsertVariant(contentId, profileId, row);
+  }
+
+  variant(contentId: string, profileId: string): Record<string, unknown> | null {
+    return cloneRow(this.variants.get(`${contentId}:${profileId}`));
+  }
+
+  upsertVariant(contentId: string, profileId: string, row: Record<string, unknown>): void {
+    this.variants.set(`${contentId}:${profileId}`, { id: `${contentId}-${profileId}`, ...row });
+  }
+
+  variantsFor(contentId: string): Record<string, unknown>[] {
+    return [...this.variants.entries()]
+      .filter(([key]) => key.startsWith(`${contentId}:`))
+      .map(([, row]) => cloneRow(row)!);
+  }
+
   contentCount(): number {
     return this.contents.size;
   }
@@ -446,11 +713,45 @@ class FakeContentStore {
     }
     delete data.source;
   }
+
+  private shouldFailFinalImageUpdate(data: Record<string, unknown>): boolean {
+    const shouldFail =
+      this.failFinalImageUpdate &&
+      data.imageEtag !== undefined &&
+      data.imageSize !== undefined &&
+      data.source === undefined;
+    if (shouldFail) this.failFinalImageUpdate = false;
+    return shouldFail;
+  }
+
+  private contentVariantApi(): Record<string, unknown> {
+    return {
+      findMany: async ({ where }: { where: { contentId: string } }) =>
+        this.variantsFor(where.contentId),
+      deleteMany: async ({ where }: { where: { contentId: string } }) => {
+        let count = 0;
+        for (const key of [...this.variants.keys()]) {
+          if (key.startsWith(`${where.contentId}:`)) {
+            this.variants.delete(key);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+      createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => {
+        for (const row of data) {
+          this.upsertVariant(String(row.contentId), String(row.profileId), row);
+        }
+        return { count: data.length };
+      },
+    };
+  }
 }
 
 class FakeBlobService {
   readonly storage = new Map<string, Buffer>();
   readonly legacy = new Map<string, Buffer>();
+  failLegacyWrite = false;
 
   sourceKey(groupId: string, contentId: string): string {
     return `sources/${groupId}/${contentId}.source`;
@@ -484,6 +785,10 @@ class FakeBlobService {
     kind: string,
     data: Buffer
   ): Promise<{ path: string; size: number }> {
+    if (this.failLegacyWrite && kind === 'image') {
+      this.legacy.set(`${groupId}/${contentId}.${kind}`, Buffer.from(data));
+      throw new Error('legacy write failed');
+    }
     this.legacy.set(`${groupId}/${contentId}.${kind}`, Buffer.from(data));
     return { path: `${groupId}/${contentId}.${kind}`, size: data.byteLength };
   }
@@ -496,4 +801,110 @@ class FakeBlobService {
   async delete(groupId: string, contentId: string, kind: string): Promise<void> {
     this.legacy.delete(`${groupId}/${contentId}.${kind}`);
   }
+}
+
+function seedReadyStaticContent(): { store: FakeContentStore; blobs: FakeBlobService } {
+  const store = new FakeContentStore();
+  const blobs = new FakeBlobService();
+  const source = Buffer.from('old exact source bytes');
+  const note4 = Buffer.alloc(15_000, 0x44);
+  const virtual = Buffer.alloc(4_736, 0x55);
+  const audio = Buffer.from('old audio bytes');
+  const sourceKey = blobs.sourceKey('group-1', 'content-1');
+  const note4Key = blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+  const virtualKey = blobs.frameKey('group-1', 'content-1', VIRTUAL_PROFILE);
+  const audioEtag = computeETag(audio);
+  store.seedContent('content-1', {
+    id: 'content-1',
+    groupId: 'group-1',
+    sortOrder: 0,
+    frameName: 'Old',
+    imageEtag: computeETag(note4),
+    imageSize: note4.byteLength,
+    audioEtag,
+    audioSize: audio.byteLength,
+    audioStatus: 'ready',
+    audioSource: 'upload',
+    audioVoice: null,
+    audioText: null,
+    audioLastError: null,
+    audioUpdatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    audioLeaseUntil: null,
+    audioAttempts: 0,
+    kind: 'image',
+  });
+  store.seedSource('content-1', {
+    contentId: 'content-1',
+    status: 'ready',
+    sourceEtag: computeETag(source),
+    mimeType: 'image/png',
+    size: source.byteLength,
+    storageKey: sourceKey,
+  });
+  store.seedVariant('content-1', NOTE4_PROFILE, readyVariantRow(NOTE4_PROFILE, note4Key, note4));
+  store.seedVariant(
+    'content-1',
+    VIRTUAL_PROFILE,
+    readyVariantRow(VIRTUAL_PROFILE, virtualKey, virtual)
+  );
+  blobs.storage.set(sourceKey, source);
+  blobs.storage.set(note4Key, note4);
+  blobs.storage.set(virtualKey, virtual);
+  blobs.legacy.set('group-1/content-1.image', note4);
+  blobs.legacy.set(`group-1/${audioBlobContentId('content-1', audioEtag)}.audio`, audio);
+  return { store, blobs };
+}
+
+function readyVariantRow(
+  profileId: string,
+  storageKey: string,
+  frame: Buffer
+): Record<string, unknown> {
+  const target = renderTargetForProfile(profileId);
+  return {
+    contentId: 'content-1',
+    profileId,
+    status: 'ready',
+    pixelFormat: target.pixelFormat,
+    frameCodec: target.frameCodec,
+    width: target.width,
+    height: target.height,
+    frameEtag: computeETag(frame),
+    frameSize: frame.byteLength,
+    storageKey,
+    renderVersion: 1,
+    lastError: null,
+    leaseUntil: null,
+    attempts: 0,
+  };
+}
+
+function snapshotState(
+  store: FakeContentStore,
+  blobs: FakeBlobService,
+  contentId: string
+): Record<string, unknown> {
+  return {
+    content: cloneRow(store.content(contentId)),
+    source: cloneRow(store.source(contentId)),
+    variants: store.variantsFor(contentId),
+    storage: sortedBufferEntries(blobs.storage),
+    legacy: sortedBufferEntries(blobs.legacy),
+  };
+}
+
+function sortedBufferEntries(map: Map<string, Buffer>): Array<[string, Buffer]> {
+  return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+function cloneRow(row: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  return row ? { ...row } : null;
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }

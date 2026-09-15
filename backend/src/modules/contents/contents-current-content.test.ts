@@ -224,6 +224,11 @@ describe('ContentsService current content refresh', () => {
         contentSource: {
           findUnique: async () => null,
         },
+        contentVariant: {
+          findMany: async () => [],
+          deleteMany: async () => ({ count: 0 }),
+          createMany: async () => ({ count: 0 }),
+        },
         $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
           fn({
             $queryRaw: async () => [{ id: 'group-1' }],
@@ -241,6 +246,11 @@ describe('ContentsService current content refresh', () => {
             },
             contentSource: {
               upsert: async () => ({}),
+              deleteMany: async () => ({ count: 0 }),
+            },
+            contentVariant: {
+              deleteMany: async () => ({ count: 0 }),
+              createMany: async () => ({ count: 0 }),
             },
           }),
       } as never,
@@ -322,6 +332,11 @@ describe('ContentsService current content refresh', () => {
         contentSource: {
           findUnique: async () => null,
         },
+        contentVariant: {
+          findMany: async () => [],
+          deleteMany: async () => ({ count: 0 }),
+          createMany: async () => ({ count: 0 }),
+        },
         $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
           fn({
             $queryRaw: async () => [{ id: 'group-1' }],
@@ -392,6 +407,11 @@ describe('ContentsService current content refresh', () => {
         contentSource: {
           findUnique: async () => null,
         },
+        contentVariant: {
+          findMany: async () => [],
+          deleteMany: async () => ({ count: 0 }),
+          createMany: async () => ({ count: 0 }),
+        },
         $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
           fn({
             $queryRaw: async () => [{ id: 'group-1' }],
@@ -409,6 +429,11 @@ describe('ContentsService current content refresh', () => {
             },
             contentSource: {
               upsert: async () => ({}),
+              deleteMany: async () => ({ count: 0 }),
+            },
+            contentVariant: {
+              deleteMany: async () => ({ count: 0 }),
+              createMany: async () => ({ count: 0 }),
             },
           }),
       } as never,

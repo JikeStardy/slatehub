@@ -1,17 +1,23 @@
 import { createId } from '@paralleldrive/cuid2';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { ContentAudioSource, ContentKind, ContentSource } from '@prisma/client';
+import type {
+  ContentAudioSource,
+  ContentKind,
+  ContentSource,
+  ContentVariant,
+} from '@prisma/client';
 import { type ContentMutationResponseT } from 'shared';
 import { BlobService } from '../../infra/blob/blob.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { computeETag } from '../../common/utils/etag';
-import { ConflictError, NotFoundError, ValidationError } from '../../common/errors';
+import { ConflictError, InternalError, NotFoundError, ValidationError } from '../../common/errors';
 import { lockGroupRow } from '../../common/db/row-locks';
 import { bulkSetContentSortOrder, compactContentSortOrders } from '../../common/db/bulk-sort-order';
 import { validateOrderSet } from '../../common/db/order-validation';
 import { nextContentSortOrder } from '../../common/db/sort-order';
 import { formatError } from '../../common/utils/error-format';
+import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
 import { AudioTranscoderService } from '../audio/audio-transcoder.service';
 import { audioBlobContentId } from '../../infra/blob/content-audio-blobs';
 import { MAX_TTS_TEXT_CHARS, TtsService } from '../tts/tts.service';
@@ -51,9 +57,38 @@ interface RenderedUpload {
   audio: RenderedAudioUpload | null;
 }
 
+interface StaticContentSnapshot {
+  content: StaticContentRestoreData;
+  source: ContentSource | null;
+  sourceBytes: Buffer | null;
+  variants: ContentVariant[];
+  variantBytes: Map<string, Buffer | null>;
+  legacyImageBytes: Buffer | null;
+  audioBlobKey: string | null;
+  audioBytes: Buffer | null;
+}
+
+type StaticContentRestoreData = Pick<
+  Prisma.ContentUpdateInput,
+  | 'frameName'
+  | 'imageEtag'
+  | 'imageSize'
+  | 'audioEtag'
+  | 'audioSize'
+  | 'audioStatus'
+  | 'audioSource'
+  | 'audioVoice'
+  | 'audioText'
+  | 'audioLastError'
+  | 'audioUpdatedAt'
+  | 'audioLeaseUntil'
+  | 'audioAttempts'
+>;
+
 @Injectable()
 export class ContentsService {
   private readonly logger = new Logger(ContentsService.name);
+  private readonly staticMutationQueue = new KeyedPromiseQueue();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -87,13 +122,18 @@ export class ContentsService {
     if (content.kind !== 'image') {
       throw new ValidationError('动态内容请使用 JSON 更新');
     }
-    return this.updateImage(
-      content.groupId,
-      content.sortOrder,
+    return this.staticMutationQueue.run(
       contentId,
-      parsed,
-      content.audioEtag,
-      signal
+      () =>
+        this.updateImage(
+          content.groupId,
+          content.sortOrder,
+          contentId,
+          parsed,
+          content.audioEtag,
+          signal
+        ),
+      { continueAfterFailure: true }
     );
   }
 
@@ -236,6 +276,7 @@ export class ContentsService {
     let dbCreated = false;
     let mutation: { seq: number; groupEtag: string; contentEtag: string };
     let finalImageEtag: string;
+    let variantResults: VariantRenderResult[] = [];
     try {
       await this.blob.writeStorageKey(sourceKey, 'source', image.bytes);
       rollback.deleteCreated(gid, contentId, 'image');
@@ -264,7 +305,8 @@ export class ContentsService {
         return { seq: nextSeq, contentEtag: created.contentEtag };
       });
       dbCreated = true;
-      const note4 = await this.renderStaticVariants(gid, contentId, image, parsed);
+      variantResults = await this.renderStaticVariants(gid, contentId, image, parsed);
+      const note4 = this.requireReadyNote4(variantResults);
       const legacy = await this.mirrorNote4ToLegacy(gid, contentId, note4, rollback);
       finalImageEtag = legacy.etag;
       mutation = await this.withGroupMutation(gid, async (tx) => {
@@ -276,13 +318,15 @@ export class ContentsService {
         return { seq: mutation.seq, contentEtag: updated.contentEtag };
       });
     } catch (err) {
-      if (dbCreated) await this.rollbackCreatedContent(gid, contentId, err);
-      await this.blob.deleteStorageKey(sourceKey).catch((rollbackErr: unknown) => {
-        this.logger.warn(
-          `Source blob rollback failed for created content ${contentId} in group ${gid}: ${formatError(rollbackErr)}`
-        );
-      });
-      await rollback.restoreAll();
+      if (dbCreated) {
+        await this.compensateCreatedContentOrThrow(gid, contentId, err);
+        await this.cleanupChangedVariantFrames(variantResults);
+        await this.deleteSourceBlobAfterCompensation(gid, contentId, sourceKey);
+        await rollback.restoreAll();
+      } else {
+        await this.deleteSourceBlobAfterCompensation(gid, contentId, sourceKey);
+        await rollback.restoreAll();
+      }
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')
         throw new ConflictError('内容序号已存在');
       throw err;
@@ -311,6 +355,7 @@ export class ContentsService {
       throw new ValidationError('没有可更新的字段', { code: 'nothing_to_patch' });
     }
     const { image, audio } = await this.renderUpload(parsed, signal);
+    const snapshot = image ? await this.snapshotStaticContent(gid, contentId) : null;
     const previousSource = image
       ? await this.prisma.contentSource.findUnique({ where: { contentId } })
       : null;
@@ -327,6 +372,7 @@ export class ContentsService {
     const rollback = new BlobRollbackPlan(this.blob, this.logger);
     let dbUpdated = false;
     let previousAudioEtagForCleanup: string | null = null;
+    let variantResults: VariantRenderResult[] = [];
     try {
       const { updated, groupEtag } = await this.withGroupMutation(gid, async (tx) => {
         const current = await tx.content.findUnique({
@@ -354,36 +400,40 @@ export class ContentsService {
       });
       dbUpdated = true;
       if (image) {
-        let note4: VariantRenderResult;
         try {
-          note4 = await this.renderStaticVariants(gid, contentId, image, parsed);
+          variantResults = await this.renderStaticVariants(gid, contentId, image, parsed);
+          const note4 = this.requireReadyNote4(variantResults);
+          const legacy = await this.mirrorNote4ToLegacy(gid, contentId, note4, rollback);
+          const remirrored = await this.withGroupMutation(gid, async (tx) => {
+            const updated = await tx.content.update({
+              where: { id: contentId },
+              data: { imageEtag: legacy.etag, imageSize: legacy.size },
+              select: { imageEtag: true, audioEtag: true, contentEtag: true },
+            });
+            return { updated };
+          });
+          await this.cleanupAudioBlobAfterCommit(gid, contentId, previousAudioEtagForCleanup);
+          return toContentMutationResponse(
+            contentId,
+            seq,
+            remirrored.updated.imageEtag,
+            remirrored.updated.audioEtag,
+            remirrored.groupEtag,
+            remirrored.updated.contentEtag
+          );
         } catch (err) {
-          await this.restoreSourceAfterFailedImageUpdate(
+          if (!snapshot) throw err;
+          await this.restoreStaticReplacementOrThrow({
             gid,
             contentId,
-            previousSource,
-            previousSourceBytes
-          );
+            snapshot,
+            sourceKey: sourceKey ?? this.blob.sourceKey(gid, contentId),
+            newAudioEtag: audio?.etag ?? null,
+            variantResults,
+            originalErr: err,
+          });
           throw err;
         }
-        const legacy = await this.mirrorNote4ToLegacy(gid, contentId, note4, rollback);
-        const remirrored = await this.withGroupMutation(gid, async (tx) => {
-          const updated = await tx.content.update({
-            where: { id: contentId },
-            data: { imageEtag: legacy.etag, imageSize: legacy.size },
-            select: { imageEtag: true, audioEtag: true, contentEtag: true },
-          });
-          return { updated };
-        });
-        await this.cleanupAudioBlobAfterCommit(gid, contentId, previousAudioEtagForCleanup);
-        return toContentMutationResponse(
-          contentId,
-          seq,
-          remirrored.updated.imageEtag,
-          remirrored.updated.audioEtag,
-          remirrored.groupEtag,
-          remirrored.updated.contentEtag
-        );
       }
       await this.cleanupAudioBlobAfterCommit(gid, contentId, previousAudioEtagForCleanup);
       return toContentMutationResponse(
@@ -475,15 +525,17 @@ export class ContentsService {
     contentId: string,
     image: RenderedImageUpload,
     parsed: ParsedContentUpload
-  ): Promise<VariantRenderResult> {
+  ): Promise<VariantRenderResult[]> {
     const result = await this.variantRenderer.renderContentVariants({
       groupId: gid,
       contentId,
       render: (target) => this.renderStaticFrame(image, target, parsed),
     });
-    const note4 = result.results.find(
-      (variant) => variant.profileId === NOTE4_RENDER_TARGET.profileId
-    );
+    return result.results;
+  }
+
+  private requireReadyNote4(results: VariantRenderResult[]): VariantRenderResult {
+    const note4 = results.find((variant) => variant.profileId === NOTE4_RENDER_TARGET.profileId);
     if (
       note4?.status === 'ready' &&
       note4.storageKey &&
@@ -492,7 +544,6 @@ export class ContentsService {
     ) {
       return note4;
     }
-    await this.cleanupChangedVariantFrames(result.results);
     throw new ValidationError('Note4 图片变体渲染失败，内容未保存', {
       code: 'note4_variant_required',
       error: note4?.error,
@@ -537,33 +588,173 @@ export class ContentsService {
     };
   }
 
-  private async restoreSourceAfterFailedImageUpdate(
+  private async snapshotStaticContent(
+    gid: string,
+    contentId: string
+  ): Promise<StaticContentSnapshot> {
+    const content = await this.prisma.content.findUnique({
+      where: { id: contentId },
+      select: {
+        frameName: true,
+        imageEtag: true,
+        imageSize: true,
+        audioEtag: true,
+        audioSize: true,
+        audioStatus: true,
+        audioSource: true,
+        audioVoice: true,
+        audioText: true,
+        audioLastError: true,
+        audioUpdatedAt: true,
+        audioLeaseUntil: true,
+        audioAttempts: true,
+      },
+    });
+    if (!content) throw new NotFoundError('内容不存在');
+    const source = await this.prisma.contentSource.findUnique({ where: { contentId } });
+    const sourceBytes = source?.storageKey
+      ? await this.blob.readStorageKey(source.storageKey)
+      : null;
+    const variants = await this.prisma.contentVariant.findMany({ where: { contentId } });
+    const variantBytes = new Map<string, Buffer | null>();
+    await Promise.all(
+      variants.map(async (variant) => {
+        if (variant.storageKey) {
+          variantBytes.set(variant.storageKey, await this.blob.readStorageKey(variant.storageKey));
+        }
+      })
+    );
+    const audioBlobKey = content.audioEtag
+      ? audioBlobContentId(contentId, content.audioEtag)
+      : null;
+    return {
+      content,
+      source,
+      sourceBytes,
+      variants,
+      variantBytes,
+      legacyImageBytes: await this.blob.read(gid, contentId, 'image'),
+      audioBlobKey,
+      audioBytes: audioBlobKey ? await this.blob.read(gid, audioBlobKey, 'audio') : null,
+    };
+  }
+
+  private async restoreStaticReplacementOrThrow(input: {
+    gid: string;
+    contentId: string;
+    snapshot: StaticContentSnapshot;
+    sourceKey: string;
+    newAudioEtag: string | null;
+    variantResults: VariantRenderResult[];
+    originalErr: unknown;
+  }): Promise<void> {
+    try {
+      await this.restoreStaticReplacementDb(input.gid, input.contentId, input.snapshot);
+    } catch (rollbackErr: unknown) {
+      throw combinedStaticMutationError(
+        'static_replace_compensation_failed',
+        input.originalErr,
+        rollbackErr
+      );
+    }
+    await this.restoreStaticReplacementBlobs(input);
+  }
+
+  private async restoreStaticReplacementDb(
     gid: string,
     contentId: string,
-    previousSource: ContentSource | null,
-    previousBytes: Buffer | null
+    snapshot: StaticContentSnapshot
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      if (previousSource) {
+      await lockGroupRow(tx, gid);
+      await tx.content.update({ where: { id: contentId }, data: snapshot.content });
+      if (snapshot.source) {
         await tx.contentSource.upsert({
           where: { contentId },
-          create: { contentId, ...sourceSnapshotData(previousSource) },
-          update: sourceSnapshotData(previousSource),
+          create: { contentId, ...sourceSnapshotData(snapshot.source) },
+          update: sourceSnapshotData(snapshot.source),
         });
       } else {
         await tx.contentSource.deleteMany({ where: { contentId } });
       }
+      await tx.contentVariant.deleteMany({ where: { contentId } });
+      if (snapshot.variants.length > 0) {
+        await tx.contentVariant.createMany({ data: snapshot.variants.map(variantSnapshotData) });
+      }
+      await this.groups.recomputeManifestEtag(gid, tx);
     });
-    if (previousSource?.storageKey) {
-      await this.restoreStorageKey(previousSource.storageKey, previousBytes);
+  }
+
+  private async restoreStaticReplacementBlobs(input: {
+    gid: string;
+    contentId: string;
+    snapshot: StaticContentSnapshot;
+    sourceKey: string;
+    newAudioEtag: string | null;
+    variantResults: VariantRenderResult[];
+  }): Promise<void> {
+    const snapshotVariantKeys = new Set(input.snapshot.variantBytes.keys());
+    if (input.snapshot.source?.storageKey) {
+      await this.restoreStorageKey(input.snapshot.source.storageKey, input.snapshot.sourceBytes, {
+        deleteWhenMissing: false,
+      });
+      if (input.snapshot.source.storageKey !== input.sourceKey) {
+        await this.blob.deleteStorageKey(input.sourceKey);
+      }
     } else {
-      await this.blob.deleteStorageKey(this.blob.sourceKey(gid, contentId));
+      await this.blob.deleteStorageKey(input.sourceKey);
+    }
+    await Promise.all(
+      [...input.snapshot.variantBytes.entries()].map(([storageKey, bytes]) =>
+        this.restoreStorageKey(storageKey, bytes, { deleteWhenMissing: false })
+      )
+    );
+    await Promise.all(
+      input.variantResults
+        .filter(
+          (result) =>
+            result.changed && result.storageKey && !snapshotVariantKeys.has(result.storageKey)
+        )
+        .map((result) => this.blob.deleteStorageKey(result.storageKey!))
+    );
+    if (input.snapshot.legacyImageBytes) {
+      await this.blob.write(input.gid, input.contentId, 'image', input.snapshot.legacyImageBytes);
+    } else {
+      await this.blob.delete(input.gid, input.contentId, 'image');
+    }
+    if (input.snapshot.audioBlobKey && input.snapshot.audioBytes) {
+      await this.blob.write(
+        input.gid,
+        input.snapshot.audioBlobKey,
+        'audio',
+        input.snapshot.audioBytes
+      );
+    }
+    const oldAudioEtag = input.snapshot.content.audioEtag;
+    if (input.newAudioEtag && input.newAudioEtag !== oldAudioEtag) {
+      await this.blob.delete(
+        input.gid,
+        audioBlobContentId(input.contentId, input.newAudioEtag),
+        'audio'
+      );
     }
   }
 
-  private async restoreStorageKey(storageKey: string, previousBytes: Buffer | null): Promise<void> {
-    if (previousBytes) await this.blob.writeStorageKey(storageKey, 'source', previousBytes);
-    else await this.blob.deleteStorageKey(storageKey);
+  private async restoreStorageKey(
+    storageKey: string,
+    previousBytes: Buffer | null,
+    options: { deleteWhenMissing?: boolean } = {}
+  ): Promise<void> {
+    if (previousBytes) {
+      const kind = storageKey.startsWith('sources/') ? 'source' : 'frame';
+      await this.blob.writeStorageKey(storageKey, kind, previousBytes);
+    } else if (options.deleteWhenMissing !== false) {
+      await this.blob.deleteStorageKey(storageKey);
+    } else {
+      this.logger.warn(
+        `Static restore skipped deleting ${storageKey} because snapshot metadata still points at it`
+      );
+    }
   }
 
   private async cleanupChangedVariantFrames(results: VariantRenderResult[]): Promise<void> {
@@ -580,18 +771,34 @@ export class ContentsService {
     );
   }
 
-  private async rollbackCreatedContent(
+  private async compensateCreatedContentOrThrow(
     gid: string,
     contentId: string,
     originalErr: unknown
   ): Promise<void> {
-    await this.withGroupMutation(gid, async (tx) => {
-      await tx.content.delete({ where: { id: contentId } });
-      await compactContentSortOrders(tx, gid);
-      return {};
-    }).catch((rollbackErr: unknown) => {
+    try {
+      await this.withGroupMutation(gid, async (tx) => {
+        await tx.content.delete({ where: { id: contentId } });
+        await compactContentSortOrders(tx, gid);
+        return {};
+      });
+    } catch (rollbackErr: unknown) {
+      throw combinedStaticMutationError(
+        'static_create_compensation_failed',
+        originalErr,
+        rollbackErr
+      );
+    }
+  }
+
+  private async deleteSourceBlobAfterCompensation(
+    gid: string,
+    contentId: string,
+    sourceKey: string
+  ): Promise<void> {
+    await this.blob.deleteStorageKey(sourceKey).catch((rollbackErr: unknown) => {
       this.logger.warn(
-        `Failed to roll back created content ${contentId} after static render error ${formatError(originalErr)}: ${formatError(rollbackErr)}`
+        `Source blob rollback failed for created content ${contentId} in group ${gid}: ${formatError(rollbackErr)}`
       );
     });
   }
@@ -676,4 +883,39 @@ function sourceSnapshotData(source: ContentSource): Prisma.ContentSourceCreateWi
     size: source.size,
     storageKey: source.storageKey,
   };
+}
+
+function variantSnapshotData(variant: ContentVariant): Prisma.ContentVariantCreateManyInput {
+  return {
+    id: variant.id,
+    contentId: variant.contentId,
+    profileId: variant.profileId,
+    status: variant.status,
+    pixelFormat: variant.pixelFormat,
+    frameCodec: variant.frameCodec,
+    width: variant.width,
+    height: variant.height,
+    frameEtag: variant.frameEtag,
+    frameSize: variant.frameSize,
+    storageKey: variant.storageKey,
+    renderVersion: variant.renderVersion,
+    lastError: variant.lastError,
+    leaseUntil: variant.leaseUntil,
+    attempts: variant.attempts,
+  };
+}
+
+function combinedStaticMutationError(
+  code: 'static_create_compensation_failed' | 'static_replace_compensation_failed',
+  originalErr: unknown,
+  rollbackErr: unknown
+): InternalError {
+  return new InternalError(
+    `${code}: ${formatError(originalErr)}; rollback: ${formatError(rollbackErr)}`,
+    {
+      code,
+      original_error: formatError(originalErr),
+      rollback_error: formatError(rollbackErr),
+    }
+  );
 }

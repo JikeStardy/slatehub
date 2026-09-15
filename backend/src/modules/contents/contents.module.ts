@@ -5,6 +5,7 @@ import { AudioModule } from '../audio/audio.module';
 import { TtsModule } from '../tts/tts.module';
 import { DynamicContentModule } from '../dynamic-content/dynamic-content.module';
 import { RenderingModule } from '../rendering/rendering.module';
+import { ContentMutationCoordinatorModule } from '../../common/worker/content-mutation-coordinator.module';
 import { ContentsMutationController } from './contents-mutation.controller';
 import { ContentsReadController } from './contents-read.controller';
 import { ContentsReadService } from './contents-read.service';
@@ -21,6 +22,7 @@ import { MultipartParser } from './multipart-parser';
     TtsModule,
     DynamicContentModule,
     RenderingModule,
+    ContentMutationCoordinatorModule,
   ],
   controllers: [ContentsMutationController, ContentsReadController],
   providers: [

@@ -7,7 +7,7 @@ import { toPrismaInputJson } from '../../common/db/prisma-json';
 import { computeETag } from '../../common/utils/etag';
 import { InternalError, NotFoundError, ValidationError } from '../../common/errors';
 import { formatError } from '../../common/utils/error-format';
-import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
+import { ContentMutationCoordinator } from '../../common/worker/content-mutation-coordinator';
 import { GroupsService } from '../groups/groups.service';
 import { DynamicFrameRendererService } from './rendering/dynamic-frame-renderer.service';
 import {
@@ -89,13 +89,6 @@ export interface RenderDynamicContentResult {
 export class DynamicContentRendererService {
   private readonly logger = new Logger(DynamicContentRendererService.name);
   private readonly inflight = new Map<string, Promise<RenderDynamicContentResult>>();
-  private readonly renderQueue = new KeyedPromiseQueue<RenderDynamicContentResult>({
-    onPreviousError: (contentId, err) => {
-      this.logger.warn(
-        `Previous dynamic render failed for content ${contentId}: ${formatError(err)}`
-      );
-    },
-  });
 
   constructor(
     private readonly prisma: PrismaService,
@@ -104,7 +97,8 @@ export class DynamicContentRendererService {
     private readonly renderer: DynamicFrameRendererService,
     private readonly variantRenderer: VariantRenderService,
     private readonly groups: GroupsService,
-    private readonly dynamicAudio: DynamicAudioService
+    private readonly dynamicAudio: DynamicAudioService,
+    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default()
   ) {}
 
   renderDynamicContent(
@@ -116,8 +110,8 @@ export class DynamicContentRendererService {
     if (existing) return existing;
 
     const task = canDedupe
-      ? this.renderQueue.run(contentId, () => this.doRender(contentId, opts))
-      : this.renderQueue.run(contentId, () => this.doRender(contentId, opts), {
+      ? this.contentMutations.run(contentId, () => this.doRender(contentId, opts))
+      : this.contentMutations.run(contentId, () => this.doRender(contentId, opts), {
           continueAfterFailure: true,
         });
 

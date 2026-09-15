@@ -7,7 +7,7 @@ import { formatError } from '../../common/utils/error-format';
 import { BlobService } from '../../infra/blob/blob.service';
 import { AppConfig } from '../../infra/config/app.config';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
+import { ContentMutationCoordinator } from '../../common/worker/content-mutation-coordinator';
 import {
   assertFrameSize,
   assertSupportedMonoEncoding,
@@ -42,20 +42,23 @@ export interface RenderContentVariantsResult {
 
 @Injectable()
 export class VariantRenderService {
-  private readonly renderQueue = new KeyedPromiseQueue();
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly blob: BlobService,
-    private readonly config: AppConfig
+    private readonly config: AppConfig,
+    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default()
   ) {}
 
   async renderContentVariants(
     input: RenderContentVariantsInput
   ): Promise<RenderContentVariantsResult> {
-    return this.renderQueue.run(input.contentId, () => this.renderContentVariantsExclusive(input), {
-      continueAfterFailure: true,
-    });
+    return this.contentMutations.run(
+      input.contentId,
+      () => this.renderContentVariantsExclusive(input),
+      {
+        continueAfterFailure: true,
+      }
+    );
   }
 
   private async renderContentVariantsExclusive(

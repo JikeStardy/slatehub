@@ -17,7 +17,7 @@ import { bulkSetContentSortOrder, compactContentSortOrders } from '../../common/
 import { validateOrderSet } from '../../common/db/order-validation';
 import { nextContentSortOrder } from '../../common/db/sort-order';
 import { formatError } from '../../common/utils/error-format';
-import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
+import { ContentMutationCoordinator } from '../../common/worker/content-mutation-coordinator';
 import { AudioTranscoderService } from '../audio/audio-transcoder.service';
 import { audioBlobContentId } from '../../infra/blob/content-audio-blobs';
 import { MAX_TTS_TEXT_CHARS, TtsService } from '../tts/tts.service';
@@ -93,7 +93,6 @@ type StaticContentRestoreData = Pick<
 @Injectable()
 export class ContentsService {
   private readonly logger = new Logger(ContentsService.name);
-  private readonly staticMutationQueue = new KeyedPromiseQueue();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -103,7 +102,8 @@ export class ContentsService {
     private readonly audio: AudioTranscoderService,
     private readonly tts: TtsService,
     private readonly audioBlobs: ContentAudioBlobService,
-    private readonly variantRenderer: VariantRenderService
+    private readonly variantRenderer: VariantRenderService,
+    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default()
   ) {}
 
   async appendImage(
@@ -114,7 +114,12 @@ export class ContentsService {
   ): Promise<ContentMutationResponseT> {
     await this.groups.assertOwned(gid, ownerUserId);
     if (!parsed.hasImage) throw new ValidationError('请上传图片', { code: 'image_required' });
-    return this.createImage(gid, parsed, signal);
+    const contentId = createId();
+    return this.contentMutations.run(
+      contentId,
+      () => this.createImage(gid, contentId, parsed, signal),
+      { continueAfterFailure: true }
+    );
   }
 
   async patchImage(
@@ -123,7 +128,7 @@ export class ContentsService {
     parsed: ParsedContentUpload,
     signal?: AbortSignal
   ): Promise<ContentMutationResponseT> {
-    return this.staticMutationQueue.run(
+    return this.contentMutations.run(
       contentId,
       () => this.patchImageUnqueued(contentId, ownerUserId, parsed, signal),
       { continueAfterFailure: true }
@@ -135,7 +140,7 @@ export class ContentsService {
     ownerUserId: string,
     frameName: string | null | undefined
   ): Promise<ContentMutationResponseT> {
-    return this.staticMutationQueue.run(
+    return this.contentMutations.run(
       contentId,
       () => this.patchFrameNameUnqueued(contentId, ownerUserId, frameName),
       { continueAfterFailure: true }
@@ -143,15 +148,13 @@ export class ContentsService {
   }
 
   async delete(contentId: string, ownerUserId: string): Promise<void> {
-    return this.staticMutationQueue.run(
-      contentId,
-      () => this.deleteUnqueued(contentId, ownerUserId),
-      { continueAfterFailure: true }
-    );
+    return this.contentMutations.run(contentId, () => this.deleteUnqueued(contentId, ownerUserId), {
+      continueAfterFailure: true,
+    });
   }
 
   async deleteAudio(contentId: string, ownerUserId: string): Promise<{ manifest_etag: string }> {
-    return this.staticMutationQueue.run(
+    return this.contentMutations.run(
       contentId,
       () => this.deleteAudioUnqueued(contentId, ownerUserId),
       { continueAfterFailure: true }
@@ -163,7 +166,7 @@ export class ContentsService {
     ownerUserId: string,
     raw: { text: string; voice: string }
   ): Promise<ContentMutationResponseT> {
-    return this.staticMutationQueue.run(
+    return this.contentMutations.run(
       contentId,
       () => this.generateImageTtsUnqueued(contentId, ownerUserId, raw),
       { continueAfterFailure: true }
@@ -268,9 +271,12 @@ export class ContentsService {
     contentId: string,
     cleanupPlan: ContentDeleteBlobCleanupPlan
   ): Promise<PromiseSettledResult<void>[]> {
+    const legacyImageKey = legacyImageStorageKey(gid, contentId);
     return Promise.allSettled([
       ...cleanupPlan.storageKeys.map((storageKey) => this.blob.deleteStorageKey(storageKey)),
-      this.blob.delete(gid, contentId, 'image'),
+      ...(cleanupPlan.storageKeys.includes(legacyImageKey)
+        ? []
+        : [this.blob.delete(gid, contentId, 'image')]),
       this.audioBlobs.delete(gid, contentId, cleanupPlan.audioEtag),
     ]);
   }
@@ -356,12 +362,12 @@ export class ContentsService {
 
   private async createImage(
     gid: string,
+    contentId: string,
     parsed: ParsedContentUpload,
     signal?: AbortSignal
   ): Promise<ContentMutationResponseT> {
     const { image, audio } = await this.renderUpload(parsed, signal);
     if (!image) throw new ValidationError('创建图片内容时必须上传图片');
-    const contentId = createId();
     const rollback = new BlobRollbackPlan(this.blob, this.logger);
     const sourceKey = this.blob.sourceKey(gid, contentId);
     image.storageKey = sourceKey;
@@ -1108,6 +1114,10 @@ function audioBlobKeysMissingFrom(
 ): Set<string> {
   if (!from.audioBlobKey || from.audioBlobKey === to.audioBlobKey) return new Set();
   return new Set([from.audioBlobKey]);
+}
+
+function legacyImageStorageKey(gid: string, contentId: string): string {
+  return `${gid}/${contentId}.img`;
 }
 
 function combinedStaticMutationError(

@@ -51,7 +51,7 @@ describe('ContentsService source and variant workflow', () => {
     expect(renders.map((target) => target.profileId)).toEqual([NOTE4_PROFILE, VIRTUAL_PROFILE]);
     expect(blobs.storage.get(note4Key)).toEqual(note4Frame);
     expect(blobs.storage.get(virtualKey)).toEqual(Buffer.alloc(4_736, 0x22));
-    expect(blobs.legacy.get(`group-1/${contentId}.image`)).toEqual(note4Frame);
+    expect(blobs.legacy.get(`group-1/${contentId}.img`)).toEqual(note4Frame);
     expect(store.content(contentId)).toMatchObject({
       frameName: 'Desk',
       imageEtag: computeETag(note4Frame),
@@ -79,7 +79,7 @@ describe('ContentsService source and variant workflow', () => {
       audioEtag: 'old-audio',
       kind: 'image',
     });
-    blobs.legacy.set('group-1/content-1.image', Buffer.from('old legacy frame'));
+    blobs.legacy.set('group-1/content-1.img', Buffer.from('old legacy frame'));
     const service = createContentsService({ store, blobs, renders });
 
     const response = await service.patchImage('content-1', 'user-1', {
@@ -101,7 +101,7 @@ describe('ContentsService source and variant workflow', () => {
       storageKey: sourceKey,
     });
     expect(renders.map((target) => target.profileId)).toEqual([NOTE4_PROFILE, VIRTUAL_PROFILE]);
-    expect(blobs.legacy.get('group-1/content-1.image')).toEqual(note4Frame);
+    expect(blobs.legacy.get('group-1/content-1.img')).toEqual(note4Frame);
     expect(store.content('content-1')).toMatchObject({
       frameName: 'New',
       imageEtag: computeETag(note4Frame),
@@ -183,7 +183,7 @@ describe('ContentsService source and variant workflow', () => {
 
     expect(response.image_etag).toBe(computeETag(Buffer.alloc(15_000, 0x11)));
     expect(store.content(response.id)).toMatchObject({ imageSize: 15_000 });
-    expect(blobs.legacy.get(`group-1/${response.id}.image`)).toEqual(Buffer.alloc(15_000, 0x11));
+    expect(blobs.legacy.get(`group-1/${response.id}.img`)).toEqual(Buffer.alloc(15_000, 0x11));
     expect(renders.map((target) => target.profileId)).toEqual([NOTE4_PROFILE, VIRTUAL_PROFILE]);
   });
 
@@ -543,7 +543,7 @@ describe('ContentsService source and variant workflow', () => {
       expect(blobs.storage.has(sourceKey)).toBe(false);
       expect(blobs.storage.has(note4Key)).toBe(false);
       expect(blobs.storage.has(migratedLegacyKey)).toBe(true);
-      expect(blobs.legacy.has('group-1/content-1.image')).toBe(false);
+      expect(blobs.legacy.has('group-1/content-1.img')).toBe(true);
       expect(audioDeletes).toEqual([
         {
           groupId: 'group-1',
@@ -556,7 +556,6 @@ describe('ContentsService source and variant workflow', () => {
         note4Key,
         blobs.frameKey('group-1', 'content-1', VIRTUAL_PROFILE),
         migratedLegacyKey,
-        'group-1/content-1.image',
       ]);
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining(
@@ -1095,27 +1094,33 @@ class FakeBlobService {
     kind: string,
     data: Buffer
   ): Promise<{ path: string; size: number }> {
-    if (this.failWritesFor.has(`${groupId}/${contentId}.${kind}`)) {
-      this.failWritesFor.delete(`${groupId}/${contentId}.${kind}`);
-      throw new Error(`legacy write failed for ${groupId}/${contentId}.${kind}`);
+    const key = this.blobKey(groupId, contentId, kind);
+    if (this.failWritesFor.has(key)) {
+      this.failWritesFor.delete(key);
+      throw new Error(`legacy write failed for ${key}`);
     }
     if (this.failLegacyWrite && kind === 'image') {
       this.failLegacyWrite = false;
-      this.legacy.set(`${groupId}/${contentId}.${kind}`, Buffer.from(data));
+      this.legacy.set(key, Buffer.from(data));
       throw new Error('legacy write failed');
     }
-    this.legacy.set(`${groupId}/${contentId}.${kind}`, Buffer.from(data));
-    return { path: `${groupId}/${contentId}.${kind}`, size: data.byteLength };
+    this.legacy.set(key, Buffer.from(data));
+    return { path: key, size: data.byteLength };
   }
 
   async read(groupId: string, contentId: string, kind: string): Promise<Buffer | null> {
-    const data = this.legacy.get(`${groupId}/${contentId}.${kind}`);
+    const data = this.legacy.get(this.blobKey(groupId, contentId, kind));
     return data ? Buffer.from(data) : null;
   }
 
   async delete(groupId: string, contentId: string, kind: string): Promise<void> {
-    this.onDelete?.(`${groupId}/${contentId}.${kind}`);
-    this.legacy.delete(`${groupId}/${contentId}.${kind}`);
+    const key = this.blobKey(groupId, contentId, kind);
+    this.onDelete?.(key);
+    this.legacy.delete(key);
+  }
+
+  private blobKey(groupId: string, contentId: string, kind: string): string {
+    return `${groupId}/${contentId}.${kind === 'image' ? 'img' : 'pcm'}`;
   }
 }
 
@@ -1166,8 +1171,8 @@ function seedReadyStaticContent(): { store: FakeContentStore; blobs: FakeBlobSer
   blobs.storage.set(sourceKey, source);
   blobs.storage.set(note4Key, note4);
   blobs.storage.set(virtualKey, virtual);
-  blobs.legacy.set('group-1/content-1.image', note4);
-  blobs.legacy.set(`group-1/${audioBlobContentId('content-1', audioEtag)}.audio`, audio);
+  blobs.legacy.set('group-1/content-1.img', note4);
+  blobs.legacy.set(`group-1/${audioBlobContentId('content-1', audioEtag)}.pcm`, audio);
   return { store, blobs };
 }
 
@@ -1244,7 +1249,7 @@ function expectCoherentReplacementState(
   });
   expect(blobs.storage.get(virtualKey)).toEqual(virtual);
 
-  expect(blobs.legacy.get('group-1/content-1.image')).toEqual(note4);
+  expect(blobs.legacy.get('group-1/content-1.img')).toEqual(note4);
 }
 
 function sortedBufferEntries(map: Map<string, Buffer>): Array<[string, Buffer]> {

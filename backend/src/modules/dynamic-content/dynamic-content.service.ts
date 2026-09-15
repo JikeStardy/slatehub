@@ -18,7 +18,7 @@ import { lockGroupRow } from '../../common/db/row-locks';
 import { compactContentSortOrders } from '../../common/db/bulk-sort-order';
 import { nextContentSortOrder } from '../../common/db/sort-order';
 import { formatError } from '../../common/utils/error-format';
-import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
+import { ContentMutationCoordinator } from '../../common/worker/content-mutation-coordinator';
 import { GroupsService } from '../groups/groups.service';
 import { deleteContentAudioBlob } from '../../infra/blob/content-audio-blobs';
 import { DynamicContentRegistry } from './dynamic-content-registry';
@@ -26,29 +26,17 @@ import { DynamicContentRendererService } from './dynamic-content-renderer.servic
 import { defaultDynamicFrameName } from './status-text/dynamic-content-status-text';
 import { toContentMutationResponse } from '../contents/content-mutation-response';
 
-const DYNAMIC_MUTATION_TAIL_TTL_MS = 5 * 60_000;
-
 @Injectable()
 export class DynamicContentService {
   private readonly logger = new Logger(DynamicContentService.name);
-  private readonly mutationQueue = new KeyedPromiseQueue({
-    ttlMs: DYNAMIC_MUTATION_TAIL_TTL_MS,
-    onPreviousError: (contentId, err) => {
-      this.logger.warn(
-        `Previous dynamic mutation failed for content ${contentId}: ${formatError(err)}`
-      );
-    },
-    onExpired: (contentId) => {
-      this.logger.warn(`Dynamic mutation lock expired for content ${contentId}.`);
-    },
-  });
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly blob: BlobService,
     private readonly groups: GroupsService,
     private readonly registry: DynamicContentRegistry,
-    private readonly renderer: DynamicContentRendererService
+    private readonly renderer: DynamicContentRendererService,
+    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default()
   ) {}
 
   async previewDirect(raw: {
@@ -367,7 +355,7 @@ export class DynamicContentService {
   }
 
   private runMutation<T>(contentId: string, fn: () => Promise<T>): Promise<T> {
-    return this.mutationQueue.run(contentId, fn, { continueAfterFailure: true });
+    return this.contentMutations.run(contentId, fn, { continueAfterFailure: true });
   }
 
   private async rollbackCreation(contentId: string, gid: string, err: unknown): Promise<void> {

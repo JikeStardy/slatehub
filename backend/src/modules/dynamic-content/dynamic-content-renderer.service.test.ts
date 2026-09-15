@@ -6,8 +6,10 @@ import { FRAME_BYTES } from 'shared';
 import { computeETag } from '../../common/utils/etag';
 import type { PrismaService } from '../../infra/prisma/prisma.service';
 import { BlobService } from '../../infra/blob/blob.service';
+import { audioBlobContentId } from '../../infra/blob/content-audio-blobs';
 import type { AppConfig } from '../../infra/config/app.config';
 import type { GroupsService } from '../groups/groups.service';
+import { ContentsService } from '../contents/contents.service';
 import type { DynamicFrameRendererService } from './rendering/dynamic-frame-renderer.service';
 import type { DynamicAudioService } from './audio/dynamic-audio.service';
 import type { DynamicContentRegistry } from './dynamic-content-registry';
@@ -370,6 +372,69 @@ describe('DynamicContentRendererService variants', () => {
 });
 
 describe('DynamicContentRendererService variant integration', () => {
+  it('keeps delete queued until a dynamic render finishes and then removes all blobs', async () => {
+    const renderStarted = deferred<void>();
+    const renderMayFinish = deferred<void>();
+    const audioEtag = 'audio-etag';
+    const newNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xd1);
+    const newVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0xd2);
+    const harness = createIntegrationHarness({
+      audioEtag,
+      imageEtag: 'old-image-etag',
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      renderFrame: async (_ctx, target) => {
+        renderStarted.resolve();
+        await renderMayFinish.promise;
+        return target.profileId === NOTE4_RENDER_TARGET.profileId ? newNote4Bytes : newVirtualBytes;
+      },
+    });
+    const sourceKey = harness.blob.sourceKey('group-1', 'content-1');
+    const note4Key = harness.blob.frameKey('group-1', 'content-1', NOTE4_RENDER_TARGET.profileId);
+    const virtualKey = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      VIRTUAL_RENDER_TARGET.profileId
+    );
+    await harness.blob.writeStorageKey(sourceKey, 'source', Buffer.from('source bytes'));
+    await harness.blob.write('group-1', 'content-1', 'image', Buffer.alloc(15_000, 0xc1));
+    await harness.blob.write(
+      'group-1',
+      audioBlobContentId('content-1', audioEtag),
+      'audio',
+      Buffer.from('audio bytes')
+    );
+    harness.source = {
+      contentId: 'content-1',
+      storageKey: sourceKey,
+    };
+
+    const render = harness.service.renderDynamicContent('content-1', { force: true });
+    await renderStarted.promise;
+    const deletion = harness.contents.delete('content-1', 'user-1');
+    let deletionSettled = false;
+    deletion.finally(() => {
+      deletionSettled = true;
+    });
+
+    await tick();
+    expect(deletionSettled).toBe(false);
+
+    renderMayFinish.resolve();
+    await render;
+    await deletion;
+
+    expect(harness.contentExists).toBe(false);
+    expect(harness.source).toBeNull();
+    expect(harness.variants.rowsFor('content-1')).toEqual([]);
+    expect(await harness.blob.readStorageKey(sourceKey)).toBeNull();
+    expect(await harness.blob.readStorageKey(note4Key)).toBeNull();
+    expect(await harness.blob.readStorageKey(virtualKey)).toBeNull();
+    expect(await harness.blob.read('group-1', 'content-1', 'image')).toBeNull();
+    expect(
+      await harness.blob.read('group-1', audioBlobContentId('content-1', audioEtag), 'audio')
+    ).toBeNull();
+  });
+
   it('treats a preserved prior-ready Note4 fallback as a failed refresh with dynamic backoff', async () => {
     const now = new Date('2026-05-17T04:10:00.000Z');
     const harness = createIntegrationHarness({
@@ -1228,13 +1293,16 @@ function readyVariant(profileId: string, frame: Buffer, storageKey: string) {
 
 function deferred<T>(): {
   promise: Promise<T>;
+  resolve: (value: T) => void;
   reject: (err: Error) => void;
 } {
+  let resolve!: (value: T) => void;
   let reject!: (err: Error) => void;
-  const promise = new Promise<T>((_, rejectFn) => {
+  const promise = new Promise<T>((resolveFn, rejectFn) => {
+    resolve = resolveFn;
     reject = rejectFn;
   });
-  return { promise, reject };
+  return { promise, resolve, reject };
 }
 
 function createIntegrationHarness(opts: {
@@ -1250,6 +1318,7 @@ function createIntegrationHarness(opts: {
   dynamicRefreshAttempts?: number;
   dynamicLastError?: string | null;
   failNextContentUpdate?: string;
+  audioEtag?: string | null;
 }) {
   const content: IntegrationContent = {
     id: 'content-1',
@@ -1265,16 +1334,19 @@ function createIntegrationHarness(opts: {
     dynamicRefreshLeaseUntil: opts.dynamicRefreshLeaseUntil ?? null,
     dynamicRefreshAttempts: opts.dynamicRefreshAttempts ?? 0,
     dynamicLastError: opts.dynamicLastError ?? null,
-    audioEtag: null,
+    audioEtag: opts.audioEtag ?? null,
     imageEtag: opts.imageEtag ?? 'old-image-etag',
     imageSize: opts.imageSize ?? 0,
   };
+  let contentExists = true;
+  let source: { contentId: string; storageKey: string } | null = null;
   const variants = new FakeDynamicVariantStore();
   let transactionCount = 0;
   const contentUpdates: Array<{ data: Partial<IntegrationContent> }> = [];
   const prisma = {
     content: {
       findUnique: async (args?: { select?: { audioEtag?: boolean } }) => {
+        if (!contentExists) return null;
         if (
           args?.select?.audioEtag &&
           Object.keys(args.select as Record<string, unknown>).length === 1
@@ -1284,6 +1356,7 @@ function createIntegrationHarness(opts: {
         return cloneIntegrationContent(content);
       },
       update: async (args: { data: Partial<IntegrationContent> }) => {
+        if (!contentExists) throw new Error('content missing');
         contentUpdates.push(args);
         if (opts.failNextContentUpdate) {
           const message = opts.failNextContentUpdate;
@@ -1293,11 +1366,34 @@ function createIntegrationHarness(opts: {
         Object.assign(content, args.data);
         return cloneIntegrationContent(content);
       },
+      findMany: async () => [],
+      delete: async (args: { where: { id: string } }) => {
+        if (args.where.id !== content.id || !contentExists) throw new Error('content missing');
+        contentExists = false;
+        source = null;
+        variants.deleteForContent(args.where.id);
+        return cloneIntegrationContent(content);
+      },
+    },
+    contentSource: {
+      findUnique: async (args: { where: { contentId: string } }) =>
+        source?.contentId === args.where.contentId ? { ...source } : null,
+      deleteMany: async (args: { where: { contentId: string } }) => {
+        const count = source?.contentId === args.where.contentId ? 1 : 0;
+        if (count) source = null;
+        return { count };
+      },
     },
     contentVariant: variants.client,
     $transaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
       transactionCount++;
-      return fn({ content: prisma.content, contentVariant: variants.transactionClient });
+      return fn({
+        $queryRaw: async () => [{ id: 'group-1' }],
+        $executeRaw: async () => 0,
+        content: prisma.content,
+        contentSource: prisma.contentSource,
+        contentVariant: variants.transactionClient,
+      });
     },
   };
   const blob = new FailableDynamicBlobService({ nodeEnv: 'test', blobDir } as AppConfig);
@@ -1317,6 +1413,8 @@ function createIntegrationHarness(opts: {
     render: opts.renderFrame,
   };
   const groups = {
+    assertOwned: async () => undefined,
+    recomputeManifestEtag: async () => 'group-etag',
     recomputeGroupEtags: async () => ({
       structureEtag: 'structure-etag',
       manifestEtag: 'group-etag',
@@ -1339,9 +1437,34 @@ function createIntegrationHarness(opts: {
     groups as unknown as GroupsService,
     dynamicAudio as unknown as DynamicAudioService
   );
+  const contents = new ContentsService(
+    prisma as unknown as PrismaService,
+    blob,
+    groups as unknown as GroupsService,
+    {} as never,
+    {} as never,
+    {} as never,
+    {
+      delete: async (groupId: string, contentId: string, audio: string | null) => {
+        if (!audio) return;
+        await blob.delete(groupId, audioBlobContentId(contentId, audio), 'audio');
+      },
+    } as never,
+    {} as never
+  );
   return {
     blob,
     content,
+    get contentExists() {
+      return contentExists;
+    },
+    get source() {
+      return source;
+    },
+    set source(value: { contentId: string; storageKey: string } | null) {
+      source = value;
+    },
+    contents,
     service,
     variants,
     get transactionCount() {
@@ -1464,6 +1587,18 @@ class FakeDynamicVariantStore {
     return cloneStoredVariant(row);
   }
 
+  rowsFor(contentId: string): StoredDynamicVariant[] {
+    return [...this.rows.values()]
+      .filter((row) => row.contentId === contentId)
+      .map((row) => cloneStoredVariant(row));
+  }
+
+  deleteForContent(contentId: string): void {
+    for (const row of [...this.rows.values()]) {
+      if (row.contentId === contentId) this.rows.delete(this.key(row.contentId, row.profileId));
+    }
+  }
+
   failNextCreateMany(message: string): void {
     this.nextCreateManyError = new Error(message);
   }
@@ -1520,6 +1655,10 @@ function cloneStoredVariant(row: StoredDynamicVariant): StoredDynamicVariant {
 
 function cloneDate(value: Date | null): Date | null {
   return value ? new Date(value) : null;
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 class FailableDynamicBlobService extends BlobService {

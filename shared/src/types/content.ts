@@ -12,6 +12,9 @@ export type ContentAudioStatusT = z.infer<typeof ContentAudioStatus>;
 export const ContentAudioSource = z.enum(['upload', 'tts']);
 export type ContentAudioSourceT = z.infer<typeof ContentAudioSource>;
 
+export const ContentVariantReadStatus = z.enum(['ready', 'pending', 'failed', 'unavailable']);
+export type ContentVariantReadStatusT = z.infer<typeof ContentVariantReadStatus>;
+
 export const PatchContentRequest = z.object({
   frame_name: z.string().max(64).nullable().optional(),
 });
@@ -31,6 +34,7 @@ export const ContentSummary = z.object({
   image_etag: z.string(),
   audio_etag: z.string().nullable(),
   image_size: z.number().int().nonnegative(),
+  variant_status: ContentVariantReadStatus,
   audio_size: z.number().int().nonnegative().nullable(),
   audio_status: ContentAudioStatus,
   audio_source: ContentAudioSource.nullable(),

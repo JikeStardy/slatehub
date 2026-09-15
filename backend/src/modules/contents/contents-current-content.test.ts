@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { DASHBOARD_CUSTOM_STARTER_TEMPLATE } from 'shared';
+import { DASHBOARD_CUSTOM_STARTER_TEMPLATE, getDisplayProfile } from 'shared';
 import { computeETag } from '../../common/utils/etag';
 import { InternalError } from '../../common/errors';
 import { ContentMutationCoordinator } from '../../common/worker/content-mutation-coordinator';
@@ -53,8 +53,18 @@ describe('ContentsService current content refresh', () => {
       {
         device: {
           findUnique: async () => ({
+            id: 'device-1',
             selectedGroupId: 'group-1',
             selectedGroup: { manifestEtag: 'new-manifest' },
+            boardId: 'zectrix-note4',
+            displayProfileId: 'zectrix-note4-400x300-mono',
+            protocolVersion: 2,
+          }),
+        },
+        group: {
+          findUnique: async () => ({
+            structureEtag: 'new-structure',
+            contents: [],
           }),
         },
         content: {
@@ -78,6 +88,10 @@ describe('ContentsService current content refresh', () => {
       contentId: 'content-1',
       manifestEtag: 'old-manifest',
       content: {} as never,
+      readTarget: {
+        profile: getDisplayProfile('zectrix-note4-400x300-mono'),
+        audio: true,
+      },
     });
 
     expect(result).toBeNull();

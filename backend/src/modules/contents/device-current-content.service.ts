@@ -1,11 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { ContentKind } from '@prisma/client';
-import type { ContentSummaryT } from 'shared';
+import { getBoardDefinition, getDisplayProfile, type ContentSummaryT } from 'shared';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { formatError } from '../../common/utils/error-format';
 import { DynamicContentRendererService } from '../dynamic-content/dynamic-content-renderer.service';
 import type { DevicePollSnapshot } from '../devices/device-types';
-import { contentToSummary } from './content-presenter';
+import {
+  contentToSummary,
+  manifestReadEtag,
+  type ContentReadProfileTarget,
+} from './content-presenter';
 import { CONTENT_SELECT, type ContentSelectRow } from './content-select';
 
 export interface CurrentContentRequest {
@@ -15,6 +19,7 @@ export interface CurrentContentRequest {
   contentId: string;
   manifestEtag: string;
   content: ContentSelectRow;
+  readTarget: ContentReadProfileTarget;
 }
 
 @Injectable()
@@ -66,14 +71,17 @@ export class DeviceCurrentContentService {
               id: true,
               selectedGroupId: true,
               selectedGroup: { select: { manifestEtag: true } },
+              boardId: true,
+              displayProfileId: true,
+              protocolVersion: true,
             },
           })
         : deviceOrId;
     const groupId = device?.selectedGroupId;
     if (!groupId) return null;
     if (telemetry?.current_group && telemetry.current_group !== groupId) return null;
-    if (!telemetry?.manifest_etag || telemetry.manifest_etag !== device.selectedGroup?.manifestEtag)
-      return null;
+    const manifestEtag = await this.manifestEtagForDeviceGroup(device, groupId);
+    if (!telemetry?.manifest_etag || telemetry.manifest_etag !== manifestEtag) return null;
     const content = await this.prisma.content.findUnique({
       where: { groupId_sortOrder: { groupId, sortOrder: seq } },
       select: CONTENT_SELECT,
@@ -86,6 +94,7 @@ export class DeviceCurrentContentService {
       contentId: content.id,
       manifestEtag: telemetry.manifest_etag,
       content,
+      readTarget: this.readTargetForDevice(device),
     };
   }
 
@@ -94,7 +103,7 @@ export class DeviceCurrentContentService {
     if (!content || content.groupId !== request.groupId || content.sortOrder !== request.seq) {
       return null;
     }
-    return contentToSummary(content);
+    return contentToSummary(content, request.readTarget);
   }
 
   async refreshCurrentContentForDeviceIfDue(
@@ -106,12 +115,22 @@ export class DeviceCurrentContentService {
       deviceSnapshot ??
       (await this.prisma.device.findUnique({
         where: { id: request.deviceId },
-        select: { selectedGroupId: true, selectedGroup: { select: { manifestEtag: true } } },
+        select: {
+          id: true,
+          selectedGroupId: true,
+          selectedGroup: { select: { manifestEtag: true } },
+          boardId: true,
+          displayProfileId: true,
+          protocolVersion: true,
+        },
       }));
+    const currentManifestEtag = device
+      ? await this.manifestEtagForDeviceGroup(device, request.groupId)
+      : null;
     if (
       !device ||
       device.selectedGroupId !== request.groupId ||
-      device.selectedGroup?.manifestEtag !== request.manifestEtag
+      currentManifestEtag !== request.manifestEtag
     ) {
       return null;
     }
@@ -121,7 +140,7 @@ export class DeviceCurrentContentService {
     }
     if (isCurrentDynamicDue(content)) {
       try {
-        const rendered = await this.dynamicRenderer.renderDynamicContent(content.id);
+        await this.dynamicRenderer.renderDynamicContent(content.id);
         const updatedContent = await this.prisma.content.findUnique({
           where: { id: request.contentId },
           select: CONTENT_SELECT,
@@ -133,7 +152,12 @@ export class DeviceCurrentContentService {
         ) {
           return null;
         }
-        return { ...request, manifestEtag: rendered.groupEtag, content: updatedContent };
+        return {
+          ...request,
+          manifestEtag: await this.manifestEtagForDeviceGroup(device, request.groupId),
+          content: updatedContent,
+          readTarget: this.readTargetForDevice(device),
+        };
       } catch (err) {
         this.logger.warn(
           `Dynamic current-frame refresh failed for content ${content.id} on device ${request.deviceId}: ${formatError(err)}`
@@ -141,6 +165,39 @@ export class DeviceCurrentContentService {
       }
     }
     return request;
+  }
+
+  async manifestEtagForDeviceGroup(
+    device: Pick<DevicePollSnapshot, 'boardId' | 'displayProfileId'>,
+    groupId: string
+  ): Promise<string> {
+    const readTarget = this.readTargetForDevice(device);
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: {
+        structureEtag: true,
+        contents: {
+          orderBy: { sortOrder: 'asc' },
+          select: CONTENT_SELECT,
+        },
+      },
+    });
+    if (!group) return '';
+    return manifestReadEtag({
+      profileId: readTarget.profile.id,
+      groupStructureEtag: group.structureEtag,
+      contents: group.contents.map((content) => contentToSummary(content, readTarget)),
+    });
+  }
+
+  private readTargetForDevice(
+    device: Pick<DevicePollSnapshot, 'boardId' | 'displayProfileId'>
+  ): ContentReadProfileTarget {
+    const board = getBoardDefinition(device.boardId);
+    return {
+      profile: getDisplayProfile(device.displayProfileId),
+      audio: board.capabilities.audio,
+    };
   }
 }
 

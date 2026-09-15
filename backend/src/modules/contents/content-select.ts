@@ -22,6 +22,20 @@ export const CONTENT_SELECT = {
   dynamicLastRunAt: true,
   audioLastError: true,
   audioUpdatedAt: true,
+  variants: {
+    select: {
+      profileId: true,
+      status: true,
+      pixelFormat: true,
+      frameCodec: true,
+      width: true,
+      height: true,
+      frameEtag: true,
+      frameSize: true,
+      storageKey: true,
+      lastError: true,
+    },
+  },
 } as const satisfies Prisma.ContentSelect;
 
 export type ContentSelectRow = Prisma.ContentGetPayload<{ select: typeof CONTENT_SELECT }>;

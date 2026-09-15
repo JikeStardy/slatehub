@@ -1,8 +1,12 @@
+import { createHash } from 'node:crypto';
 import type { ContentAudioSource, ContentAudioStatus, ContentKind, Prisma } from '@prisma/client';
 import {
   DEFAULT_DISPLAY_PROFILE_ID,
   DynamicConfig,
   frameDescriptorForProfile,
+  getDisplayProfile,
+  type DisplayProfileT,
+  type FrameDescriptorT,
   TtsVoice,
   type ContentDetailT,
   type ContentSummaryT,
@@ -34,28 +38,157 @@ export interface ContentRow {
   dynamicData?: Prisma.JsonValue | null;
   dynamicLastRunAt?: Date | null;
   dynamicLastError?: string | null;
+  variants?: ContentVariantRow[];
 }
 
-export function contentToSummary(row: ContentRow): ContentSummaryT {
+export interface ContentVariantRow {
+  profileId: string;
+  status: 'pending' | 'ready' | 'failed';
+  pixelFormat: string;
+  frameCodec: string;
+  width: number;
+  height: number;
+  frameEtag: string | null;
+  frameSize: number | null;
+  storageKey: string | null;
+  lastError?: string | null;
+}
+
+export interface ContentReadProfileTarget {
+  profile: DisplayProfileT;
+  audio: boolean;
+}
+
+const DEFAULT_NOTE4_TARGET: ContentReadProfileTarget = {
+  profile: getDisplayProfile(DEFAULT_DISPLAY_PROFILE_ID),
+  audio: true,
+};
+
+export function contentToSummary(
+  row: ContentRow,
+  target: ContentReadProfileTarget = DEFAULT_NOTE4_TARGET
+): ContentSummaryT {
   const voice = TtsVoice.safeParse(row.audioVoice);
+  const selected = selectVariantSummary(row, target.profile.id);
+  const audio = target.audio;
   return {
     id: row.id,
     seq: row.sortOrder,
-    content_etag: row.contentEtag,
+    content_etag: selected.contentEtag,
     frame_name: row.frameName,
     device_status_bar_text: deviceStatusBarText({ ...row, renderedAt: row.dynamicLastRunAt }),
-    image_etag: row.imageEtag,
-    audio_etag: row.audioEtag,
-    image_size: row.imageSize,
-    audio_size: row.audioSize,
-    audio_status: row.audioStatus,
-    audio_source: row.audioSource,
-    audio_voice: voice.success ? voice.data : null,
+    image_etag: selected.imageEtag,
+    audio_etag: audio ? row.audioEtag : null,
+    image_size: selected.imageSize,
+    variant_status: selected.status,
+    audio_size: audio ? row.audioSize : null,
+    audio_status: audio ? row.audioStatus : 'none',
+    audio_source: audio ? row.audioSource : null,
+    audio_voice: audio && voice.success ? voice.data : null,
     kind: contentKind(row.kind),
     dynamic_type: (row.dynamicType as DynamicTypeT | null) ?? null,
     next_wake_sec: nextWakeSec(row.dynamicNextRunAt ?? null),
-    frame: frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID),
+    frame: selected.frame,
   };
+}
+
+export function contentFrameResourceEtag(profileId: string, frameEtag: string): string {
+  return compactReadEtag(['frame', profileId, frameEtag]);
+}
+
+export function contentSummaryEtag(profileId: string, frameEtag: string): string {
+  return compactReadEtag(['content', profileId, frameEtag]);
+}
+
+export function manifestReadEtag(input: {
+  profileId: string;
+  groupStructureEtag: string;
+  contents: ContentSummaryT[];
+}): string {
+  return compactReadEtag([
+    'manifest',
+    input.profileId,
+    input.groupStructureEtag,
+    ...input.contents.map((content) =>
+      [
+        content.id,
+        content.seq,
+        content.variant_status,
+        content.image_etag,
+        content.audio_etag ?? '',
+        content.audio_status,
+        content.next_wake_sec ?? '',
+      ].join(':')
+    ),
+  ]);
+}
+
+export function validateReadyVariantForProfile(
+  variant: ContentVariantRow,
+  descriptor: FrameDescriptorT
+): void {
+  if (
+    variant.profileId !== descriptor.profile_id ||
+    variant.pixelFormat !== descriptor.pixel_format ||
+    variant.frameCodec !== descriptor.frame_codec ||
+    variant.width !== descriptor.width ||
+    variant.height !== descriptor.height ||
+    variant.frameSize !== descriptor.byte_length ||
+    !variant.frameEtag ||
+    !variant.storageKey
+  ) {
+    throw new Error('content variant metadata does not match its display profile');
+  }
+}
+
+function selectVariantSummary(
+  row: ContentRow,
+  profileId: string
+): {
+  status: ContentSummaryT['variant_status'];
+  contentEtag: string;
+  imageEtag: string;
+  imageSize: number;
+  frame: FrameDescriptorT;
+} {
+  const frame = frameDescriptorForProfile(profileId);
+  const variant = row.variants?.find((v) => v.profileId === profileId);
+  if (!variant) return unavailableVariantSummary(profileId, frame, 'unavailable');
+  if (variant.status !== 'ready')
+    return unavailableVariantSummary(profileId, frame, variant.status);
+
+  validateReadyVariantForProfile(variant, frame);
+  return {
+    status: 'ready',
+    contentEtag: contentSummaryEtag(profileId, variant.frameEtag!),
+    imageEtag: contentFrameResourceEtag(profileId, variant.frameEtag!),
+    imageSize: variant.frameSize!,
+    frame,
+  };
+}
+
+function unavailableVariantSummary(
+  profileId: string,
+  frame: FrameDescriptorT,
+  status: ContentSummaryT['variant_status']
+): {
+  status: ContentSummaryT['variant_status'];
+  contentEtag: string;
+  imageEtag: string;
+  imageSize: number;
+  frame: FrameDescriptorT;
+} {
+  return {
+    status,
+    contentEtag: compactReadEtag(['content', profileId, status]),
+    imageEtag: '',
+    imageSize: 0,
+    frame,
+  };
+}
+
+function compactReadEtag(parts: Array<string | number>): string {
+  return createHash('sha256').update(parts.join('\n')).digest('hex').slice(0, 32);
 }
 
 function contentKind(kind: ContentKind): ContentSummaryT['kind'] {
@@ -78,11 +211,12 @@ export function contentToDetail(
     groupId: string;
     dynamicLastRunAt?: Date | null;
     dynamicLastError?: string | null;
-  }
+  },
+  target?: ContentReadProfileTarget
 ): ContentDetailT {
   const config = row.dynamicConfig ? DynamicConfig.safeParse(row.dynamicConfig) : null;
   return {
-    ...contentToSummary(row),
+    ...contentToSummary(row, target),
     group_id: row.groupId,
     dynamic_config: config?.success ? config.data : null,
     dynamic_data: row.dynamicData ?? null,

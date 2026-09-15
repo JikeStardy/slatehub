@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { type ContentDetailT, type ManifestResponseT } from 'shared';
 import type { DeviceContext, WebUserContext } from '../../common/nest/auth-context';
@@ -21,12 +21,13 @@ export class ContentsReadController {
   @Get('groups/:groupId/manifest')
   async manifest(
     @Param('groupId') groupId: string,
+    @Query('display_profile_id') displayProfileId: string | undefined,
     @CurrentUser() user: WebUserContext | undefined,
     @CurrentDevice() device: DeviceContext | undefined,
     @Req() req: FastifyRequest,
     @Res() reply: FastifyReply
   ): Promise<void> {
-    const m = await this.reads.manifest(groupId, contentAuthScope(user, device));
+    const m = await this.reads.manifest(groupId, contentAuthScope(user, device, displayProfileId));
     const body: ManifestResponseT = {
       group: m.group,
       display_profile: m.display_profile,
@@ -51,10 +52,11 @@ export class ContentsReadController {
   @Get('contents/:contentId')
   getOne(
     @Param('contentId') contentId: string,
+    @Query('display_profile_id') displayProfileId: string | undefined,
     @CurrentUser() user: WebUserContext | undefined,
     @CurrentDevice() device: DeviceContext | undefined
   ): Promise<ContentDetailT> {
-    return this.reads.get(contentId, contentAuthScope(user, device));
+    return this.reads.get(contentId, contentAuthScope(user, device, displayProfileId));
   }
 
   @Public()
@@ -62,12 +64,16 @@ export class ContentsReadController {
   @Get('contents/:contentId/image')
   async image(
     @Param('contentId') contentId: string,
+    @Query('display_profile_id') displayProfileId: string | undefined,
     @CurrentUser() user: WebUserContext | undefined,
     @CurrentDevice() device: DeviceContext | undefined,
     @Req() req: FastifyRequest,
     @Res() reply: FastifyReply
   ): Promise<void> {
-    const r = await this.reads.readImage(contentId, contentAuthScope(user, device));
+    const r = await this.reads.readImage(
+      contentId,
+      contentAuthScope(user, device, displayProfileId)
+    );
     respondWithEtag(req, reply, r.etag, r.data, 'application/octet-stream');
   }
 

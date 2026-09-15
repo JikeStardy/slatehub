@@ -21,6 +21,9 @@ export interface DevicePollSnapshot extends DeviceGroupSnapshot {
   selectedGroupId: string | null;
   pairCode: string;
   selectedGroup: { manifestEtag: string } | null;
+  boardId: string;
+  displayProfileId: string;
+  protocolVersion: number;
 }
 
 export const DEVICE_SUMMARY_SELECT = {

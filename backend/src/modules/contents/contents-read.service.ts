@@ -1,18 +1,35 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import {
+  DEFAULT_BOARD_ID,
   DEFAULT_DISPLAY_PROFILE_ID,
+  getBoardDefinition,
   getDisplayProfile,
+  frameDescriptorForProfile,
+  type DisplayProfileT,
   type ContentDetailT,
   type ManifestResponseT,
 } from 'shared';
 import { BlobService } from '../../infra/blob/blob.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { NotFoundError } from '../../common/errors';
+import { InternalError, NotFoundError, ValidationError } from '../../common/errors';
 import { GroupsService } from '../groups/groups.service';
 import { ContentAudioBlobService } from './content-audio-blob.service';
-import { contentToDetail, contentToSummary } from './content-presenter';
+import {
+  contentFrameResourceEtag,
+  contentToDetail,
+  contentToSummary,
+  manifestReadEtag,
+  validateReadyVariantForProfile,
+  type ContentReadProfileTarget,
+} from './content-presenter';
 import { CONTENT_SELECT, contentSelect } from './content-select';
+
+export interface ContentReadScope {
+  userId?: string;
+  deviceId?: string;
+  displayProfileId?: string;
+}
 
 @Injectable()
 export class ContentsReadService {
@@ -23,7 +40,7 @@ export class ContentsReadService {
     private readonly audioBlobs: ContentAudioBlobService
   ) {}
 
-  async assertReadable(gid: string, scope: { userId?: string; deviceId?: string }): Promise<void> {
+  async assertReadable(gid: string, scope: ContentReadScope): Promise<void> {
     if (scope.deviceId !== undefined && scope.userId === undefined) {
       const device = await this.prisma.device.findUnique({
         where: { id: scope.deviceId },
@@ -56,8 +73,9 @@ export class ContentsReadService {
 
   async manifest(
     gid: string,
-    scope: { userId?: string; deviceId?: string }
+    scope: ContentReadScope
   ): Promise<ManifestResponseT & { manifestEtag: string }> {
+    const target = await this.resolveReadTarget(scope);
     await this.assertReadable(gid, scope);
     const group = await this.prisma.group.findUnique({
       where: { id: gid },
@@ -75,25 +93,28 @@ export class ContentsReadService {
         ? { current: 1, total: 1 }
         : await this.groups.ownerGroupPosition(group.ownerUserId, group.sortOrder);
 
+    const contents = group.contents.map((content) => contentToSummary(content, target));
+    const manifestEtag = manifestReadEtag({
+      profileId: target.profile.id,
+      groupStructureEtag: group.structureEtag,
+      contents,
+    });
     return {
       group: {
         id: group.id,
         structure_etag: group.structureEtag,
-        manifest_etag: group.manifestEtag,
+        manifest_etag: manifestEtag,
         name: group.name,
         sort_order: group.sortOrder,
         position,
       },
-      display_profile: getDisplayProfile(DEFAULT_DISPLAY_PROFILE_ID),
-      contents: group.contents.map((content) => contentToSummary(content)),
-      manifestEtag: group.manifestEtag,
+      display_profile: target.profile,
+      contents,
+      manifestEtag,
     };
   }
 
-  async list(
-    gid: string,
-    scope: { userId?: string; deviceId?: string }
-  ): Promise<ContentDetailT[]> {
+  async list(gid: string, scope: ContentReadScope): Promise<ContentDetailT[]> {
     await this.assertReadable(gid, scope);
     const rows = await this.prisma.content.findMany({
       where: { groupId: gid },
@@ -103,35 +124,58 @@ export class ContentsReadService {
     return rows.map((row) => contentToDetail(row));
   }
 
-  async get(
-    contentId: string,
-    scope: { userId?: string; deviceId?: string }
-  ): Promise<ContentDetailT> {
+  async get(contentId: string, scope: ContentReadScope): Promise<ContentDetailT> {
+    const target = await this.resolveReadTarget(scope);
     const content = await this.requireReadableContent(
       contentId,
       scope,
       contentSelect({ dynamicLastError: true, audioText: true })
     );
-    return contentToDetail(content);
+    return contentToDetail(content, target);
   }
 
   async readImage(
     contentId: string,
-    scope: { userId?: string; deviceId?: string }
+    scope: ContentReadScope
   ): Promise<{ data: Buffer; etag: string }> {
+    const target = await this.resolveReadTarget(scope);
     const content = await this.requireReadableContent(contentId, scope, {
       id: true,
       groupId: true,
-      imageEtag: true,
+      variants: {
+        select: {
+          profileId: true,
+          status: true,
+          pixelFormat: true,
+          frameCodec: true,
+          width: true,
+          height: true,
+          frameEtag: true,
+          frameSize: true,
+          storageKey: true,
+          lastError: true,
+        },
+      },
     });
-    const data = await this.blob.read(content.groupId, content.id, 'image');
+    const variant = content.variants.find((v) => v.profileId === target.profile.id);
+    if (!variant || variant.status !== 'ready') throw new NotFoundError('该内容没有可用帧');
+    const descriptor = frameDescriptorForProfile(target.profile.id);
+    try {
+      validateReadyVariantForProfile(variant, descriptor);
+    } catch (err) {
+      throw new InternalError('内容帧元数据损坏', { cause: String(err) });
+    }
+    const data = await this.blob.readStorageKey(variant.storageKey!);
     if (!data) throw new NotFoundError('图片文件丢失');
-    return { data, etag: content.imageEtag };
+    if (data.byteLength !== variant.frameSize) {
+      throw new InternalError('内容帧文件大小与元数据不一致');
+    }
+    return { data, etag: contentFrameResourceEtag(target.profile.id, variant.frameEtag!) };
   }
 
   async readAudio(
     contentId: string,
-    scope: { userId?: string; deviceId?: string }
+    scope: ContentReadScope
   ): Promise<{ data: Buffer; etag: string }> {
     const content = await this.requireReadableContent(contentId, scope, {
       id: true,
@@ -154,7 +198,7 @@ export class ContentsReadService {
 
   private async requireReadableContent<T extends Prisma.ContentSelect>(
     contentId: string,
-    scope: { userId?: string; deviceId?: string },
+    scope: ContentReadScope,
     select: T & { groupId: true }
   ): Promise<Prisma.ContentGetPayload<{ select: T }> & { groupId: string }> {
     const content = await this.prisma.content.findUnique({
@@ -165,5 +209,42 @@ export class ContentsReadService {
     const row = content as Prisma.ContentGetPayload<{ select: T }> & { groupId: string };
     await this.assertReadable(row.groupId, scope);
     return row;
+  }
+
+  private async resolveReadTarget(scope: ContentReadScope): Promise<ContentReadProfileTarget> {
+    if (scope.deviceId !== undefined) {
+      const device = await this.prisma.device.findUnique({
+        where: { id: scope.deviceId },
+        select: {
+          boardId: true,
+          displayProfileId: true,
+          protocolVersion: true,
+        },
+      });
+      if (!device) throw new NotFoundError('设备不存在');
+      if (
+        scope.displayProfileId !== undefined &&
+        scope.displayProfileId !== device.displayProfileId
+      ) {
+        throw new ValidationError('设备不能覆盖已注册的显示配置', {
+          requested_display_profile_id: scope.displayProfileId,
+          device_display_profile_id: device.displayProfileId,
+        });
+      }
+      const board = getBoardDefinition(device.boardId);
+      return {
+        profile: getDisplayProfile(device.displayProfileId),
+        audio: board.capabilities.audio,
+      };
+    }
+
+    const profile: DisplayProfileT = getDisplayProfile(
+      scope.displayProfileId ?? DEFAULT_DISPLAY_PROFILE_ID
+    );
+    const boardAudio =
+      scope.displayProfileId === undefined
+        ? getBoardDefinition(DEFAULT_BOARD_ID).capabilities.audio
+        : false;
+    return { profile, audio: boardAudio };
   }
 }

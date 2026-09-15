@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { Prisma } from '@prisma/client';
-import type { ContentSummaryT, RegisterDeviceRequestT } from 'shared';
+import {
+  frameDescriptorForProfile,
+  type ContentSummaryT,
+  type RegisterDeviceRequestT,
+} from 'shared';
 import type { PrismaService } from '../../infra/prisma/prisma.service';
 import type { DeviceSecretAuthCacheService } from '../../infra/auth/device-secret-auth-cache.service';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../common/errors';
@@ -174,6 +178,7 @@ function contentSummary(overrides: Partial<ContentSummaryT> = {}): ContentSummar
     image_etag: 'image-etag-2',
     audio_etag: null,
     image_size: 123,
+    variant_status: 'ready',
     audio_size: null,
     audio_status: 'none',
     audio_source: null,
@@ -181,6 +186,7 @@ function contentSummary(overrides: Partial<ContentSummaryT> = {}): ContentSummar
     kind: 'image',
     dynamic_type: null,
     next_wake_sec: null,
+    frame: frameDescriptorForProfile('zectrix-note4-400x300-mono'),
     ...overrides,
   };
 }
@@ -194,6 +200,9 @@ function pollDevice(overrides: Partial<DevicePollSnapshot> = {}): DevicePollSnap
     selectedGroupId: 'group-1',
     pairCode: 'ABC234',
     selectedGroup: { manifestEtag: 'manifest-1' },
+    boardId: 'zectrix-note4',
+    displayProfileId: 'zectrix-note4-400x300-mono',
+    protocolVersion: 2,
     ...overrides,
   };
 }
@@ -230,6 +239,7 @@ function createPollService(
     currentFrame?: PollFrame | null;
     refreshedFrame?: PollFrame | null;
     currentContent?: ContentSummaryT | null;
+    profileManifestEtag?: string;
   } = {}
 ): {
   service: DeviceFirmwareService;
@@ -238,6 +248,7 @@ function createPollService(
     resolved: Array<{ device: DevicePollSnapshot; telemetry: TelemetryInput | undefined }>;
     refreshed: Array<{ frame: PollFrame | null; device: DevicePollSnapshot }>;
     currentContent: unknown[];
+    manifestEtags: unknown[];
   };
 } {
   const deviceSnapshot = opts.device ?? pollDevice();
@@ -247,6 +258,7 @@ function createPollService(
     resolved: [] as Array<{ device: DevicePollSnapshot; telemetry: TelemetryInput | undefined }>,
     refreshed: [] as Array<{ frame: PollFrame | null; device: DevicePollSnapshot }>,
     currentContent: [] as unknown[],
+    manifestEtags: [] as unknown[],
   };
   const prisma = {
     device: {
@@ -277,6 +289,10 @@ function createPollService(
     currentContentForDevice: (frame: unknown) => {
       calls.currentContent.push(frame);
       return opts.currentContent === undefined ? contentSummary() : opts.currentContent;
+    },
+    manifestEtagForDeviceGroup: async (device: DevicePollSnapshot, groupId: string) => {
+      calls.manifestEtags.push({ device, groupId });
+      return opts.profileManifestEtag ?? 'manifest-1';
     },
   };
   return {
@@ -404,7 +420,7 @@ describe('DeviceFirmwareService.poll', () => {
 
   it('returns null current_content when the selected group manifest no longer matches', async () => {
     const { service, calls } = createPollService({
-      group: pollGroup({ manifestEtag: 'manifest-2' }),
+      profileManifestEtag: 'manifest-2',
       currentFrame: pollFrame({ manifestEtag: 'manifest-1' }),
     });
 
@@ -434,6 +450,31 @@ describe('DeviceFirmwareService.poll', () => {
     expect(calls.refreshed).toEqual([{ frame: currentFrame, device: pollDevice() }]);
     expect(calls.currentContent).toEqual([refreshedFrame]);
     expect(state.current_content?.id).toBe('content-2');
+  });
+
+  it('returns group and current_content against the profile-specific manifest etag', async () => {
+    const currentContent = contentSummary({ id: 'content-2', seq: 2 });
+    const { service } = createPollService({
+      group: pollGroup({ manifestEtag: 'legacy-global-manifest' }),
+      currentFrame: pollFrame({ manifestEtag: 'profile-manifest' }),
+      currentContent,
+    });
+    const currentContentService = service[
+      'currentContent'
+    ] as unknown as DeviceCurrentContentService & {
+      manifestEtagForDeviceGroup: () => Promise<string>;
+    };
+    currentContentService.manifestEtagForDeviceGroup = async () => 'profile-manifest';
+
+    const state = await service.poll('device-1', {
+      wake_reason: 'button',
+      current_group: 'group-1',
+      current_content_seq: 2,
+      manifest_etag: 'profile-manifest',
+    });
+
+    expect(state.group?.manifest_etag).toBe('profile-manifest');
+    expect(state.current_content).toEqual(currentContent);
   });
 });
 

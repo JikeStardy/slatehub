@@ -211,6 +211,9 @@ export class DeviceFirmwareService {
           selectedGroupId: true,
           pairCode: true,
           selectedGroup: { select: { manifestEtag: true } },
+          boardId: true,
+          displayProfileId: true,
+          protocolVersion: true,
         },
       });
     } catch (err) {
@@ -259,6 +262,9 @@ export class DeviceFirmwareService {
               selectedGroupId: true,
               pairCode: true,
               selectedGroup: { select: { manifestEtag: true } },
+              boardId: true,
+              displayProfileId: true,
+              protocolVersion: true,
             },
           });
     if (!device) {
@@ -269,7 +275,18 @@ export class DeviceFirmwareService {
         ? cached.group
         : await this.groups.describeDeviceGroupSnapshot(device);
 
-    return toDeviceStatePayload(device, resolvedGroup);
+    const profileManifestEtag = resolvedGroup.groupId
+      ? await this.currentContent.manifestEtagForDeviceGroup(device, resolvedGroup.groupId)
+      : null;
+    return toDeviceStatePayload(
+      device,
+      profileManifestEtag
+        ? {
+            ...resolvedGroup,
+            manifestEtag: profileManifestEtag,
+          }
+        : resolvedGroup
+    );
   }
 
   private async findRegisterDeviceByMac(

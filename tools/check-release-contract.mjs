@@ -51,17 +51,34 @@ function exactOccurrences(text, snippet) {
   }
 }
 
+function stepBlock(workflow, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = workflow.match(
+    new RegExp(
+      `\\n\\s*- name: ${escapedName}\\n([\\s\\S]*?)(?=\\n\\s*- name: |\\n\\s*- uses: |\\n\\s{2}[a-zA-Z0-9_-]+:|$)`
+    )
+  );
+  return match?.[1] ?? '';
+}
+
 function hasBoardSdkconfigCommand(workflow) {
+  const block = stepBlock(workflow, 'ESP-IDF build');
   return containsCompact(
-    workflow,
+    block,
     `
       BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.\${{ matrix.board_id }}.defaults" &&
       printf "CONFIG_SLATE_BOARD_ID=\\"\${{ matrix.board_id }}\\"\\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
       idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
-      idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-\${{ matrix.board_id }}-full.bin"
+      idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-\${{ matrix.board_id }}-full.bin" &&
+      cp build/slate.bin "build/slate-\${{ matrix.board_id }}-ota.bin"
     `
   );
 }
+
+const releaseTagOrderingBlock = stepBlock(releaseWorkflow, 'Validate release tag ordering');
+const repositoryVersionsBlock = stepBlock(releaseWorkflow, 'Validate repository versions');
+const tagChangelogBlock = stepBlock(releaseWorkflow, 'Read tag changelog');
+const publishReleaseBlock = stepBlock(releaseWorkflow, 'Publish GitHub Release');
 
 const boardProfileErrors = displayRegistry.boards
   .map((board) => {
@@ -147,15 +164,16 @@ assertContract(
 assertContract(
   /pattern:\s*slate-release-firmware-\*/.test(releaseWorkflow) &&
     /merge-multiple:\s*true/.test(releaseWorkflow) &&
-    /find "\$FIRMWARE_DIR"/.test(releaseWorkflow) &&
-    /slate-\*-\$\{RELEASE_TAG\}-\*\.bin/.test(releaseWorkflow) &&
-    /slate-\*-\$\{RELEASE_TAG\}-sha256\.txt/.test(releaseWorkflow),
+    /find "\$FIRMWARE_DIR"/.test(publishReleaseBlock) &&
+    /slate-\*-\$\{RELEASE_TAG\}-\*\.bin/.test(publishReleaseBlock) &&
+    /slate-\*-\$\{RELEASE_TAG\}-sha256\.txt/.test(publishReleaseBlock) &&
+    /ASSETS=\("\$\{FIRMWARE_ASSETS\[@\]\}" "\$\{ASSETS\[@\]\}"\)/.test(publishReleaseBlock),
   'GitHub Release publish step must download all board artifacts and collect board-named .bin and sha256 assets dynamically.'
 );
 
 assertContract(
   ['package.json', 'backend/package.json', 'frontend/package.json', 'shared/package.json'].every(
-    (file) => exactOccurrences(releaseWorkflow, `check_package_version ${file}`) === 1
+    (file) => exactOccurrences(repositoryVersionsBlock, `check_package_version ${file}`) === 1
   ),
   'Release workflow must verify all package versions: root, backend, frontend, and shared.'
 );
@@ -163,25 +181,87 @@ assertContract(
 assertContract(
   ['backend', 'frontend', 'shared'].every(
     (workspace) =>
-      exactOccurrences(releaseWorkflow, `check_lock_workspace_version ${workspace}`) === 1
+      exactOccurrences(repositoryVersionsBlock, `check_lock_workspace_version ${workspace}`) === 1
   ),
   'Release workflow must verify backend/frontend/shared bun.lock workspace versions.'
 );
 
 assertContract(
-  /CONFIG_APP_PROJECT_VER/.test(releaseWorkflow),
-  'Release workflow must verify firmware CONFIG_APP_PROJECT_VER.'
+  containsCompact(
+    repositoryVersionsBlock,
+    `
+      value="$(jq -r '.version' "$file")"
+      if [ "$value" != "$RELEASE_VERSION" ]; then
+        echo "$file version must be $RELEASE_VERSION, got $value." >&2
+        exit 1
+      fi
+    `
+  ),
+  'Release workflow package version helper must read .version with jq, compare to RELEASE_VERSION, and exit 1 on mismatch.'
 );
 
 assertContract(
-  /git cat-file -t "\$RELEASE_TAG"/.test(releaseWorkflow),
-  'Release workflow must require annotated tags.'
+  /awk -v workspace=/.test(repositoryVersionsBlock) &&
+    /' bun\.lock/.test(repositoryVersionsBlock) &&
+    /in_workspace &&/.test(repositoryVersionsBlock) &&
+    /if \[ "\$value" != "\$RELEASE_VERSION" \]; then/.test(repositoryVersionsBlock) &&
+    /bun\.lock workspace \$workspace version must be \$RELEASE_VERSION/.test(
+      repositoryVersionsBlock
+    ) &&
+    containsCompact(
+      repositoryVersionsBlock,
+      `
+        if [ "$value" != "$RELEASE_VERSION" ]; then
+          echo "bun.lock workspace $workspace version must be $RELEASE_VERSION, got
+      `
+    ) &&
+    /exit 1/.test(
+      repositoryVersionsBlock.slice(
+        repositoryVersionsBlock.indexOf('if [ "$value" != "$RELEASE_VERSION" ]; then')
+      )
+    ),
+  'Release workflow lock helper must read workspace versions from bun.lock, compare to RELEASE_VERSION, and exit 1 on mismatch.'
 );
 
 assertContract(
-  /LATEST_TAG=.*sort -V/.test(compact(releaseWorkflow)) &&
-    /\[ "\$LATEST_TAG" != "\$RELEASE_TAG" \]/.test(releaseWorkflow),
-  'Release workflow must keep the highest vX.Y.Z tag safeguard.'
+  containsCompact(
+    repositoryVersionsBlock,
+    `
+      FW_VERSION="$(sed -n 's/^CONFIG_APP_PROJECT_VER="\\([^"]*\\)"/\\1/p' firmware/sdkconfig.defaults | head -n 1)"
+      if [ "$FW_VERSION" != "$RELEASE_VERSION" ]; then
+        echo "firmware/sdkconfig.defaults CONFIG_APP_PROJECT_VER must be $RELEASE_VERSION, got $FW_VERSION." >&2
+        exit 1
+      fi
+    `
+  ),
+  'Release workflow must read firmware CONFIG_APP_PROJECT_VER, compare to RELEASE_VERSION, and exit 1 on mismatch.'
+);
+
+assertContract(
+  containsCompact(
+    tagChangelogBlock,
+    `
+      if [ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]; then
+        echo "Release tag must be an annotated tag with a changelog body." >&2
+        exit 1
+      fi
+    `
+  ),
+  'Release workflow must require annotated tags inside Read tag changelog.'
+);
+
+assertContract(
+  containsCompact(
+    releaseTagOrderingBlock,
+    [
+      "LATEST_TAG=\"$(git tag --list 'v*' | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' | sort -V | tail -n 1)\"",
+      'if [ "$LATEST_TAG" != "$RELEASE_TAG" ]; then',
+      'echo "Release tag must be the newest vX.Y.Z tag before publishing the latest image. Latest tag is ${LATEST_TAG}, got ${RELEASE_TAG}." >&2',
+      'exit 1',
+      'fi',
+    ].join('\n')
+  ),
+  'Release workflow must keep the highest vX.Y.Z tag safeguard inside Validate release tag ordering.'
 );
 
 if (failures.length > 0) {

@@ -5,7 +5,7 @@
       "display_profile_id": "zectrix-note4-400x300-mono",
       "capabilities": {
         "audio": true,
-        "partial_refresh": false
+        "partial_refresh": true
       }
     }
   ],
@@ -14,16 +14,16 @@
       "id": "zectrix-note4-400x300-mono",
       "width": 400,
       "height": 300,
-      "pixel_format": "mono_1bpp_msb",
-      "frame_codec": "raw",
+      "pixel_format": "mono1",
+      "frame_codec": "raw_mono1_msb",
       "availability": ["production", "development", "test"]
     },
     {
       "id": "virtual-mono-296x128",
       "width": 296,
       "height": 128,
-      "pixel_format": "mono_1bpp_msb",
-      "frame_codec": "raw",
+      "pixel_format": "mono1",
+      "frame_codec": "raw_mono1_msb",
       "availability": ["development", "test"]
     }
   ]

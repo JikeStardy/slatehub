@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import registryData from './display-profiles.json' with { type: 'json' };
 
-export const PixelFormat = z.enum(['mono_1bpp_msb']);
+export const PixelFormat = z.enum(['mono1']);
 export type PixelFormatT = z.infer<typeof PixelFormat>;
 
-export const FrameCodec = z.enum(['raw']);
+export const FrameCodec = z.enum(['raw_mono1_msb']);
 export type FrameCodecT = z.infer<typeof FrameCodec>;
 
 export const DisplayProfileEnvironment = z.enum(['production', 'development', 'test']);
@@ -85,7 +85,7 @@ export function frameByteLength(
   profile: Pick<DisplayProfileT, 'width' | 'height' | 'pixel_format'>
 ): number {
   switch (profile.pixel_format) {
-    case 'mono_1bpp_msb':
+    case 'mono1':
       return (profile.width * profile.height) / 8;
   }
 }

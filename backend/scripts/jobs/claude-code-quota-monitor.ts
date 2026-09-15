@@ -32,6 +32,7 @@ import {
 } from '../helpers/script-logger';
 import { readPositiveIntEnv, requireEnv, stripTrailingSlash } from '../lib/env';
 import type { SlateJob } from '../lib/job';
+import { dashboardIngestURL } from '../lib/slate-ingest';
 import {
   formatHourMinuteInTimeZone,
   formatMonthDayMinuteInTimeZone,
@@ -376,7 +377,7 @@ function shouldPush(config: ClaudeQuotaMonitorConfig): boolean {
 }
 
 async function pushPayloadBody(config: ClaudeQuotaMonitorConfig, body: string) {
-  const url = `${config.slateAPIBase}/api/v1/contents/${config.contentID}/data`;
+  const url = dashboardIngestURL(config.slateAPIBase, config.contentID);
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

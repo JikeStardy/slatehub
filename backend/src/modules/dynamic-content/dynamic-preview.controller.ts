@@ -27,6 +27,7 @@ export class DynamicPreviewController {
   ): Promise<void> {
     const data = await this.dynamicContent.preview(contentId, user.userId, {
       config: body.config,
+      display_profile_id: body.display_profile_id,
       frame_name: body.frame_name,
       data: body.data,
     });

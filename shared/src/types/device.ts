@@ -79,7 +79,7 @@ export type CycleDirectionT = z.infer<typeof CycleDirection>;
 export const RegisterDeviceRequest = z.object({
   mac: MacAddress,
   board_id: BoardId,
-  protocol_version: z.number().int().positive(),
+  protocol_version: z.literal(2),
   fw_version: z.string().min(1).max(32),
 });
 export type RegisterDeviceRequestT = z.infer<typeof RegisterDeviceRequest>;

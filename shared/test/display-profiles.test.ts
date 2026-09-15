@@ -19,9 +19,10 @@ describe('display profile registry', () => {
       id: 'zectrix-note4-400x300-mono',
       width: 400,
       height: 300,
-      pixel_format: 'mono_1bpp_msb',
-      frame_codec: 'raw',
+      pixel_format: 'mono1',
+      frame_codec: 'raw_mono1_msb',
     });
+    expect(board.capabilities.partial_refresh).toBe(true);
   });
 
   it('keeps profile identifiers unique and exposes the virtual profile only outside production', () => {
@@ -45,8 +46,8 @@ describe('display profile registry', () => {
       profile_id: 'zectrix-note4-400x300-mono',
       width: 400,
       height: 300,
-      pixel_format: 'gray_4bpp',
-      frame_codec: 'raw',
+      pixel_format: 'gray4',
+      frame_codec: 'raw_mono1_msb',
       byte_length: 60000,
     });
 
@@ -65,6 +66,22 @@ describe('v2 device and render payloads', () => {
         fw_version: '0.2.0',
       }).success
     ).toBe(true);
+    expect(
+      RegisterDeviceRequest.safeParse({
+        mac: 'AA:BB:CC:DD:EE:FF',
+        board_id: 'zectrix-note4',
+        protocol_version: 1,
+        fw_version: '0.2.0',
+      }).success
+    ).toBe(false);
+    expect(
+      RegisterDeviceRequest.safeParse({
+        mac: 'AA:BB:CC:DD:EE:FF',
+        board_id: 'zectrix-note4',
+        protocol_version: 3,
+        fw_version: '0.2.0',
+      }).success
+    ).toBe(false);
     expect(RegisterDeviceRequest.safeParse({ mac: 'AA:BB:CC:DD:EE:FF' }).success).toBe(false);
     expect(
       PreviewDynamicContentRequest.safeParse({

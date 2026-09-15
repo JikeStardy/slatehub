@@ -68,6 +68,11 @@ interface StaticContentSnapshot {
   audioBytes: Buffer | null;
 }
 
+interface ContentDeleteBlobCleanupPlan {
+  storageKeys: string[];
+  audioEtag: string | null;
+}
+
 type StaticContentRestoreData = Pick<
   Prisma.ContentUpdateInput,
   | 'frameName'
@@ -217,21 +222,57 @@ export class ContentsService {
 
   private async deleteUnqueued(contentId: string, ownerUserId: string): Promise<void> {
     const content = await this.requireOwnedContent(contentId, ownerUserId);
+    const cleanupPlan = await this.collectDeleteBlobCleanupPlan(contentId, content.audioEtag);
     await this.withGroupMutation(content.groupId, async (tx) => {
       await tx.content.delete({ where: { id: contentId } });
       await compactContentSortOrders(tx, content.groupId);
       return {};
     });
-    const deleted = await Promise.allSettled([
-      this.blob.delete(content.groupId, contentId, 'image'),
-      this.audioBlobs.delete(content.groupId, contentId, content.audioEtag),
-    ]);
+    const deleted = await this.cleanupDeletedContentBlobsAfterCommit(
+      content.groupId,
+      contentId,
+      cleanupPlan
+    );
     const failed = deleted.filter((result) => result.status === 'rejected').length;
     if (failed > 0) {
       this.logger.warn(
         `Content ${contentId} was deleted, but ${failed} blob cleanup operation(s) failed.`
       );
     }
+  }
+
+  private async collectDeleteBlobCleanupPlan(
+    contentId: string,
+    audioEtag: string | null
+  ): Promise<ContentDeleteBlobCleanupPlan> {
+    const storageKeys = new Set<string>();
+    const source = await this.prisma.contentSource.findUnique({
+      where: { contentId },
+      select: { storageKey: true },
+    });
+    if (source?.storageKey) storageKeys.add(source.storageKey);
+
+    const variants = await this.prisma.contentVariant.findMany({
+      where: { contentId },
+      select: { storageKey: true },
+    });
+    for (const variant of variants) {
+      if (variant.storageKey) storageKeys.add(variant.storageKey);
+    }
+
+    return { storageKeys: [...storageKeys], audioEtag };
+  }
+
+  private cleanupDeletedContentBlobsAfterCommit(
+    gid: string,
+    contentId: string,
+    cleanupPlan: ContentDeleteBlobCleanupPlan
+  ): Promise<PromiseSettledResult<void>[]> {
+    return Promise.allSettled([
+      ...cleanupPlan.storageKeys.map((storageKey) => this.blob.deleteStorageKey(storageKey)),
+      this.blob.delete(gid, contentId, 'image'),
+      this.audioBlobs.delete(gid, contentId, cleanupPlan.audioEtag),
+    ]);
   }
 
   private async deleteAudioUnqueued(

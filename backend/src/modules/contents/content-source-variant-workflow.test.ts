@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { Logger } from '@nestjs/common';
 import { DEFAULT_DISPLAY_PROFILE_ID } from 'shared';
 import { computeETag } from '../../common/utils/etag';
 import type { BlobService } from '../../infra/blob/blob.service';
@@ -479,6 +480,94 @@ describe('ContentsService source and variant workflow', () => {
     }
   });
 
+  it('cleans every static blob only after the delete transaction commits', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    const sourceKey = blobs.sourceKey('group-1', 'content-1');
+    const note4Key = blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+    const migratedLegacyKey = 'group-1/content-1.img';
+    const audioDeletes: Array<{ groupId: string; contentId: string; audioEtag: string | null }> =
+      [];
+    blobs.storage.set(migratedLegacyKey, Buffer.from('migrated legacy frame'));
+    store.seedVariant('content-1', 'legacy-note4', {
+      contentId: 'content-1',
+      profileId: 'legacy-note4',
+      status: 'ready',
+      pixelFormat: 'mono',
+      frameCodec: 'raw',
+      width: 400,
+      height: 300,
+      frameEtag: 'legacy-etag',
+      frameSize: 15_000,
+      storageKey: migratedLegacyKey,
+      renderVersion: 1,
+      lastError: null,
+      leaseUntil: null,
+      attempts: 0,
+    });
+    store.seedVariant('content-1', 'duplicate-note4', {
+      contentId: 'content-1',
+      profileId: 'duplicate-note4',
+      status: 'ready',
+      pixelFormat: 'mono',
+      frameCodec: 'raw',
+      width: 400,
+      height: 300,
+      frameEtag: 'duplicate-etag',
+      frameSize: 15_000,
+      storageKey: note4Key,
+      renderVersion: 1,
+      lastError: null,
+      leaseUntil: null,
+      attempts: 0,
+    });
+    blobs.failDeleteStorageKeys.add(migratedLegacyKey);
+    const warn = spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const service = createContentsService({
+      store,
+      blobs,
+      renders: [],
+      audioDeletes,
+      onBlobDelete: (key) => {
+        expect(store.inTransaction).toBe(false);
+        expect(store.contentCount()).toBe(0);
+        blobs.deleteAttempts.push(key);
+      },
+    });
+
+    try {
+      await expect(service.delete('content-1', 'user-1')).resolves.toBeUndefined();
+
+      expect(store.contentCount()).toBe(0);
+      expect(store.sourceCount()).toBe(0);
+      expect(store.variantsFor('content-1')).toEqual([]);
+      expect(blobs.storage.has(sourceKey)).toBe(false);
+      expect(blobs.storage.has(note4Key)).toBe(false);
+      expect(blobs.storage.has(migratedLegacyKey)).toBe(true);
+      expect(blobs.legacy.has('group-1/content-1.image')).toBe(false);
+      expect(audioDeletes).toEqual([
+        {
+          groupId: 'group-1',
+          contentId: 'content-1',
+          audioEtag: computeETag(Buffer.from('old audio bytes')),
+        },
+      ]);
+      expect(blobs.deleteAttempts).toEqual([
+        sourceKey,
+        note4Key,
+        blobs.frameKey('group-1', 'content-1', VIRTUAL_PROFILE),
+        migratedLegacyKey,
+        'group-1/content-1.image',
+      ]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Content content-1 was deleted, but 1 blob cleanup operation(s) failed.'
+        )
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('restores missing old source and variant blobs by deleting replacement blobs', async () => {
     const { store, blobs } = seedReadyStaticContent();
     const sourceKey = blobs.sourceKey('group-1', 'content-1');
@@ -580,7 +669,10 @@ function createContentsService(input: {
   preservePreviousOnFailure?: boolean;
   renderSources?: Buffer[];
   beforeRender?: (target: RenderTarget) => Promise<void>;
+  audioDeletes?: Array<{ groupId: string; contentId: string; audioEtag: string | null }>;
+  onBlobDelete?: (key: string) => void;
 }): ContentsService {
+  input.blobs.onDelete = input.onBlobDelete;
   return new ContentsService(
     input.store.prisma as unknown as PrismaService,
     input.blobs as unknown as BlobService,
@@ -617,7 +709,9 @@ function createContentsService(input: {
       normalizeVoice: (voice: string) => voice,
     } as unknown as TtsService,
     {
-      delete: async () => undefined,
+      delete: async (groupId: string, contentId: string, audioEtag: string | null) => {
+        input.audioDeletes?.push({ groupId, contentId, audioEtag });
+      },
     } as unknown as ContentAudioBlobService,
     {
       renderContentVariants: async ({
@@ -724,6 +818,7 @@ class FakeContentStore {
   failFinalImageUpdate = false;
   failContentDelete = false;
   failRestoreDb = false;
+  inTransaction = false;
 
   readonly prisma = {
     content: {
@@ -911,6 +1006,7 @@ class FakeContentStore {
     const contents = cloneTable(this.contents);
     const sources = cloneTable(this.sources);
     const variants = cloneTable(this.variants);
+    this.inTransaction = true;
     try {
       return await fn();
     } catch (err) {
@@ -921,6 +1017,8 @@ class FakeContentStore {
       this.variants.clear();
       for (const entry of variants) this.variants.set(entry[0], entry[1]);
       throw err;
+    } finally {
+      this.inTransaction = false;
     }
   }
 
@@ -953,6 +1051,9 @@ class FakeBlobService {
   readonly legacy = new Map<string, Buffer>();
   failLegacyWrite = false;
   readonly failWritesFor = new Set<string>();
+  readonly failDeleteStorageKeys = new Set<string>();
+  readonly deleteAttempts: string[] = [];
+  onDelete: ((key: string) => void) | undefined;
 
   sourceKey(groupId: string, contentId: string): string {
     return `sources/${groupId}/${contentId}.source`;
@@ -981,6 +1082,10 @@ class FakeBlobService {
   }
 
   async deleteStorageKey(key: string): Promise<void> {
+    this.onDelete?.(key);
+    if (this.failDeleteStorageKeys.has(key)) {
+      throw new Error(`storage delete failed for ${key}`);
+    }
     this.storage.delete(key);
   }
 
@@ -1009,6 +1114,7 @@ class FakeBlobService {
   }
 
   async delete(groupId: string, contentId: string, kind: string): Promise<void> {
+    this.onDelete?.(`${groupId}/${contentId}.${kind}`);
     this.legacy.delete(`${groupId}/${contentId}.${kind}`);
   }
 }

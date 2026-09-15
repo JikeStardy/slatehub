@@ -52,6 +52,20 @@ Failing behaviors:
 - rollback failure returned a ready result while the destination bytes were corrupted
 ```
 
+Round 2 review RED before fix:
+
+```text
+bun test backend/src/modules/rendering/variant-render.service.test.ts
+
+VariantRenderService > runs a queued retry after an earlier whole-transition version read fails
+Expected promise that resolves
+Received promise that rejected
+
+15 pass
+1 fail
+45 expect() calls
+```
+
 ## GREEN evidence
 
 Focused service tests:
@@ -59,9 +73,9 @@ Focused service tests:
 ```text
 bun test backend/src/modules/rendering/variant-render.service.test.ts
 
-15 pass
+16 pass
 0 fail
-43 expect() calls
+49 expect() calls
 ```
 
 Full backend tests:
@@ -69,9 +83,9 @@ Full backend tests:
 ```text
 bun run --cwd backend test
 
-235 pass
+236 pass
 0 fail
-858 expect() calls
+864 expect() calls
 ```
 
 Root checks:
@@ -98,6 +112,7 @@ All matched files use Prettier code style.
 ## State-machine decisions
 
 - Round 1 serializes the full `renderContentVariants` transition per `contentId` with `KeyedPromiseQueue`, including renderVersion selection, prior-row reads, rendering, blob writes, DB writes, and rollback decisions.
+- Round 2 runs the per-content queue with `continueAfterFailure: true`, so a queued retry still executes after an earlier whole-transition rejection such as a renderVersion DB read failure.
 - Enabled profiles come only from `displayProfilesForEnvironment(config.nodeEnv)`: production renders Note4 only; development and test render Note4 plus the virtual compact profile.
 - Render targets come only from Task 3A `renderTargetFromProfile`; the service validates supported mono encoding and exact target byte length before writing frame bytes.
 - Target-resolution and prior-read failures are inside the per-profile boundary and return structured failed results without blocking later profiles.
@@ -112,7 +127,8 @@ All matched files use Prettier code style.
 ## Hashes
 
 - Initial Task 3B1 commit: `f45d90db7a88fe9659755959e8f9b44f80cf6cd7`
-- Round 1 fix commit: reported in final handoff because embedding a commit's own SHA in the committed report would change that SHA.
+- Round 1 fix commit: `5c6136e4ffdb23605c2874cd97b7c9a7e92041d9`
+- Round 2 fix commit: reported in final handoff because embedding a commit's own SHA in the committed report would change that SHA.
 
 ## Residual risks
 

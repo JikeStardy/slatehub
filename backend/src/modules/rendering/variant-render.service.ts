@@ -53,7 +53,9 @@ export class VariantRenderService {
   async renderContentVariants(
     input: RenderContentVariantsInput
   ): Promise<RenderContentVariantsResult> {
-    return this.renderQueue.run(input.contentId, () => this.renderContentVariantsExclusive(input));
+    return this.renderQueue.run(input.contentId, () => this.renderContentVariantsExclusive(input), {
+      continueAfterFailure: true,
+    });
   }
 
   private async renderContentVariantsExclusive(

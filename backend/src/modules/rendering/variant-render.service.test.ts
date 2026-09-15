@@ -169,6 +169,48 @@ describe('VariantRenderService', () => {
     });
   });
 
+  it('runs a queued retry after an earlier whole-transition version read fails', async () => {
+    const harness = createHarness('production');
+    harness.store.failNextVersionRead('version db down');
+    let renderCalls = 0;
+
+    const first = harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: (target) => {
+        renderCalls++;
+        return Buffer.alloc(target.byteLength, 0x66);
+      },
+    });
+    const second = harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: (target) => {
+        renderCalls++;
+        return Buffer.alloc(target.byteLength, 0x77);
+      },
+    });
+
+    await expect(first).rejects.toThrow('version db down');
+    await expect(second).resolves.toMatchObject({
+      renderVersion: 1,
+      results: [expect.objectContaining({ profileId: NOTE4_PROFILE, status: 'ready' })],
+    });
+
+    const key = harness.blob.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+    expect(harness.store.findManyCalls).toBe(2);
+    expect(renderCalls).toBe(1);
+    expect(await harness.blob.readStorageKey(key)).toEqual(Buffer.alloc(15_000, 0x77));
+    expect(harness.store.row('content-1', NOTE4_PROFILE)).toMatchObject({
+      status: 'ready',
+      frameEtag: etagFor(Buffer.alloc(15_000, 0x77)),
+      frameSize: 15_000,
+      storageKey: key,
+      renderVersion: 1,
+      attempts: 0,
+    });
+  });
+
   it('commits successful profiles even when another profile render fails', async () => {
     const harness = createHarness('test');
 
@@ -658,10 +700,18 @@ interface StoredVariant {
 class FakeVariantStore {
   private readonly rows = new Map<string, StoredVariant>();
   private nextWriteError: Error | null = null;
+  private nextVersionReadError: Error | null = null;
   private readonly readErrorsByProfile = new Map<string, Error>();
+  findManyCalls = 0;
 
   readonly client = {
     findMany: async (args: { where: { contentId: string } }) => {
+      this.findManyCalls++;
+      if (this.nextVersionReadError) {
+        const err = this.nextVersionReadError;
+        this.nextVersionReadError = null;
+        throw err;
+      }
       return [...this.rows.values()].filter((row) => row.contentId === args.where.contentId);
     },
     findUnique: async (args: {
@@ -705,6 +755,10 @@ class FakeVariantStore {
 
   failNextRead(profileId: string, message: string): void {
     this.readErrorsByProfile.set(profileId, new Error(message));
+  }
+
+  failNextVersionRead(message: string): void {
+    this.nextVersionReadError = new Error(message);
   }
 
   private throwIfRequested(): void {

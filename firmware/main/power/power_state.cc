@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "bsp/board_platform.h"
+#include "power/status_bar_snapshot_identity.h"
 #include "utils/scoped_mutex_lock.h"
 
 namespace power_state {
@@ -40,6 +41,10 @@ RTC_DATA_ATTR uint32_t s_status_bar_board_hash                             = 0;
 RTC_DATA_ATTR uint32_t s_status_bar_profile_hash                           = 0;
 RTC_DATA_ATTR int      s_status_bar_width                                  = 0;
 RTC_DATA_ATTR int      s_status_bar_height                                 = 0;
+RTC_DATA_ATTR int      s_status_bar_region_x                               = 0;
+RTC_DATA_ATTR int      s_status_bar_region_y                               = 0;
+RTC_DATA_ATTR int      s_status_bar_region_width                           = 0;
+RTC_DATA_ATTR int      s_status_bar_region_height                          = 0;
 RTC_DATA_ATTR uint32_t s_status_bar_pixel_format                           = 0;
 RTC_DATA_ATTR uint32_t s_status_bar_codec                                  = 0;
 RTC_DATA_ATTR uint8_t  s_status_bar_snapshot[board::kStatusBarSnapshotCapacityBytes] = {};
@@ -64,23 +69,22 @@ uint32_t HashBytes(const uint8_t* data, size_t len) {
 }
 
 uint32_t HashString(const char* value) {
-    if (!value)
-        return 0;
-    uint32_t h = 2166136261u;
-    while (*value != '\0') {
-        h ^= static_cast<uint8_t>(*value);
-        h *= 16777619u;
-        ++value;
-    }
-    return h;
+    return HashSnapshotString(value);
 }
 
-bool SnapshotIdentityMatches(const display::DisplayInfo& display_info, size_t len) {
-    return s_status_bar_len == len && s_status_bar_board_hash == HashString(display_info.board_id) &&
-           s_status_bar_profile_hash == HashString(display_info.profile_id) &&
-           s_status_bar_width == display_info.frame.width && s_status_bar_height == display_info.frame.height &&
-           s_status_bar_pixel_format == static_cast<uint32_t>(display_info.frame.pixel_format) &&
-           s_status_bar_codec == static_cast<uint32_t>(display_info.frame.codec);
+bool SnapshotIdentityMatches(const display::DisplayInfo& display_info, const display::FrameRegion& region, size_t len) {
+    const StatusBarSnapshotIdentity stored{s_status_bar_len,
+                                           s_status_bar_board_hash,
+                                           s_status_bar_profile_hash,
+                                           s_status_bar_width,
+                                           s_status_bar_height,
+                                           s_status_bar_pixel_format,
+                                           s_status_bar_codec,
+                                           s_status_bar_region_x,
+                                           s_status_bar_region_y,
+                                           s_status_bar_region_width,
+                                           s_status_bar_region_height};
+    return StatusBarSnapshotIdentityMatches(stored, display_info, region, len);
 }
 
 }  // namespace
@@ -93,15 +97,19 @@ void Init(bool cold_boot) {
     s_frame_server_sync_sec = 0;
     s_current_frame_seq     = 0;
     s_timer_wake_fail_count = 0;
-    s_status_bar_magic      = 0;
-    s_status_bar_hash       = 0;
-    s_status_bar_len        = 0;
-    s_status_bar_board_hash = 0;
-    s_status_bar_profile_hash = 0;
-    s_status_bar_width      = 0;
-    s_status_bar_height     = 0;
-    s_status_bar_pixel_format = 0;
-    s_status_bar_codec      = 0;
+    s_status_bar_magic         = 0;
+    s_status_bar_hash          = 0;
+    s_status_bar_len           = 0;
+    s_status_bar_board_hash    = 0;
+    s_status_bar_profile_hash  = 0;
+    s_status_bar_width         = 0;
+    s_status_bar_height        = 0;
+    s_status_bar_region_x      = 0;
+    s_status_bar_region_y      = 0;
+    s_status_bar_region_width  = 0;
+    s_status_bar_region_height = 0;
+    s_status_bar_pixel_format  = 0;
+    s_status_bar_codec         = 0;
     std::memset(s_status_bar_snapshot, 0, sizeof(s_status_bar_snapshot));
 }
 
@@ -210,7 +218,8 @@ void RecordTimerWakeResult(bool success) {
     }
 }
 
-bool SaveStatusBarSnapshot(const display::DisplayInfo& display_info, const uint8_t* data, size_t len) {
+bool SaveStatusBarSnapshot(const display::DisplayInfo& display_info, const display::FrameRegion& region,
+                           const uint8_t* data, size_t len) {
     if (!data || len == 0 || len > board::kStatusBarSnapshotCapacityBytes)
         return false;
     const uint32_t  hash = HashBytes(data, len);
@@ -224,6 +233,10 @@ bool SaveStatusBarSnapshot(const display::DisplayInfo& display_info, const uint8
     s_status_bar_profile_hash = HashString(display_info.profile_id);
     s_status_bar_width        = display_info.frame.width;
     s_status_bar_height       = display_info.frame.height;
+    s_status_bar_region_x      = region.x;
+    s_status_bar_region_y      = region.y;
+    s_status_bar_region_width  = region.width;
+    s_status_bar_region_height = region.height;
     s_status_bar_pixel_format = static_cast<uint32_t>(display_info.frame.pixel_format);
     s_status_bar_codec        = static_cast<uint32_t>(display_info.frame.codec);
     s_status_bar_magic        = kStatusBarSnapshotMagic;
@@ -231,7 +244,8 @@ bool SaveStatusBarSnapshot(const display::DisplayInfo& display_info, const uint8
     return true;
 }
 
-bool LoadStatusBarSnapshot(const display::DisplayInfo& display_info, uint8_t* out, size_t len) {
+bool LoadStatusBarSnapshot(const display::DisplayInfo& display_info, const display::FrameRegion& region, uint8_t* out,
+                           size_t len) {
     if (!out || len == 0 || len > board::kStatusBarSnapshotCapacityBytes)
         return false;
     uint32_t magic = 0;
@@ -240,7 +254,7 @@ bool LoadStatusBarSnapshot(const display::DisplayInfo& display_info, uint8_t* ou
         ScopedMutexLock lock(StateMutex());
         magic = s_status_bar_magic;
         hash  = s_status_bar_hash;
-        if (magic == kStatusBarSnapshotMagic && SnapshotIdentityMatches(display_info, len)) {
+        if (magic == kStatusBarSnapshotMagic && SnapshotIdentityMatches(display_info, region, len)) {
             std::memcpy(out, s_status_bar_snapshot, len);
         } else if (magic == kStatusBarSnapshotMagic) {
             s_status_bar_magic = 0;
@@ -261,6 +275,10 @@ void ClearStatusBarSnapshot() {
     s_status_bar_profile_hash = 0;
     s_status_bar_width        = 0;
     s_status_bar_height       = 0;
+    s_status_bar_region_x      = 0;
+    s_status_bar_region_y      = 0;
+    s_status_bar_region_width  = 0;
+    s_status_bar_region_height = 0;
     s_status_bar_pixel_format = 0;
     s_status_bar_codec        = 0;
 }

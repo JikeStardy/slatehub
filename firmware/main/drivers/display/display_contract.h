@@ -72,7 +72,11 @@ constexpr bool CheckedMul(std::size_t lhs, std::size_t rhs, std::size_t* out) no
 }
 
 constexpr bool CheckedAdd(std::size_t lhs, std::size_t rhs, std::size_t* out) noexcept {
-    if (out == nullptr || lhs > kMaxFrameBytes - rhs)
+    if (out == nullptr)
+        return false;
+    if (lhs > kMaxFrameBytes || rhs > kMaxFrameBytes)
+        return false;
+    if (lhs > kMaxFrameBytes - rhs)
         return false;
     *out = lhs + rhs;
     return true;
@@ -172,6 +176,9 @@ bool SeedPreviousIfSupported(Display& display, const FrameRegion& region, const 
 bool ReadPreviousIfSupported(Display& display, const FrameRegion& region, uint8_t* out, std::size_t len);
 bool PresentWithFallback(Display& display, const FrameRegion& region, const uint8_t* data, std::size_t len,
                          PresentMode mode);
+using PresentCommitCallback = void (*)(void*);
+bool PresentWithFallbackThenCommit(Display& display, const FrameRegion& region, const uint8_t* data, std::size_t len,
+                                   PresentMode mode, PresentCommitCallback commit, void* commit_arg);
 void RequestRefreshWithFallback(Display& display, PresentMode mode);
 bool PresentFrameBody(Display& display, const uint8_t* raw, std::size_t len, int status_bar_height, PresentMode mode,
                       int lock_timeout_ms = 2000);

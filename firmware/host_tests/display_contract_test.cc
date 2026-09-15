@@ -1,12 +1,26 @@
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <limits>
 
 #include "bsp/board_platform.h"
 #include "drivers/display/display_contract.h"
+#include "power/status_bar_snapshot_identity.h"
+#include "scenes/frame/frame_load_transaction.h"
 
 namespace {
+
+int g_failures = 0;
+
+void Check(bool ok, const char* expr, int line) {
+    if (ok)
+        return;
+    std::fprintf(stderr, "CHECK failed line=%d expr=%s\n", line, expr);
+    ++g_failures;
+}
+
+#define CHECK(expr) Check((expr), #expr, __LINE__)
 
 constexpr display::FrameDescriptor kFakeFrame{
     296, 128, display::PixelFormat::kMono1, display::FrameCodec::kRawMono1Msb, 4736};
@@ -106,34 +120,34 @@ void TestNote4PlatformInfo() {
     const board::BoardPlatform& platform = board::CurrentPlatform();
     const display::DisplayInfo& info     = platform.Display();
 
-    assert(std::strcmp(platform.BoardId(), "zectrix-note4") == 0);
-    assert(std::strcmp(platform.LegacyUserAgentBoardName(), "zectrix-s3-epaper-4.2") == 0);
-    assert(platform.StatusBarSnapshotBytes() == 1200);
-    assert(std::strcmp(info.board_id, "zectrix-note4") == 0);
-    assert(std::strcmp(info.profile_id, "zectrix-note4-400x300-mono") == 0);
-    assert(info.frame.width == 400);
-    assert(info.frame.height == 300);
-    assert(info.frame.pixel_format == display::PixelFormat::kMono1);
-    assert(info.frame.codec == display::FrameCodec::kRawMono1Msb);
-    assert(info.frame.byte_size == 15000);
-    assert(info.capabilities.audio);
-    assert(info.capabilities.partial_refresh);
-    assert(info.capabilities.previous_frame_seed);
-    assert(display::ValidateFrameDescriptor(info.frame));
+    CHECK(std::strcmp(platform.BoardId(), "zectrix-note4") == 0);
+    CHECK(std::strcmp(platform.LegacyUserAgentBoardName(), "zectrix-s3-epaper-4.2") == 0);
+    CHECK(platform.StatusBarSnapshotBytes() == 1200);
+    CHECK(std::strcmp(info.board_id, "zectrix-note4") == 0);
+    CHECK(std::strcmp(info.profile_id, "zectrix-note4-400x300-mono") == 0);
+    CHECK(info.frame.width == 400);
+    CHECK(info.frame.height == 300);
+    CHECK(info.frame.pixel_format == display::PixelFormat::kMono1);
+    CHECK(info.frame.codec == display::FrameCodec::kRawMono1Msb);
+    CHECK(info.frame.byte_size == 15000);
+    CHECK(info.capabilities.audio);
+    CHECK(info.capabilities.partial_refresh);
+    CHECK(info.capabilities.previous_frame_seed);
+    CHECK(display::ValidateFrameDescriptor(info.frame));
 }
 
 void TestIndependentFakePlatformInfo() {
     const FakePlatform platform;
     const display::DisplayInfo& info = platform.Display();
 
-    assert(std::strcmp(platform.BoardId(), "fake-board-296x128") == 0);
-    assert(std::strcmp(platform.LegacyUserAgentBoardName(), "fake-board-legacy") == 0);
-    assert(std::strcmp(info.profile_id, "fake-board-296x128-mono") == 0);
-    assert(info.frame.width == 296);
-    assert(info.frame.height == 128);
-    assert(info.frame.byte_size == 4736);
-    assert(platform.StatusBarSnapshotRegion().height == 24);
-    assert(platform.StatusBarSnapshotBytes() == 296 * 24 / 8);
+    CHECK(std::strcmp(platform.BoardId(), "fake-board-296x128") == 0);
+    CHECK(std::strcmp(platform.LegacyUserAgentBoardName(), "fake-board-legacy") == 0);
+    CHECK(std::strcmp(info.profile_id, "fake-board-296x128-mono") == 0);
+    CHECK(info.frame.width == 296);
+    CHECK(info.frame.height == 128);
+    CHECK(info.frame.byte_size == 4736);
+    CHECK(platform.StatusBarSnapshotRegion().height == 24);
+    CHECK(platform.StatusBarSnapshotBytes() == 296 * 24 / 8);
 }
 
 void TestDescriptorByteSizeValidation() {
@@ -159,6 +173,10 @@ void TestDescriptorByteSizeValidation() {
 
     constexpr FrameDescriptor overflow{524288, 65537, PixelFormat::kMono1, FrameCodec::kRawMono1Msb, 65536};
     static_assert(!display::ValidateFrameDescriptor(overflow), "32-bit overflow descriptor rejected");
+
+    std::size_t out = 123;
+    CHECK(!display::CheckedAdd(1, static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) + 1, &out));
+    CHECK(out == 123);
 }
 
 void TestCapabilityDegradeHelpers() {
@@ -171,17 +189,17 @@ void TestCapabilityDegradeHelpers() {
     uint8_t                    body[296 * 104 / 8] = {};
     uint8_t                    snapshot[296 * 24 / 8] = {};
 
-    assert(!display::SeedPreviousIfSupported(display, region, body, sizeof(body)));
-    assert(display.seed_count == 0);
-    assert(!display::ReadPreviousIfSupported(display, {0, 0, 296, 24}, snapshot, sizeof(snapshot)));
-    assert(display.read_count == 0);
+    CHECK(!display::SeedPreviousIfSupported(display, region, body, sizeof(body)));
+    CHECK(display.seed_count == 0);
+    CHECK(!display::ReadPreviousIfSupported(display, {0, 0, 296, 24}, snapshot, sizeof(snapshot)));
+    CHECK(display.read_count == 0);
 
-    assert(display::PresentWithFallback(display, region, body, sizeof(body), display::PresentMode::kPartial));
-    assert(display.present_count == 1);
-    assert(display.last_mode == display::PresentMode::kFull);
+    CHECK(display::PresentWithFallback(display, region, body, sizeof(body), display::PresentMode::kPartial));
+    CHECK(display.present_count == 1);
+    CHECK(display.last_mode == display::PresentMode::kFull);
     display::RequestRefreshWithFallback(display, display::PresentMode::kPartial);
-    assert(display.refresh_count == 1);
-    assert(display.last_mode == display::PresentMode::kFull);
+    CHECK(display.refresh_count == 1);
+    CHECK(display.last_mode == display::PresentMode::kFull);
 }
 
 void TestNoSeedDisplayCanPresentFullFrame() {
@@ -190,11 +208,11 @@ void TestNoSeedDisplayCanPresentFullFrame() {
     FakeDisplay display{info};
     uint8_t     raw[4736] = {};
 
-    assert(!display::SeedPreviousIfSupported(display, {0, 0, 296, 24}, raw, 296 * 24 / 8));
-    assert(display.seed_count == 0);
-    assert(display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kFull));
-    assert(display.present_count == 1);
-    assert(display.last_mode == display::PresentMode::kFull);
+    CHECK(!display::SeedPreviousIfSupported(display, {0, 0, 296, 24}, raw, 296 * 24 / 8));
+    CHECK(display.seed_count == 0);
+    CHECK(display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kFull));
+    CHECK(display.present_count == 1);
+    CHECK(display.last_mode == display::PresentMode::kFull);
 }
 
 void TestPresentFailureDoesNotCommitFrame() {
@@ -202,40 +220,77 @@ void TestPresentFailureDoesNotCommitFrame() {
     display.present_result = false;
     uint8_t raw[4736] = {};
 
-    assert(!display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kPartial));
-    assert(display.lock_count == 1);
-    assert(display.unlock_count == 1);
-    assert(display.present_count == 1);
-    assert(display.last_mode == display::PresentMode::kPartial);
+    CHECK(!display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kPartial));
+    CHECK(display.lock_count == 1);
+    CHECK(display.unlock_count == 1);
+    CHECK(display.present_count == 1);
+    CHECK(display.last_mode == display::PresentMode::kPartial);
 }
 
 void TestFakeDisplayDrivesGenericFramePresentation() {
     FakeDisplay display{kFakeDisplayInfo};
     uint8_t     raw[4736] = {};
 
-    assert(display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kPartial));
-    assert(display.lock_count == 1);
-    assert(display.unlock_count == 1);
-    assert(display.present_count == 1);
-    assert(display.last_region.x == 0);
-    assert(display.last_region.y == 24);
-    assert(display.last_region.width == 296);
-    assert(display.last_region.height == 104);
-    assert(display.last_len == 296 * 104 / 8);
+    CHECK(display::PresentFrameBody(display, raw, sizeof(raw), 24, display::PresentMode::kPartial));
+    CHECK(display.lock_count == 1);
+    CHECK(display.unlock_count == 1);
+    CHECK(display.present_count == 1);
+    CHECK(display.last_region.x == 0);
+    CHECK(display.last_region.y == 24);
+    CHECK(display.last_region.width == 296);
+    CHECK(display.last_region.height == 104);
+    CHECK(display.last_len == 296 * 104 / 8);
 
     uint8_t too_short[4735] = {};
-    assert(!display::PresentFrameBody(display, too_short, sizeof(too_short), 24, display::PresentMode::kPartial));
-    assert(display.present_count == 1);
+    CHECK(!display::PresentFrameBody(display, too_short, sizeof(too_short), 24, display::PresentMode::kPartial));
+    CHECK(display.present_count == 1);
 }
 
 void TestRegionOffsetOverflowProtection() {
     FakeDisplay display{kFakeDisplayInfo};
     uint8_t     raw[4736] = {};
 
-    assert(!display::PresentFrameBody(display, raw, sizeof(raw), 128, display::PresentMode::kPartial));
-    assert(display.present_count == 0);
-    assert(display::ExpectedRegionOffsetBytes({0, 24, 296, 104}, kFakeFrame) == 888);
-    assert(display::ExpectedRegionBytes({0, 24, 296, 104}, kFakeFrame) == 3848);
+    CHECK(!display::PresentFrameBody(display, raw, sizeof(raw), 128, display::PresentMode::kPartial));
+    CHECK(display.present_count == 0);
+    CHECK(display::ExpectedRegionOffsetBytes({0, 24, 296, 104}, kFakeFrame) == 888);
+    CHECK(display::ExpectedRegionBytes({0, 24, 296, 104}, kFakeFrame) == 3848);
+}
+
+void TestFrameCandidateCommitKeepsCurrentOnFailure() {
+    const int current   = 2;
+    const int candidate = frame_scene::NextFrameCandidate(current, 4);
+    CHECK(candidate == 3);
+    CHECK(frame_scene::CommitFrameCandidate(current, candidate, false) == current);
+    CHECK(frame_scene::CommitFrameCandidate(current, candidate, true) == candidate);
+    CHECK(frame_scene::PrevFrameCandidate(0, 4) == 3);
+}
+
+void TestPresentThenCommitTransactionOrder() {
+    FakeDisplay display{kFakeDisplayInfo};
+    uint8_t     body[296 * 104 / 8] = {};
+    int         commit_count        = 0;
+    const auto commit = [](void* arg) {
+        int* count = static_cast<int*>(arg);
+        ++(*count);
+    };
+
+    CHECK(display::PresentWithFallbackThenCommit(display, {0, 24, 296, 104}, body, sizeof(body),
+                                                display::PresentMode::kPartial, commit, &commit_count));
+    CHECK(commit_count == 1);
+
+    display.present_result = false;
+    CHECK(!display::PresentWithFallbackThenCommit(display, {0, 24, 296, 104}, body, sizeof(body),
+                                                 display::PresentMode::kPartial, commit, &commit_count));
+    CHECK(commit_count == 1);
+}
+
+void TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange() {
+    const auto stored =
+        power_state::MakeStatusBarSnapshotIdentity(kFakeDisplayInfo, {0, 0, 296, 24}, 296 * 24 / 8);
+
+    CHECK(power_state::StatusBarSnapshotIdentityMatches(stored, kFakeDisplayInfo, {0, 0, 296, 24}, 296 * 24 / 8));
+    CHECK(!power_state::StatusBarSnapshotIdentityMatches(stored, kFakeDisplayInfo, {0, 8, 296, 24}, 296 * 24 / 8));
+    CHECK(!power_state::StatusBarSnapshotIdentityMatches(stored, kFakeDisplayInfo, {0, 0, 296, 16}, 296 * 16 / 8));
 }
 
 }  // namespace
@@ -249,5 +304,8 @@ int main() {
     TestPresentFailureDoesNotCommitFrame();
     TestFakeDisplayDrivesGenericFramePresentation();
     TestRegionOffsetOverflowProtection();
-    return 0;
+    TestFrameCandidateCommitKeepsCurrentOnFailure();
+    TestPresentThenCommitTransactionOrder();
+    TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
+    return g_failures == 0 ? 0 : 1;
 }

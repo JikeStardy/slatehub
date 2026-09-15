@@ -57,6 +57,18 @@ void UpdateFrameSchedule(int seq, const cache::FrameMeta& meta) {
     power_state::SetCurrentFrameFromMeta(seq, meta);
 }
 
+struct CommitFrameContext {
+    int                     seq  = 0;
+    const cache::FrameMeta* meta = nullptr;
+};
+
+void CommitPresentedFrame(void* arg) {
+    auto* commit = static_cast<CommitFrameContext*>(arg);
+    if (!commit || !commit->meta)
+        return;
+    UpdateFrameSchedule(commit->seq, *commit->meta);
+}
+
 // 截止看护任务：等到 kBgRefreshDeadlineMs；其间一旦 done_posted 置位(正常 finish)就提前退出，
 // 否则到点强制 PostBgRefreshDoneOnce。复用 WatcherContext(epd 置空,只用 done_posted)。
 // 自删除 + unique_ptr 释放 ctx,与 WatcherEntry 同模式,无泄漏。
@@ -156,7 +168,8 @@ bool BgRefreshScene::SeedPreviousFrame(SceneContext& ctx) {
         ESP_LOGW(kTag, "seed skipped reason=status_snapshot_shape");
         return false;
     }
-    const bool status_ok = power_state::LoadStatusBarSnapshot(ctx.epd->Info(), status_bar.data(), status_bytes);
+    const bool status_ok =
+        power_state::LoadStatusBarSnapshot(ctx.epd->Info(), status_region, status_bar.data(), status_bytes);
     if (!status_ok) {
         ESP_LOGW(kTag, "seed skipped reason=status_snapshot_missing");
         return false;
@@ -233,7 +246,6 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
 
     cache::FrameMeta meta;
     cache::ReadFrameMeta(gid, seq, meta);
-    UpdateFrameSchedule(seq, meta);
 
     if (!ctx.epd->Lock(2000)) {
         ESP_LOGW(kTag, "render failed reason=epd_lock_timeout");
@@ -253,9 +265,12 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
     const int y = theme::kStatusBarHeight;
     const int bpr = frame.width / 8;
     const display::FrameRegion body_region{0, y, frame.width, frame.height - y};
-    const display::PresentMode mode = force_full_refresh_ ? display::PresentMode::kFull : display::PresentMode::kPartial;
-    if (!display::PresentWithFallback(*ctx.epd, body_region, raw.data() + y * bpr,
-                                      display::ExpectedRegionBytes(body_region, frame), mode)) {
+    const display::PresentMode mode =
+        force_full_refresh_ ? display::PresentMode::kFull : display::PresentMode::kPartial;
+    CommitFrameContext commit{seq, &meta};
+    if (!display::PresentWithFallbackThenCommit(*ctx.epd, body_region, raw.data() + y * bpr,
+                                                display::ExpectedRegionBytes(body_region, frame), mode,
+                                                CommitPresentedFrame, &commit)) {
         ctx.epd->Unlock();
         ESP_LOGW(kTag, "render failed reason=display_present");
         return false;

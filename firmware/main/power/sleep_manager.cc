@@ -80,7 +80,7 @@ void SaveStatusBarSnapshot(display::Display* display) {
         power_state::ClearStatusBarSnapshot();
         return;
     }
-    power_state::SaveStatusBarSnapshot(display->Info(), snapshot.data(), status_bytes);
+    power_state::SaveStatusBarSnapshot(display->Info(), status_region, snapshot.data(), status_bytes);
 }
 
 }  // namespace

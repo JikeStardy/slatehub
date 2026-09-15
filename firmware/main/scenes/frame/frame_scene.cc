@@ -8,6 +8,7 @@
 #include "events/event_bus.h"
 #include "events/ui_event_log.h"
 #include "scenes/core/scene_stack.h"
+#include "scenes/frame/frame_load_transaction.h"
 #include "scenes/settings/settings_scene.h"
 #include "scenes/splash/splash_scene.h"
 #include "storage/cache/cache.h"
@@ -258,9 +259,10 @@ void FrameScene::NextFrame(SceneContext& ctx) {
         return;
     }
     const int old = idx_;
-    idx_          = (idx_ + 1) % content_count_;
-    ESP_LOGD(kTag, "next frame from=%d to=%d count=%d", old, idx_, content_count_);
-    LoadFrame(ctx, idx_, /*force_full*/ false, AudioBehavior::RestartIfAvailable);
+    const int candidate = frame_scene::NextFrameCandidate(old, content_count_);
+    ESP_LOGD(kTag, "next frame from=%d to=%d count=%d", old, candidate, content_count_);
+    const bool loaded = LoadFrame(ctx, candidate, /*force_full*/ false, AudioBehavior::RestartIfAvailable);
+    idx_              = frame_scene::CommitFrameCandidate(old, candidate, loaded);
 }
 
 void FrameScene::PrevFrame(SceneContext& ctx) {
@@ -269,9 +271,10 @@ void FrameScene::PrevFrame(SceneContext& ctx) {
         return;
     }
     const int old = idx_;
-    idx_          = (idx_ - 1 + content_count_) % content_count_;
-    ESP_LOGD(kTag, "prev frame from=%d to=%d count=%d", old, idx_, content_count_);
-    LoadFrame(ctx, idx_, /*force_full*/ false, AudioBehavior::RestartIfAvailable);
+    const int candidate = frame_scene::PrevFrameCandidate(old, content_count_);
+    ESP_LOGD(kTag, "prev frame from=%d to=%d count=%d", old, candidate, content_count_);
+    const bool loaded = LoadFrame(ctx, candidate, /*force_full*/ false, AudioBehavior::RestartIfAvailable);
+    idx_              = frame_scene::CommitFrameCandidate(old, candidate, loaded);
 }
 
 void FrameScene::CycleGroup(SceneContext& ctx, bool next) {
@@ -349,14 +352,14 @@ void FrameScene::RebindGroup(SceneContext& ctx, const char* gid, int content_cou
     first_loaded_ = false;
 }
 
-void FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBehavior audio_behavior) {
+bool FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBehavior audio_behavior) {
     ESP_LOGD(kTag, "load frame begin gid=%s idx=%d count=%d force_full=%d audio=%s", gid_.c_str(), idx, content_count_,
              force_full ? 1 : 0,
              audio_behavior == AudioBehavior::RestartIfAvailable ? "restart_if_available" : "stop_if_unavailable");
     if (gid_.empty() || idx < 0 || content_count_ <= 0 || idx >= content_count_) {
         ESP_LOGW(kTag, "load frame failed reason=invalid_state gid_empty=%d idx=%d count=%d", gid_.empty() ? 1 : 0, idx,
                  content_count_);
-        return;
+        return false;
     }
 
     std::vector<uint8_t> raw;
@@ -366,14 +369,14 @@ void FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
         ESP_LOGW(kTag, "load frame failed idx=%d reason=image_miss bytes=%u", idx, static_cast<unsigned>(raw.size()));
         if (ctx.audio)
             ctx.audio->Stop();
-        return;
+        return false;
     }
     cache::FrameMeta meta;
     cache::ReadFrameMeta(gid_, idx, meta);
 
     if (!ctx.epd->Lock(2000)) {
         ESP_LOGW(kTag, "load frame failed idx=%d reason=epd_lock_timeout", idx);
-        return;
+        return false;
     }
     ESP_LOGD(kTag, "lvgl refresh begin scene=frame idx=%d", idx);
     if (status_bar_)
@@ -386,7 +389,7 @@ void FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
     if (!frame_view_ ||
         !frame_view_->SetFrame(ctx.epd, raw, full ? display::PresentMode::kFull : display::PresentMode::kPartial)) {
         ESP_LOGW(kTag, "load frame failed idx=%d reason=display_present", idx);
-        return;
+        return false;
     }
     cached_status_bar_text_ = meta.status_bar_text;
     first_loaded_           = true;
@@ -407,6 +410,7 @@ void FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
 
     if (ctx.set_current_frame_from_meta)
         ctx.set_current_frame_from_meta(idx, meta);
+    return true;
 }
 
 void FrameScene::ApplyEmptyState() {

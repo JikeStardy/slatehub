@@ -27,6 +27,15 @@ bool PresentWithFallback(Display& display, const FrameRegion& region, const uint
     return display.Present(region, data, len, resolved);
 }
 
+bool PresentWithFallbackThenCommit(Display& display, const FrameRegion& region, const uint8_t* data, std::size_t len,
+                                   PresentMode mode, PresentCommitCallback commit, void* commit_arg) {
+    if (!PresentWithFallback(display, region, data, len, mode))
+        return false;
+    if (commit)
+        commit(commit_arg);
+    return true;
+}
+
 void RequestRefreshWithFallback(Display& display, PresentMode mode) {
     const PresentMode resolved =
         (mode == PresentMode::kPartial && !display.Info().capabilities.partial_refresh) ? PresentMode::kFull : mode;

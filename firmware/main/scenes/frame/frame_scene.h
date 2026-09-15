@@ -31,7 +31,7 @@ class FrameScene : public Scene {
         StopIfUnavailable,
     };
 
-    void LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBehavior audio_behavior);
+    bool LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBehavior audio_behavior);
     void NextFrame(SceneContext& ctx);
     void PrevFrame(SceneContext& ctx);
     void CycleGroup(SceneContext& ctx, bool next);

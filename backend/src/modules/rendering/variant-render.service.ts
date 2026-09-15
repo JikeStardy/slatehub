@@ -7,6 +7,7 @@ import { formatError } from '../../common/utils/error-format';
 import { BlobService } from '../../infra/blob/blob.service';
 import { AppConfig } from '../../infra/config/app.config';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
 import {
   assertFrameSize,
   assertSupportedMonoEncoding,
@@ -41,6 +42,8 @@ export interface RenderContentVariantsResult {
 
 @Injectable()
 export class VariantRenderService {
+  private readonly renderQueue = new KeyedPromiseQueue();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly blob: BlobService,
@@ -50,17 +53,43 @@ export class VariantRenderService {
   async renderContentVariants(
     input: RenderContentVariantsInput
   ): Promise<RenderContentVariantsResult> {
+    return this.renderQueue.run(input.contentId, () => this.renderContentVariantsExclusive(input));
+  }
+
+  private async renderContentVariantsExclusive(
+    input: RenderContentVariantsInput
+  ): Promise<RenderContentVariantsResult> {
     const profiles = displayProfilesForEnvironment(this.config.nodeEnv);
     const renderVersion = await this.nextRenderVersion(input.contentId);
     const results: VariantRenderResult[] = [];
 
     for (const profile of profiles) {
-      const target = renderTargetFromProfile(profile);
-      const previous = await this.findVariant(input.contentId, target.profileId);
+      let target: RenderTarget;
+      try {
+        target = this.resolveRenderTarget(profile);
+      } catch (err: unknown) {
+        results.push(profileBoundaryFailure(profile.id, err));
+        continue;
+      }
+
+      let previous: ContentVariant | null;
+      try {
+        previous = await this.findVariant(input.contentId, target.profileId);
+      } catch (err: unknown) {
+        results.push(profileBoundaryFailure(profile.id, err));
+        continue;
+      }
+
       results.push(await this.renderOne(input, target, previous, renderVersion));
     }
 
     return { contentId: input.contentId, renderVersion, results };
+  }
+
+  protected resolveRenderTarget(
+    profile: Parameters<typeof renderTargetFromProfile>[0]
+  ): RenderTarget {
+    return renderTargetFromProfile(profile);
   }
 
   private async renderOne(
@@ -87,9 +116,7 @@ export class VariantRenderService {
     renderVersion: number
   ): Promise<VariantRenderResult> {
     const storageKey = this.blob.frameKey(input.groupId, input.contentId, target.profileId);
-    const previousBytes = previous?.storageKey
-      ? await this.blob.readStorageKey(previous.storageKey)
-      : null;
+    const previousBytes = await this.blob.readStorageKey(storageKey);
     const frameEtag = computeETag(frame);
 
     await this.blob.writeStorageKey(storageKey, 'frame', frame);
@@ -129,7 +156,13 @@ export class VariantRenderService {
       });
       return readyResult(row, true);
     } catch (err: unknown) {
-      await this.rollbackBlobWrite(storageKey, previousBytes);
+      const rollbackErr = await this.rollbackBlobWrite(storageKey, previousBytes).then(
+        () => null,
+        (rollbackError: unknown) => rollbackError
+      );
+      if (rollbackErr) {
+        return failedRollbackResult(target.profileId, err, rollbackErr);
+      }
       return this.failedPersistenceResult(target.profileId, previous, err);
     }
   }
@@ -167,10 +200,6 @@ export class VariantRenderService {
         update: priorReady
           ? {
               status: 'ready',
-              pixelFormat: target.pixelFormat,
-              frameCodec: target.frameCodec,
-              width: target.width,
-              height: target.height,
               lastError: error,
               leaseUntil: null,
               attempts,
@@ -265,6 +294,23 @@ function readyResult(
     frameSize: row.frameSize,
     storageKey: row.storageKey,
     renderVersion: row.renderVersion,
+  };
+}
+
+function profileBoundaryFailure(profileId: string, err: unknown): VariantRenderResult {
+  return { profileId, status: 'failed', changed: false, error: boundedError(err) };
+}
+
+function failedRollbackResult(
+  profileId: string,
+  persistErr: unknown,
+  rollbackErr: unknown
+): VariantRenderResult {
+  return {
+    profileId,
+    status: 'failed',
+    changed: false,
+    error: `${boundedError(persistErr)}; blob rollback failed: ${boundedError(rollbackErr)}`,
   };
 }
 

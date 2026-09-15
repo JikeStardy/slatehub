@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import { BlobService } from '../../infra/blob/blob.service';
 import type { AppConfig } from '../../infra/config/app.config';
 import { VariantRenderService } from './variant-render.service';
 import type { RenderTarget } from './render-target';
+import type { DisplayProfileT } from 'shared';
 
 const NOTE4_PROFILE = 'zectrix-note4-400x300-mono';
 const VIRTUAL_PROFILE = 'virtual-mono-296x128';
@@ -114,6 +116,59 @@ describe('VariantRenderService', () => {
     ).toEqual(Buffer.alloc(4_736, 2));
   });
 
+  it('serializes complete render transitions per content so the later render owns the final blob and version', async () => {
+    const harness = createHarness('production');
+    const firstRenderStarted = deferred<void>();
+    const firstRenderMayFinish = deferred<void>();
+    let renderCalls = 0;
+
+    const first = harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: async (target) => {
+        renderCalls++;
+        firstRenderStarted.resolve();
+        await firstRenderMayFinish.promise;
+        return Buffer.alloc(target.byteLength, 0x11);
+      },
+    });
+    await firstRenderStarted.promise;
+
+    const second = harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: (target) => {
+        renderCalls++;
+        return Buffer.alloc(target.byteLength, 0x22);
+      },
+    });
+
+    await Promise.resolve();
+    expect(renderCalls).toBe(1);
+    firstRenderMayFinish.resolve();
+
+    await expect(first).resolves.toMatchObject({
+      renderVersion: 1,
+      results: [expect.objectContaining({ profileId: NOTE4_PROFILE, renderVersion: 1 })],
+    });
+    await expect(second).resolves.toMatchObject({
+      renderVersion: 2,
+      results: [expect.objectContaining({ profileId: NOTE4_PROFILE, renderVersion: 2 })],
+    });
+
+    const key = harness.blob.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+    const finalBytes = await harness.blob.readStorageKey(key);
+    expect(finalBytes).toEqual(Buffer.alloc(15_000, 0x22));
+    expect(harness.store.row('content-1', NOTE4_PROFILE)).toMatchObject({
+      status: 'ready',
+      frameEtag: etagFor(Buffer.alloc(15_000, 0x22)),
+      frameSize: 15_000,
+      storageKey: key,
+      renderVersion: 2,
+      attempts: 0,
+    });
+  });
+
   it('commits successful profiles even when another profile render fails', async () => {
     const harness = createHarness('test');
 
@@ -184,6 +239,65 @@ describe('VariantRenderService', () => {
     });
   });
 
+  it('reports target-resolution failure for one profile and continues rendering later profiles', async () => {
+    const harness = createHarness('test', { failTargetProfile: NOTE4_PROFILE });
+
+    const outcome = await harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: (target) => Buffer.alloc(target.byteLength, 0xcc),
+    });
+
+    expect(outcome.results).toEqual([
+      {
+        profileId: NOTE4_PROFILE,
+        status: 'failed',
+        changed: false,
+        error: 'target resolution failed',
+      },
+      expect.objectContaining({
+        profileId: VIRTUAL_PROFILE,
+        status: 'ready',
+        changed: true,
+        frameSize: 4_736,
+      }),
+    ]);
+    expect(harness.store.row('content-1', VIRTUAL_PROFILE)).toMatchObject({
+      status: 'ready',
+      frameSize: 4_736,
+    });
+  });
+
+  it('reports prior-read failure for one profile and continues rendering later profiles', async () => {
+    const harness = createHarness('test');
+    harness.store.failNextRead(NOTE4_PROFILE, 'prior read db down');
+
+    const outcome = await harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: (target) => Buffer.alloc(target.byteLength, 0xdd),
+    });
+
+    expect(outcome.results).toEqual([
+      {
+        profileId: NOTE4_PROFILE,
+        status: 'failed',
+        changed: false,
+        error: 'prior read db down',
+      },
+      expect.objectContaining({
+        profileId: VIRTUAL_PROFILE,
+        status: 'ready',
+        changed: true,
+        frameSize: 4_736,
+      }),
+    ]);
+    expect(harness.store.row('content-1', VIRTUAL_PROFILE)).toMatchObject({
+      status: 'ready',
+      frameSize: 4_736,
+    });
+  });
+
   it('keeps previous ready bytes and metadata when rendering that profile fails', async () => {
     const harness = createHarness('production');
     const key = harness.blob.frameKey('group-1', 'content-1', NOTE4_PROFILE);
@@ -236,6 +350,51 @@ describe('VariantRenderService', () => {
       attempts: 3,
     });
     expect(await harness.blob.readStorageKey(key)).toEqual(Buffer.alloc(15_000, 0x44));
+  });
+
+  it('preserves stale ready descriptor metadata when rendering that profile fails', async () => {
+    const harness = createHarness('production');
+    const key = harness.blob.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+    await harness.blob.writeStorageKey(key, 'frame', Buffer.alloc(15_000, 0x45));
+    harness.store.seed({
+      contentId: 'content-1',
+      profileId: NOTE4_PROFILE,
+      status: 'ready',
+      pixelFormat: 'legacy-mono',
+      frameCodec: 'legacy-codec',
+      width: 123,
+      height: 456,
+      frameEtag: 'stale-etag',
+      frameSize: 1234,
+      storageKey: key,
+      renderVersion: 9,
+      lastError: null,
+      leaseUntil: new Date('2026-01-01T00:00:00.000Z'),
+      attempts: 4,
+    });
+
+    await harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: () => {
+        throw new Error('renderer offline');
+      },
+    });
+
+    expect(harness.store.row('content-1', NOTE4_PROFILE)).toMatchObject({
+      status: 'ready',
+      pixelFormat: 'legacy-mono',
+      frameCodec: 'legacy-codec',
+      width: 123,
+      height: 456,
+      frameEtag: 'stale-etag',
+      frameSize: 1234,
+      storageKey: key,
+      renderVersion: 9,
+      lastError: 'renderer offline',
+      leaseUntil: null,
+      attempts: 5,
+    });
   });
 
   it('creates a failed variant row for first render failure and bounds the latest error', async () => {
@@ -315,6 +474,102 @@ describe('VariantRenderService', () => {
     expect(await harness.blob.readStorageKey(key)).toEqual(Buffer.alloc(15_000, 0x01));
   });
 
+  it('deletes only the canonical destination when DB persistence fails for a ready row stored at a legacy key', async () => {
+    const harness = createHarness('production');
+    const legacyKey = 'group-1/content-1.img';
+    const canonicalKey = harness.blob.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+    await harness.blob.write('group-1', 'content-1', 'image', Buffer.alloc(15_000, 0x07));
+    harness.store.seed({
+      contentId: 'content-1',
+      profileId: NOTE4_PROFILE,
+      status: 'ready',
+      pixelFormat: 'mono1',
+      frameCodec: 'raw_mono1_msb',
+      width: 400,
+      height: 300,
+      frameEtag: 'legacy-etag',
+      frameSize: 15_000,
+      storageKey: legacyKey,
+      renderVersion: 3,
+      lastError: null,
+      leaseUntil: null,
+      attempts: 0,
+    });
+    harness.store.failNextWrite('db down');
+
+    const outcome = await harness.service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: (target) => Buffer.alloc(target.byteLength, 0x08),
+    });
+
+    expect(outcome.results).toEqual([
+      expect.objectContaining({
+        profileId: NOTE4_PROFILE,
+        status: 'ready',
+        changed: false,
+        error: 'db down',
+      }),
+    ]);
+    expect(await harness.blob.readStorageKey(legacyKey)).toEqual(Buffer.alloc(15_000, 0x07));
+    expect(await harness.blob.readStorageKey(canonicalKey)).toBeNull();
+  });
+
+  it('reports rollback failure instead of returning a ready result for a corrupted destination', async () => {
+    const blob = new RollbackFailingBlobService({
+      nodeEnv: 'production',
+      blobDir,
+    } as AppConfig);
+    const store = new FakeVariantStore();
+    const service = new VariantRenderService(
+      { contentVariant: store.client } as unknown as PrismaService,
+      blob,
+      { nodeEnv: 'production', blobDir } as AppConfig
+    );
+    const key = blob.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+    await blob.writeStorageKey(key, 'frame', Buffer.alloc(15_000, 0x09));
+    store.seed({
+      contentId: 'content-1',
+      profileId: NOTE4_PROFILE,
+      status: 'ready',
+      pixelFormat: 'mono1',
+      frameCodec: 'raw_mono1_msb',
+      width: 400,
+      height: 300,
+      frameEtag: 'old-etag',
+      frameSize: 15_000,
+      storageKey: key,
+      renderVersion: 1,
+      lastError: null,
+      leaseUntil: null,
+      attempts: 0,
+    });
+    store.failNextWrite('db down');
+    blob.failNextRollbackWrite('rollback write down');
+
+    const outcome = await service.renderContentVariants({
+      groupId: 'group-1',
+      contentId: 'content-1',
+      render: (target) => Buffer.alloc(target.byteLength, 0x0a),
+    });
+
+    expect(outcome.results).toEqual([
+      {
+        profileId: NOTE4_PROFILE,
+        status: 'failed',
+        changed: false,
+        error: 'db down; blob rollback failed: rollback write down',
+      },
+    ]);
+    expect(await blob.readStorageKey(key)).toEqual(Buffer.alloc(15_000, 0x0a));
+    expect(store.row('content-1', NOTE4_PROFILE)).toMatchObject({
+      status: 'ready',
+      frameEtag: 'old-etag',
+      renderVersion: 1,
+      attempts: 0,
+    });
+  });
+
   it('removes a newly written frame when database persistence fails without prior bytes', async () => {
     const harness = createHarness('production');
     const key = harness.blob.frameKey('group-1', 'content-1', NOTE4_PROFILE);
@@ -337,7 +592,7 @@ describe('VariantRenderService', () => {
     expect(await harness.blob.readStorageKey(key)).toBeNull();
   });
 
-  it('reports an unsupported target as that profile failure and continues with other profiles', async () => {
+  it('records frame-size validation as that profile failure and continues with other profiles', async () => {
     const harness = createHarness('test');
 
     const outcome = await harness.service.renderContentVariants({
@@ -370,14 +625,15 @@ describe('VariantRenderService', () => {
   });
 });
 
-function createHarness(nodeEnv: AppConfig['nodeEnv']) {
+function createHarness(nodeEnv: AppConfig['nodeEnv'], opts: { failTargetProfile?: string } = {}) {
   const config = { nodeEnv, blobDir } as AppConfig;
   const blob = new BlobService(config);
   const store = new FakeVariantStore();
-  const service = new VariantRenderService(
+  const service = new TestVariantRenderService(
     { contentVariant: store.client } as unknown as PrismaService,
     blob,
-    config
+    config,
+    opts
   );
   return { blob, service, store };
 }
@@ -386,8 +642,8 @@ interface StoredVariant {
   contentId: string;
   profileId: string;
   status: 'pending' | 'ready' | 'failed';
-  pixelFormat: RenderTarget['pixelFormat'];
-  frameCodec: RenderTarget['frameCodec'];
+  pixelFormat: string;
+  frameCodec: string;
   width: number;
   height: number;
   frameEtag: string | null;
@@ -402,6 +658,7 @@ interface StoredVariant {
 class FakeVariantStore {
   private readonly rows = new Map<string, StoredVariant>();
   private nextWriteError: Error | null = null;
+  private readonly readErrorsByProfile = new Map<string, Error>();
 
   readonly client = {
     findMany: async (args: { where: { contentId: string } }) => {
@@ -411,6 +668,11 @@ class FakeVariantStore {
       where: { contentId_profileId: { contentId: string; profileId: string } };
     }) => {
       const { contentId, profileId } = args.where.contentId_profileId;
+      const readError = this.readErrorsByProfile.get(profileId);
+      if (readError) {
+        this.readErrorsByProfile.delete(profileId);
+        throw readError;
+      }
       return this.rows.get(this.key(contentId, profileId)) ?? null;
     },
     upsert: async (args: {
@@ -441,6 +703,10 @@ class FakeVariantStore {
     this.nextWriteError = new Error(message);
   }
 
+  failNextRead(profileId: string, message: string): void {
+    this.readErrorsByProfile.set(profileId, new Error(message));
+  }
+
   private throwIfRequested(): void {
     if (!this.nextWriteError) return;
     const err = this.nextWriteError;
@@ -451,4 +717,62 @@ class FakeVariantStore {
   private key(contentId: string, profileId: string): string {
     return `${contentId}/${profileId}`;
   }
+}
+
+class TestVariantRenderService extends VariantRenderService {
+  constructor(
+    prisma: PrismaService,
+    blob: BlobService,
+    config: AppConfig,
+    private readonly opts: { failTargetProfile?: string }
+  ) {
+    super(prisma, blob, config);
+  }
+
+  protected override resolveRenderTarget(profile: DisplayProfileT): RenderTarget {
+    if (profile.id === this.opts.failTargetProfile) throw new Error('target resolution failed');
+    return super.resolveRenderTarget(profile);
+  }
+}
+
+class RollbackFailingBlobService extends BlobService {
+  private rollbackWriteError: Error | null = null;
+  private writesBeforeRollbackFailure = 0;
+
+  failNextRollbackWrite(message: string): void {
+    this.rollbackWriteError = new Error(message);
+    this.writesBeforeRollbackFailure = 1;
+  }
+
+  override async writeStorageKey(
+    storageKey: string,
+    kind: Parameters<BlobService['writeStorageKey']>[1],
+    data: Parameters<BlobService['writeStorageKey']>[2]
+  ): Promise<{ path: string; size: number }> {
+    if (this.rollbackWriteError) {
+      if (this.writesBeforeRollbackFailure > 0) {
+        this.writesBeforeRollbackFailure--;
+        return super.writeStorageKey(storageKey, kind, data);
+      }
+      const err = this.rollbackWriteError;
+      this.rollbackWriteError = null;
+      throw err;
+    }
+    return super.writeStorageKey(storageKey, kind, data);
+  }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolveFn) => {
+    resolve = resolveFn;
+  });
+  return { promise, resolve };
+}
+
+function etagFor(buf: Buffer): string {
+  return createHash('sha256').update(buf).digest('hex').slice(0, 32);
 }

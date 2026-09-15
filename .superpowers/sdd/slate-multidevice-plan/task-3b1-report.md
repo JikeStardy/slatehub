@@ -34,6 +34,24 @@ error: failed row db down
 1 fail
 ```
 
+Round 1 review RED before fixes:
+
+```text
+bun test backend/src/modules/rendering/variant-render.service.test.ts
+
+15 tests ran
+9 pass
+6 fail
+
+Failing behaviors:
+- concurrent same-content renders reused renderVersion 1 and allowed the older blob to win
+- target-resolution failure was outside the profile boundary
+- prior-read DB failure aborted the run
+- prior-ready render failure overwrote stale descriptor metadata
+- DB rollback restored bytes from a legacy previous.storageKey into the canonical destination
+- rollback failure returned a ready result while the destination bytes were corrupted
+```
+
 ## GREEN evidence
 
 Focused service tests:
@@ -41,9 +59,9 @@ Focused service tests:
 ```text
 bun test backend/src/modules/rendering/variant-render.service.test.ts
 
-9 pass
+15 pass
 0 fail
-27 expect() calls
+43 expect() calls
 ```
 
 Full backend tests:
@@ -51,9 +69,9 @@ Full backend tests:
 ```text
 bun run --cwd backend test
 
-229 pass
+235 pass
 0 fail
-842 expect() calls
+858 expect() calls
 ```
 
 Root checks:
@@ -79,14 +97,22 @@ All matched files use Prettier code style.
 
 ## State-machine decisions
 
+- Round 1 serializes the full `renderContentVariants` transition per `contentId` with `KeyedPromiseQueue`, including renderVersion selection, prior-row reads, rendering, blob writes, DB writes, and rollback decisions.
 - Enabled profiles come only from `displayProfilesForEnvironment(config.nodeEnv)`: production renders Note4 only; development and test render Note4 plus the virtual compact profile.
 - Render targets come only from Task 3A `renderTargetFromProfile`; the service validates supported mono encoding and exact target byte length before writing frame bytes.
+- Target-resolution and prior-read failures are inside the per-profile boundary and return structured failed results without blocking later profiles.
 - Each profile is attempted independently. A render or validation failure for one profile is persisted as that profile's failed/unchanged result and does not stop later profiles.
 - Successful render path writes the profile-specific canonical blob key, then upserts a ready variant row with canonical target metadata, ETag, size, key, shared renderVersion, cleared error/lease, and attempts reset to zero.
-- Failed render path with a previous ready row preserves ready status plus frame metadata/renderVersion/storage key, clears lease, stores bounded latest error, and increments attempts.
+- Failed render path with a previous ready row updates only latest error, lease, and attempts so all existing descriptor metadata, frame metadata, storage key, and renderVersion are preserved.
 - Failed render path without a previous ready row upserts a failed row with canonical target metadata, bounded latest error, cleared lease, incremented attempts, and no usable frame metadata.
-- If DB persistence fails after replacing a frame blob, the service restores prior bytes when available, otherwise deletes the newly written frame. The per-profile result reports unchanged ready/failed state with the DB error.
+- If DB persistence fails after replacing a frame blob, the service restores the exact prior bytes at the canonical destination key when available, otherwise deletes that canonical destination. Legacy previous storage keys are not copied into the new canonical destination during rollback.
+- If rollback itself fails, the service reports a structured failed result with both the DB error and rollback error instead of returning a misleading ready result.
 - The renderVersion is computed once per service call as max existing variant renderVersion for the content plus one, so successful and first-failed rows in the same run share one version.
+
+## Hashes
+
+- Initial Task 3B1 commit: `f45d90db7a88fe9659755959e8f9b44f80cf6cd7`
+- Round 1 fix commit: reported in final handoff because embedding a commit's own SHA in the committed report would change that SHA.
 
 ## Residual risks
 

@@ -8,16 +8,23 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { Select, SelectItem } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { API_PREFIX, api } from '@/lib/http';
-import { decodeRawFrameToImageData } from '@/lib/eink/bpp';
 import { useGroups } from '@/features/groups/query/group-queries';
 import { DisplayProfileSelector } from '@/features/profiles/components/DisplayProfileSelector';
 import { defaultDisplayProfileId } from '@/features/profiles/profile-environment';
 import { compatibilityLabel } from '@/features/contents/lib/variant-status';
 import {
+  drawRawFrameToCanvas,
+  rawFrameToPngBlob,
+  type ValidatedRawFrame,
+} from '@/features/simulator/lib/simulator-canvas';
+import { fetchFrameBytes } from '@/features/simulator/lib/simulator-api';
+import {
   batchSnapshotEntries,
+  downloadOperationIdentity,
   frameQueryKey,
   manifestConditionalHeaders,
   manifestQueryKey,
+  runSimulatorDownloadForIdentity,
   resolveSelectedContentId,
   resolveManifestResponse,
   runSimulatorDownload,
@@ -50,6 +57,21 @@ export function SimulatorPage() {
     [manifest.data?.contents, selectedId]
   );
   const frame = useSimulatorFrame(selectedContent, profileId);
+  const singleDownloadIdentityInput = useMemo(
+    () =>
+      manifest.data && selectedContent
+        ? {
+            groupId: manifest.data.group.id,
+            profileId,
+            contentId: selectedContent.id,
+            imageEtag: selectedContent.image_etag,
+          }
+        : null,
+    [manifest.data, profileId, selectedContent]
+  );
+  const singleDownloadIdentity = singleDownloadIdentityInput
+    ? downloadOperationIdentity(singleDownloadIdentityInput)
+    : null;
   const stageState = simulatorStageState({
     manifest: manifest.data,
     selectedContentId,
@@ -70,6 +92,14 @@ export function SimulatorPage() {
     }, 2500);
     return () => window.clearInterval(timer);
   }, [autoStep, manifest.data]);
+
+  useEffect(() => {
+    setSingleDownload((current) =>
+      current.status !== 'idle' && current.identity !== singleDownloadIdentity
+        ? { status: 'idle' }
+        : current
+    );
+  }, [singleDownloadIdentity]);
 
   return (
     <div>
@@ -142,15 +172,28 @@ export function SimulatorPage() {
               </IconButton>
               <IconButton
                 label="PNG"
-                disabled={!selectedContent || !frame.data}
+                disabled={
+                  !selectedContent ||
+                  !frame.data ||
+                  !singleDownloadIdentityInput ||
+                  singleDownload.status === 'pending'
+                }
                 onClick={() => {
-                  if (manifest.data && selectedContent && frame.data) {
-                    void runSimulatorDownload(setSingleDownload, () =>
-                      downloadPngFromRaw(
-                        frame.data,
-                        selectedContent.frame,
-                        selectedFrameFilename(manifest.data!, selectedContent)
-                      )
+                  if (
+                    manifest.data &&
+                    selectedContent &&
+                    frame.data &&
+                    singleDownloadIdentityInput
+                  ) {
+                    void runSimulatorDownloadForIdentity(
+                      setSingleDownload,
+                      singleDownloadIdentityInput,
+                      () =>
+                        downloadPngFromRaw(
+                          frame.data.bytes,
+                          frame.data.descriptor,
+                          selectedFrameFilename(manifest.data!, selectedContent)
+                        )
                     );
                   }
                 }}
@@ -162,7 +205,7 @@ export function SimulatorPage() {
             <SimulatorReadout
               manifest={manifest.data}
               content={stageState.content}
-              rawByteLength={frame.data?.byteLength ?? null}
+              rawByteLength={frame.data?.bytes.byteLength ?? null}
               state={stageState.message}
             />
             <DownloadFeedback state={singleDownload} />
@@ -209,20 +252,12 @@ function useSimulatorFrame(content: ContentSummaryT | null, profileId: string) {
   });
 }
 
-async function fetchFrameBytes(content: ContentSummaryT, profileId: string): Promise<Uint8Array> {
-  const { data } = await api.get<ArrayBuffer>(`${API_PREFIX}/contents/${content.id}/image`, {
-    responseType: 'arraybuffer',
-    params: { display_profile_id: profileId },
-  });
-  return new Uint8Array(data);
-}
-
-function SimulatorStage({
+export function SimulatorStage({
   state,
   data,
 }: {
   state: ReturnType<typeof simulatorStageState>;
-  data?: Uint8Array;
+  data?: ValidatedRawFrame;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const content = state.content;
@@ -230,16 +265,16 @@ function SimulatorStage({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !content || !data) return;
-    canvas.width = content.frame.width;
-    canvas.height = content.frame.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.putImageData(decodeRawFrameToImageData(data, content.frame), 0, 0);
+    drawRawFrameToCanvas(canvas, data.bytes, data.descriptor);
   }, [content, data]);
 
   const descriptor = content?.frame;
   return (
-    <section className="min-h-[460px] border border-ink bg-cream">
+    <section
+      className="min-h-[460px] border border-ink bg-cream"
+      role={state.tone === 'error' || state.tone === 'frame-error' ? 'alert' : 'status'}
+      aria-live={state.tone === 'error' || state.tone === 'frame-error' ? 'assertive' : 'polite'}
+    >
       <div className="flex items-center justify-between border-b border-ink px-4 py-2">
         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-stone">
           {descriptor
@@ -277,7 +312,7 @@ function SimulatorStage({
   );
 }
 
-function FrameStrip({
+export function FrameStrip({
   contents,
   selectedContentId,
   onSelect,
@@ -297,22 +332,35 @@ function FrameStrip({
         Frame Strip
       </p>
       <div className="flex gap-1 overflow-x-auto border border-ink p-1">
-        {contents.map((content) => (
-          <button
-            key={content.id}
-            type="button"
-            disabled={content.variant_status !== 'ready'}
-            onClick={() => onSelect(content.id)}
-            title={compatibilityLabel(content.variant_status)}
-            className={`h-8 min-w-10 border px-2 font-mono text-[11px] ${
-              content.id === selectedContentId
-                ? 'border-ink bg-ink text-paper'
-                : 'border-line text-stone hover:bg-cream-deep'
-            } disabled:opacity-40`}
-          >
-            {String(content.seq + 1).padStart(2, '0')}
-          </button>
-        ))}
+        {contents.map((content) => {
+          const statusLabel = compatibilityLabel(content.variant_status);
+          return (
+            <button
+              key={content.id}
+              type="button"
+              disabled={content.variant_status !== 'ready'}
+              onClick={() => onSelect(content.id)}
+              aria-label={`${content.frame_name} · ${statusLabel}`}
+              title={statusLabel}
+              className={`min-h-8 min-w-16 border px-2 py-1 font-mono text-[11px] ${
+                content.id === selectedContentId
+                  ? 'border-ink bg-ink text-paper'
+                  : 'border-line text-stone hover:bg-cream-deep'
+              } disabled:opacity-40`}
+            >
+              <span className="block">{String(content.seq + 1).padStart(2, '0')}</span>
+              <span className="block max-w-20 truncate text-[9px] leading-tight">
+                {content.variant_status === 'ready'
+                  ? '就绪'
+                  : content.variant_status === 'pending'
+                    ? '正在生成'
+                    : content.variant_status === 'failed'
+                      ? '失败'
+                      : '不可用'}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -377,12 +425,12 @@ function BatchSnapshotButton({ manifest }: { manifest?: ManifestResponseT }) {
             const rawByContentId = new Map<string, Uint8Array>();
             await Promise.all(
               readyContents.map(async (content) => {
-                const bytes = await qc.fetchQuery({
+                const raw = await qc.fetchQuery({
                   queryKey: frameQueryKey(content.id, content.image_etag, content.frame.profile_id),
                   queryFn: () => fetchFrameBytes(content, content.frame.profile_id),
                   staleTime: Infinity,
                 });
-                rawByContentId.set(content.id, bytes);
+                rawByContentId.set(content.id, raw.bytes);
               })
             );
             await Promise.all(
@@ -400,10 +448,14 @@ function BatchSnapshotButton({ manifest }: { manifest?: ManifestResponseT }) {
   );
 }
 
-function DownloadFeedback({ state }: { state: DownloadState }) {
+export function DownloadFeedback({ state }: { state: DownloadState }) {
   if (state.status === 'idle') return null;
   return (
-    <p className={`font-sans text-[12px] ${state.status === 'error' ? 'text-clay' : 'text-stone'}`}>
+    <p
+      className={`font-sans text-[12px] ${state.status === 'error' ? 'text-clay' : 'text-stone'}`}
+      role={state.status === 'error' ? 'alert' : 'status'}
+      aria-live={state.status === 'error' ? 'assertive' : 'polite'}
+    >
       {state.status === 'pending'
         ? '正在导出 PNG'
         : state.status === 'success'
@@ -444,17 +496,7 @@ async function downloadPngFromRaw(
   filename: string
 ): Promise<void> {
   const canvas = document.createElement('canvas');
-  canvas.width = descriptor.width;
-  canvas.height = descriptor.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('无法创建 Canvas');
-  ctx.putImageData(decodeRawFrameToImageData(bytes, descriptor), 0, 0);
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (value) => (value ? resolve(value) : reject(new Error('PNG 导出失败'))),
-      'image/png'
-    );
-  });
+  const blob = await rawFrameToPngBlob(canvas, bytes, descriptor);
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;

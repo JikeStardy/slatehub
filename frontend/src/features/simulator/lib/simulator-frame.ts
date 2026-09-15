@@ -30,9 +30,17 @@ export interface SimulatorStageState {
 
 export type DownloadState =
   | { status: 'idle' }
-  | { status: 'pending' }
-  | { status: 'success' }
-  | { status: 'error'; message: string };
+  | { status: 'pending'; identity: string }
+  | { status: 'success'; identity: string }
+  | { status: 'error'; identity: string; message: string };
+type PendingDownloadState = Extract<DownloadState, { status: 'pending' }>;
+
+export interface DownloadOperationIdentityInput {
+  groupId: string;
+  profileId: string;
+  contentId: string;
+  imageEtag: string;
+}
 
 export function manifestQueryKey(groupId: string | undefined, profileId: string) {
   return ['simulator', 'manifest', groupId, profileId] as const;
@@ -143,15 +151,58 @@ export async function runSimulatorDownload(
   setDownload: (state: DownloadState) => void,
   download: () => Promise<void>
 ): Promise<void> {
-  setDownload({ status: 'pending' });
+  const identity = 'default';
+  setDownload({ status: 'pending', identity });
   try {
     await download();
-    setDownload({ status: 'success' });
+    setDownload({ status: 'success', identity });
   } catch (err) {
     setDownload({
       status: 'error',
+      identity,
       message: err instanceof Error ? err.message : 'PNG 导出失败',
     });
+  }
+}
+
+export function downloadOperationIdentity(input: DownloadOperationIdentityInput): string {
+  return [input.groupId, input.profileId, input.contentId, input.imageEtag].join('\n');
+}
+
+export function beginDownloadOperation(
+  input: DownloadOperationIdentityInput
+): PendingDownloadState {
+  return { status: 'pending', identity: downloadOperationIdentity(input) };
+}
+
+export function completeDownloadOperation(
+  current: DownloadState,
+  identity: string,
+  result: { ok: true } | { ok: false; message: string }
+): DownloadState {
+  if (current.status !== 'pending' || current.identity !== identity) return current;
+  return result.ok
+    ? { status: 'success', identity }
+    : { status: 'error', identity, message: result.message };
+}
+
+export async function runSimulatorDownloadForIdentity(
+  setDownload: (update: DownloadState | ((current: DownloadState) => DownloadState)) => void,
+  identityInput: DownloadOperationIdentityInput,
+  download: () => Promise<void>
+): Promise<void> {
+  const pending = beginDownloadOperation(identityInput);
+  setDownload(pending);
+  try {
+    await download();
+    setDownload((current) => completeDownloadOperation(current, pending.identity, { ok: true }));
+  } catch (err) {
+    setDownload((current) =>
+      completeDownloadOperation(current, pending.identity, {
+        ok: false,
+        message: err instanceof Error ? err.message : 'PNG 导出失败',
+      })
+    );
   }
 }
 

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { frameDescriptorForProfile, type ContentSummaryT, type ManifestResponseT } from 'shared';
 import {
   batchSnapshotEntries,
+  beginDownloadOperation,
+  completeDownloadOperation,
   manifestConditionalHeaders,
   resolveManifestResponse,
   runSimulatorDownload,
@@ -144,7 +146,30 @@ describe('simulator profile cache and selection helpers', () => {
       }
     );
 
-    expect(states).toEqual([{ status: 'pending' }, { status: 'error', message: 'toBlob failed' }]);
+    expect(states).toEqual([
+      { status: 'pending', identity: 'default' },
+      { status: 'error', identity: 'default', message: 'toBlob failed' },
+    ]);
+  });
+
+  it('ignores stale download completion after the selected operation identity changes', () => {
+    const first = beginDownloadOperation({
+      groupId: 'group-1',
+      profileId: virtualFrame.profile_id,
+      contentId: 'content-1',
+      imageEtag: 'etag-1',
+    });
+    const second = beginDownloadOperation({
+      groupId: 'group-1',
+      profileId: note4Frame.profile_id,
+      contentId: 'content-2',
+      imageEtag: 'etag-2',
+    });
+
+    expect(completeDownloadOperation(second, first.identity, { ok: true })).toBe(second);
+    expect(completeDownloadOperation(second, second.identity, { ok: true })).toMatchObject({
+      status: 'success',
+    });
   });
 });
 

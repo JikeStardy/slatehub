@@ -1,8 +1,13 @@
-import { DEFAULT_DISPLAY_PROFILE_ID, frameDescriptorForProfile } from 'shared';
-import type { DitherMode, FrameDescriptorT } from 'shared';
+import {
+  DEFAULT_DISPLAY_PROFILE_ID,
+  frameDescriptorForProfile,
+  type DitherMode,
+  type FrameDescriptorT,
+} from 'shared';
 import type { RefObject } from 'react';
 import { cn } from '@/lib/cn';
 import { StatusBarOverlay } from '@/components/eink/StatusBarOverlay';
+import { effectiveImagePreviewDescriptor } from './image-preview-descriptor';
 import { usePreviewCanvasRenderer } from './usePreviewCanvasRenderer';
 
 interface PreviewCanvasProps {
@@ -34,9 +39,7 @@ export function PreviewCanvas({
   statusCaption,
   showStatusBar = true,
 }: PreviewCanvasProps) {
-  const authoringDescriptor = imageFile
-    ? frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID)
-    : descriptor;
+  const authoringDescriptor = effectiveImagePreviewDescriptor(imageFile, descriptor);
   const pan = usePreviewCanvasRenderer({
     imageFile,
     existingImage,

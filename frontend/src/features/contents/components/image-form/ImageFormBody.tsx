@@ -7,6 +7,7 @@ import { DitherControls } from './DitherControls';
 import { ImageAudioBlock } from './ImageAudioBlock';
 import { ImageDropzone } from './ImageDropzone';
 import { PreviewCanvas } from './PreviewCanvas';
+import { effectiveImagePreviewDescriptor } from './image-preview-descriptor';
 import type { useImageContentForm } from '@/features/contents/hooks/useImageContentForm';
 
 interface ImageFormBodyProps {
@@ -45,13 +46,17 @@ export function ImageFormBody({
   actions,
 }: ImageFormBodyProps) {
   const descriptor = selectedDescriptor ?? frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID);
+  const effectiveDescriptor = effectiveImagePreviewDescriptor(form.image.file, descriptor);
   return (
     <div
       className={cn('grid grid-cols-1 gap-6 lg:gap-8', gridClassName ?? 'lg:grid-cols-[1.3fr_1fr]')}
     >
       <div className="order-2 min-w-0 lg:order-1">
         <p className="font-mono text-[10px] leading-5 text-stone uppercase tracking-[0.18em] ml-0.5 mb-2">
-          预览 · 1bpp · {descriptor.width}×{descriptor.height}
+          预览 · 1bpp · {effectiveDescriptor.width}×{effectiveDescriptor.height}
+          {form.image.file && descriptor.profile_id !== effectiveDescriptor.profile_id
+            ? ` · 本地创作 ${effectiveDescriptor.profile_id}`
+            : ''}
         </p>
         <PreviewCanvas
           canvasRef={form.image.previewRef}

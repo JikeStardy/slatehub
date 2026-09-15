@@ -300,7 +300,13 @@ export class DynamicContentRendererService {
       note4 = this.requireReadyNote4(variants.results);
       mirrored = await this.mirrorNote4ToLegacy(content.groupId, contentId, note4);
     } catch (err) {
-      const forwardSnapshot = await this.snapshotDynamicRenderState(snapshot.content);
+      let forwardSnapshot: DynamicRenderSnapshot;
+      try {
+        forwardSnapshot = await this.snapshotDynamicRenderState(snapshot.content);
+      } catch (forwardSnapshotErr) {
+        await this.restoreDynamicRenderSnapshot(snapshot, forwardSnapshotErr);
+        throw forwardSnapshotErr;
+      }
       await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
       await this.markErrorIfRendererOwned(content, renderFailureMessage(err), now);
       throw err;
@@ -315,17 +321,18 @@ export class DynamicContentRendererService {
 
     const dynamicData = data == null ? null : data;
     if (!opts.force && imageEtag === content.imageEtag) {
-      const finalContent = dynamicContentSnapshotFrom(content, {
-        dynamicData,
-        dynamicLastRunAt: now,
-        dynamicNextRunAt: schedule.nextRunAt,
-        dynamicRefreshDueAt: schedule.refreshDueAt,
-        dynamicRefreshLeaseUntil: null,
-        dynamicRefreshAttempts: 0,
-        dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
-      });
-      const forwardSnapshot = await this.snapshotDynamicRenderState(finalContent);
+      let forwardSnapshot: DynamicRenderSnapshot | undefined;
       try {
+        const finalContent = dynamicContentSnapshotFrom(content, {
+          dynamicData,
+          dynamicLastRunAt: now,
+          dynamicNextRunAt: schedule.nextRunAt,
+          dynamicRefreshDueAt: schedule.refreshDueAt,
+          dynamicRefreshLeaseUntil: null,
+          dynamicRefreshAttempts: 0,
+          dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
+        });
+        forwardSnapshot = await this.snapshotDynamicRenderState(finalContent);
         await this.prisma.content.update({
           where: { id: contentId },
           data: {
@@ -340,7 +347,9 @@ export class DynamicContentRendererService {
         });
       } catch (err) {
         await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
-        await this.markErrorIfRendererOwned(content, formatError(err), now);
+        if (forwardSnapshot) {
+          await this.markErrorIfRendererOwned(content, formatError(err), now);
+        }
         throw err;
       }
       const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);
@@ -356,19 +365,20 @@ export class DynamicContentRendererService {
       };
     }
 
-    const finalContent = dynamicContentSnapshotFrom(content, {
-      imageEtag,
-      imageSize: mirrored.size,
-      dynamicData,
-      dynamicLastRunAt: now,
-      dynamicNextRunAt: schedule.nextRunAt,
-      dynamicRefreshDueAt: schedule.refreshDueAt,
-      dynamicRefreshLeaseUntil: null,
-      dynamicRefreshAttempts: 0,
-      dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
-    });
-    const forwardSnapshot = await this.snapshotDynamicRenderState(finalContent);
+    let forwardSnapshot: DynamicRenderSnapshot | undefined;
     try {
+      const finalContent = dynamicContentSnapshotFrom(content, {
+        imageEtag,
+        imageSize: mirrored.size,
+        dynamicData,
+        dynamicLastRunAt: now,
+        dynamicNextRunAt: schedule.nextRunAt,
+        dynamicRefreshDueAt: schedule.refreshDueAt,
+        dynamicRefreshLeaseUntil: null,
+        dynamicRefreshAttempts: 0,
+        dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
+      });
+      forwardSnapshot = await this.snapshotDynamicRenderState(finalContent);
       await this.prisma.content.update({
         where: { id: contentId },
         data: {
@@ -385,7 +395,9 @@ export class DynamicContentRendererService {
       });
     } catch (err) {
       await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
-      await this.markErrorIfRendererOwned(content, formatError(err), now);
+      if (forwardSnapshot) {
+        await this.markErrorIfRendererOwned(content, formatError(err), now);
+      }
       throw err;
     }
     const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);

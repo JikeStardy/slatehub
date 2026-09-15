@@ -682,6 +682,163 @@ describe('DynamicContentRendererService variant integration', () => {
     expect(harness.content.dynamicRefreshDueAt).toEqual(harness.content.dynamicNextRunAt);
   });
 
+  it('restores the old changed-render state when forward snapshot variant listing fails', async () => {
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xa1);
+    const oldVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0xa2);
+    const oldNote4Etag = computeETag(oldNote4Bytes);
+    const oldVirtualEtag = computeETag(oldVirtualBytes);
+    const harness = createIntegrationHarness({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      renderFrame: async (_ctx, target) => Buffer.alloc(target.byteLength, 0xa3),
+    });
+    const oldNote4Key = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      NOTE4_RENDER_TARGET.profileId
+    );
+    const oldVirtualKey = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      VIRTUAL_RENDER_TARGET.profileId
+    );
+    await harness.blob.write('group-1', 'content-1', 'image', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldNote4Key, 'frame', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldVirtualKey, 'frame', oldVirtualBytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: oldNote4Etag,
+        storageKey: oldNote4Key,
+      })
+    );
+    harness.variants.seed(
+      readyStoredVariant(VIRTUAL_RENDER_TARGET, {
+        frameEtag: oldVirtualEtag,
+        storageKey: oldVirtualKey,
+      })
+    );
+    harness.variants.failFindManyOnCall(3, 'forward snapshot variant list down');
+
+    await expect(
+      harness.service.renderDynamicContent('content-1', { force: true })
+    ).rejects.toThrow('forward snapshot variant list down');
+
+    expect(await harness.blob.read('group-1', 'content-1', 'image')).toEqual(oldNote4Bytes);
+    expect(await harness.blob.readStorageKey(oldNote4Key)).toEqual(oldNote4Bytes);
+    expect(await harness.blob.readStorageKey(oldVirtualKey)).toEqual(oldVirtualBytes);
+    expect(harness.variants.row('content-1', NOTE4_RENDER_TARGET.profileId)).toMatchObject({
+      frameEtag: oldNote4Etag,
+      storageKey: oldNote4Key,
+    });
+    expect(harness.variants.row('content-1', VIRTUAL_RENDER_TARGET.profileId)).toMatchObject({
+      frameEtag: oldVirtualEtag,
+      storageKey: oldVirtualKey,
+    });
+    expect(harness.content).toMatchObject({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      dynamicRefreshAttempts: 0,
+      dynamicLastError: null,
+    });
+  });
+
+  it('restores the old unchanged-render state when forward snapshot blob read fails', async () => {
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xb1);
+    const oldVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0xb2);
+    const newVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0xb3);
+    const oldNote4Etag = computeETag(oldNote4Bytes);
+    const oldVirtualEtag = computeETag(oldVirtualBytes);
+    const harness = createIntegrationHarness({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      renderFrame: async (_ctx, target) =>
+        target.profileId === NOTE4_RENDER_TARGET.profileId ? oldNote4Bytes : newVirtualBytes,
+    });
+    const oldNote4Key = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      NOTE4_RENDER_TARGET.profileId
+    );
+    const oldVirtualKey = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      VIRTUAL_RENDER_TARGET.profileId
+    );
+    await harness.blob.write('group-1', 'content-1', 'image', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldNote4Key, 'frame', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldVirtualKey, 'frame', oldVirtualBytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: oldNote4Etag,
+        storageKey: oldNote4Key,
+      })
+    );
+    harness.variants.seed(
+      readyStoredVariant(VIRTUAL_RENDER_TARGET, {
+        frameEtag: oldVirtualEtag,
+        storageKey: oldVirtualKey,
+      })
+    );
+    harness.blob.failReadStorageKeyOnCall(6, 'forward snapshot blob read down');
+
+    await expect(harness.service.renderDynamicContent('content-1')).rejects.toThrow(
+      'forward snapshot blob read down'
+    );
+
+    expect(await harness.blob.read('group-1', 'content-1', 'image')).toEqual(oldNote4Bytes);
+    expect(await harness.blob.readStorageKey(oldNote4Key)).toEqual(oldNote4Bytes);
+    expect(await harness.blob.readStorageKey(oldVirtualKey)).toEqual(oldVirtualBytes);
+    expect(harness.variants.row('content-1', NOTE4_RENDER_TARGET.profileId)).toMatchObject({
+      frameEtag: oldNote4Etag,
+      storageKey: oldNote4Key,
+    });
+    expect(harness.variants.row('content-1', VIRTUAL_RENDER_TARGET.profileId)).toMatchObject({
+      frameEtag: oldVirtualEtag,
+      storageKey: oldVirtualKey,
+    });
+    expect(harness.content).toMatchObject({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      dynamicRefreshAttempts: 0,
+      dynamicLastError: null,
+    });
+  });
+
+  it('surfaces forward snapshot and rollback errors when capture compensation fails', async () => {
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xc1);
+    const oldNote4Etag = computeETag(oldNote4Bytes);
+    const harness = createIntegrationHarness({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      renderFrame: async (_ctx, target) => Buffer.alloc(target.byteLength, 0xc2),
+    });
+    const oldNote4Key = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      NOTE4_RENDER_TARGET.profileId
+    );
+    await harness.blob.write('group-1', 'content-1', 'image', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldNote4Key, 'frame', oldNote4Bytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: oldNote4Etag,
+        storageKey: oldNote4Key,
+      })
+    );
+    harness.variants.failFindManyOnCall(3, 'forward snapshot variant list down');
+    harness.variants.failNextCreateMany('variant restore down');
+
+    await expect(
+      harness.service.renderDynamicContent('content-1', { force: true })
+    ).rejects.toMatchObject({
+      message: '动态渲染失败，且回滚未完成',
+      detail: {
+        original_error: 'forward snapshot variant list down',
+        rollback_error: 'variant restore down',
+      },
+    });
+  });
+
   it('restores committed variants when the legacy Note4 mirror write fails', async () => {
     const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x21);
     const oldVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0x22);
@@ -1149,14 +1306,23 @@ interface StoredDynamicVariant {
 class FakeDynamicVariantStore {
   private readonly rows = new Map<string, StoredDynamicVariant>();
   private nextCreateManyError: Error | null = null;
+  private findManyCalls = 0;
+  private findManyFailure: { call: number; error: Error } | null = null;
   outsideDeleteManyCount = 0;
   outsideCreateManyCount = 0;
 
   readonly client = {
-    findMany: async (args: { where: { contentId: string } }) =>
-      [...this.rows.values()]
+    findMany: async (args: { where: { contentId: string } }) => {
+      this.findManyCalls++;
+      if (this.findManyFailure?.call === this.findManyCalls) {
+        const err = this.findManyFailure.error;
+        this.findManyFailure = null;
+        throw err;
+      }
+      return [...this.rows.values()]
         .filter((row) => row.contentId === args.where.contentId)
-        .map((row) => cloneStoredVariant(row)),
+        .map((row) => cloneStoredVariant(row));
+    },
     findUnique: async (args: {
       where: { contentId_profileId: { contentId: string; profileId: string } };
     }) => {
@@ -1215,6 +1381,10 @@ class FakeDynamicVariantStore {
     this.nextCreateManyError = new Error(message);
   }
 
+  failFindManyOnCall(call: number, message: string): void {
+    this.findManyFailure = { call, error: new Error(message) };
+  }
+
   private async deleteMany(args: { where: { contentId: string } }) {
     let count = 0;
     for (const row of [...this.rows.values()]) {
@@ -1267,9 +1437,15 @@ function cloneDate(value: Date | null): Date | null {
 
 class FailableDynamicBlobService extends BlobService {
   private nextLegacyWriteError: Error | null = null;
+  private readStorageKeyCalls = 0;
+  private readStorageKeyFailure: { call: number; error: Error } | null = null;
 
   failNextLegacyWrite(message: string): void {
     this.nextLegacyWriteError = new Error(message);
+  }
+
+  failReadStorageKeyOnCall(call: number, message: string): void {
+    this.readStorageKeyFailure = { call, error: new Error(message) };
   }
 
   override async write(
@@ -1284,6 +1460,18 @@ class FailableDynamicBlobService extends BlobService {
       throw err;
     }
     return super.write(groupId, contentId, kind, data);
+  }
+
+  override async readStorageKey(
+    storageKey: string
+  ): Promise<Awaited<ReturnType<BlobService['readStorageKey']>>> {
+    this.readStorageKeyCalls++;
+    if (this.readStorageKeyFailure?.call === this.readStorageKeyCalls) {
+      const err = this.readStorageKeyFailure.error;
+      this.readStorageKeyFailure = null;
+      throw err;
+    }
+    return super.readStorageKey(storageKey);
   }
 }
 

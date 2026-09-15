@@ -24,12 +24,11 @@ struct CompletionState {
     std::atomic<CompletionStatus> state{CompletionStatus::kWaiting};
 };
 
-inline uint64_t NextGeneration(std::atomic<uint64_t>& counter) noexcept {
-    uint64_t next = counter.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (next != 0)
-        return next;
-    next = counter.fetch_add(1, std::memory_order_acq_rel) + 1;
-    return next == 0 ? 1 : next;
+inline uint64_t NextGeneration(uint64_t& counter) noexcept {
+    ++counter;
+    if (counter == 0)
+        ++counter;
+    return counter;
 }
 
 inline void Cancel(CompletionState* completion) noexcept {
@@ -180,6 +179,22 @@ bool RunDeadlineCompletion(std::shared_ptr<CompletionState> completion, IsFinish
     return QueueDoneEvent(state, post_done, yield_on_contention, max_post_attempts, max_claim_attempts);
 }
 
+template <typename IsFinished, typename PostDone, typename Yield>
+bool RunDeadlineRetryLoop(std::shared_ptr<CompletionState> completion, IsFinished is_finished, PostDone post_done,
+                          Yield yield_between_attempts, int max_post_attempts = 1,
+                          int max_claim_attempts = 8) {
+    if (!completion)
+        return false;
+    while (!is_finished()) {
+        if (QueueDoneEvent(completion, post_done, yield_between_attempts, max_post_attempts, max_claim_attempts))
+            return true;
+        if (IsTerminal(completion->state.load(std::memory_order_acquire)))
+            return false;
+        yield_between_attempts();
+    }
+    return false;
+}
+
 template <typename Commit, typename Complete>
 bool CompleteIdleOnUiTask(CompletionState& completion, uint64_t generation, Commit commit, Complete complete) {
     if (!CompleteQueuedOrPublishing(completion, generation, CompletionStatus::kIdlePublishing,
@@ -195,6 +210,17 @@ template <typename Complete>
 bool CompleteDoneOnUiTask(CompletionState& completion, uint64_t generation, Complete complete) {
     if (!CompleteQueuedOrPublishing(completion, generation, CompletionStatus::kDonePublishing,
                                     CompletionStatus::kDoneQueued)) {
+        return false;
+    }
+    complete(completion.generation);
+    return true;
+}
+
+template <typename Complete>
+bool CompleteWaitingOnUiTask(CompletionState& completion, Complete complete) {
+    CompletionStatus expected = CompletionStatus::kWaiting;
+    if (!completion.state.compare_exchange_strong(expected, CompletionStatus::kCompleted, std::memory_order_acq_rel,
+                                                  std::memory_order_acquire)) {
         return false;
     }
     complete(completion.generation);

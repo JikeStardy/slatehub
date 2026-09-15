@@ -741,19 +741,77 @@ void TestBgRefreshDeadlineWaitsForPublishingRollback() {
             }
         },
         1,
-        0));
+        4));
     CHECK(yields == 1);
     CHECK(done_posts == 1);
     CHECK(completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kDoneQueued);
 }
 
+void TestBgRefreshDeadlineTaskRetryUntilPostSucceedsOrCancelled() {
+    auto completion   = std::make_shared<bg_refresh::CompletionState>(17);
+    int  post_attempt = 0;
+    int  backoff      = 0;
+    CHECK(bg_refresh::RunDeadlineRetryLoop(
+        completion,
+        [&]() { return bg_refresh::IsTerminal(completion->state.load(std::memory_order_acquire)); },
+        [&](uint64_t generation) {
+            CHECK(generation == 17);
+            ++post_attempt;
+            return post_attempt == 5;
+        },
+        [&]() { ++backoff; },
+        2,
+        4));
+    CHECK(post_attempt == 5);
+    CHECK(backoff >= 2);
+    CHECK(completion->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kDoneQueued);
+
+    auto cancelled = std::make_shared<bg_refresh::CompletionState>(18);
+    int  cancel_backoff = 0;
+    CHECK(!bg_refresh::RunDeadlineRetryLoop(
+        cancelled,
+        [&]() { return bg_refresh::IsTerminal(cancelled->state.load(std::memory_order_acquire)); },
+        [&](uint64_t generation) {
+            CHECK(generation == 18);
+            return false;
+        },
+        [&]() {
+            ++cancel_backoff;
+            bg_refresh::Cancel(cancelled.get());
+        },
+        1,
+        4));
+    CHECK(cancel_backoff == 1);
+    CHECK(cancelled->state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kCancelled);
+}
+
+void TestBgRefreshGenZeroWaitingOnlyClaim() {
+    bg_refresh::CompletionState waiting{19};
+    int                         complete_count = 0;
+    CHECK(bg_refresh::CompleteWaitingOnUiTask(waiting, [&](uint64_t generation) {
+        CHECK(generation == 19);
+        ++complete_count;
+    }));
+    CHECK(complete_count == 1);
+    CHECK(waiting.state.load(std::memory_order_acquire) == bg_refresh::CompletionStatus::kCompleted);
+    CHECK(!bg_refresh::CompleteWaitingOnUiTask(waiting, [&](uint64_t /*generation*/) { ++complete_count; }));
+    CHECK(complete_count == 1);
+
+    bg_refresh::CompletionState claimed{20};
+    claimed.state.store(bg_refresh::CompletionStatus::kDoneQueued, std::memory_order_release);
+    CHECK(!bg_refresh::CompleteWaitingOnUiTask(claimed, [&](uint64_t /*generation*/) { ++complete_count; }));
+}
+
 void TestBgRefreshGenerationDoesNotReuseAcrossSceneInstances() {
-    std::atomic<uint64_t> counter{0};
+    uint64_t counter = 0;
     auto first = std::make_shared<bg_refresh::CompletionState>(bg_refresh::NextGeneration(counter));
     bg_refresh::Cancel(first.get());
     first.reset();
     auto second = std::make_shared<bg_refresh::CompletionState>(bg_refresh::NextGeneration(counter));
     CHECK(second->generation == 2);
+
+    counter = std::numeric_limits<uint64_t>::max();
+    CHECK(bg_refresh::NextGeneration(counter) == 1);
 }
 
 void TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange() {
@@ -789,6 +847,8 @@ int main() {
     TestBgRefreshImmediateIdleConsumeDuringPost();
     TestBgRefreshOwnerReleaseDuringPostDoesNotUseAfterFree();
     TestBgRefreshDeadlineWaitsForPublishingRollback();
+    TestBgRefreshDeadlineTaskRetryUntilPostSucceedsOrCancelled();
+    TestBgRefreshGenZeroWaitingOnlyClaim();
     TestBgRefreshGenerationDoesNotReuseAcrossSceneInstances();
     TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
     return g_failures == 0 ? 0 : 1;

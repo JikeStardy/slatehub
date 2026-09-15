@@ -29,8 +29,8 @@ constexpr char kTag[] = "bg_refresh";
 constexpr int kBgRefreshDeadlineMs = 40000;
 constexpr TickType_t kBgRefreshPostTimeoutTicks = pdMS_TO_TICKS(50);
 constexpr int        kBgRefreshPostAttempts     = 3;
-constexpr int        kBgRefreshWaitForClaim     = 0;
-std::atomic<uint64_t> s_bg_refresh_generation{0};
+constexpr int        kBgRefreshClaimAttempts    = 64;
+uint64_t             s_bg_refresh_generation     = 0;
 
 bool PostBgRefreshDone(uint64_t generation, TickType_t timeout = kBgRefreshPostTimeoutTicks) {
     UiEvent e{};
@@ -107,17 +107,16 @@ void DeadlineEntry(void* arg) {
         // OnEvent 的 kSyncFinished(ok) 覆盖；「连上但每次卡满截止」是罕见失败模式，
         // 仅靠 40s 截止回睡兜底、不计入退避（已知次要限制）。
     }
-    bg_refresh::RunDeadlineCompletion(
-        state,
-        [&state]() { return IsFinished(state); },
-        [&ctx, &state]() {
-            ctx.reset();
-            state.reset();
-        },
+    auto state_for_retry = state;
+    ctx.reset();
+    state.reset();
+    bg_refresh::RunDeadlineRetryLoop(
+        state_for_retry,
+        [&state_for_retry]() { return IsFinished(state_for_retry); },
         [](uint64_t generation) { return PostBgRefreshDone(generation); },
         []() { YieldCompletionContention(); },
         kBgRefreshPostAttempts,
-        kBgRefreshWaitForClaim);
+        kBgRefreshClaimAttempts);
     vTaskDelete(nullptr);
 }
 
@@ -158,7 +157,7 @@ void BgRefreshScene::OnExit(SceneContext& ctx) {
 void BgRefreshScene::OnEvent(SceneContext& ctx, const UiEvent& e) {
     if (e.kind == UiEventKind::kBgRefreshDisplayIdle) {
         if (!completion_ || e.u.bg_refresh.generation != completion_->generation) {
-            ESP_LOGW(kTag, "display idle ignored reason=generation_mismatch event=%lu current=%lu",
+            ESP_LOGW(kTag, "display idle ignored reason=generation_mismatch event=%llu current=%llu",
                      static_cast<unsigned long long>(e.u.bg_refresh.generation),
                      static_cast<unsigned long long>(completion_ ? completion_->generation : 0));
             return;
@@ -394,10 +393,10 @@ bool BgRefreshScene::IsCompletedGeneration(uint64_t generation) const {
 
 bool BgRefreshScene::CompleteDoneEvent(uint64_t generation) {
     if (!completion_)
-        return generation == 0;
+        return false;
     if (generation == 0) {
-        MarkCompleted();
-        return true;
+        return bg_refresh::CompleteWaitingOnUiTask(
+            *completion_, [this](uint64_t /*generation*/) { MarkCompleted(); });
     }
     return bg_refresh::CompleteDoneOnUiTask(
         *completion_, generation, [this](uint64_t /*generation*/) { MarkCompleted(); });

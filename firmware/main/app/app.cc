@@ -211,19 +211,17 @@ bool App::HandleSecretInvalid(const UiEvent& e) {
 bool App::HandleBackgroundRefreshDone(const UiEvent& e) {
     if (e.kind != UiEventKind::kBgRefreshDone)
         return false;
-    if (e.u.bg_refresh.generation != 0) {
-        Scene* top = scene_stack_.Top();
-        if (!top || std::strcmp(top->Name(), "bg_refresh") != 0) {
-            ESP_LOGW(kTag, "background refresh done ignored reason=no_current_scene generation=%llu",
-                     static_cast<unsigned long long>(e.u.bg_refresh.generation));
-            return true;
-        }
-        auto* bg = static_cast<BgRefreshScene*>(top);
-        if (!bg->CompleteDoneEvent(e.u.bg_refresh.generation)) {
-            ESP_LOGW(kTag, "background refresh done ignored reason=generation_mismatch generation=%llu",
-                     static_cast<unsigned long long>(e.u.bg_refresh.generation));
-            return true;
-        }
+    Scene* top = scene_stack_.Top();
+    if (!top || std::strcmp(top->Name(), "bg_refresh") != 0) {
+        ESP_LOGW(kTag, "background refresh done ignored reason=no_current_scene generation=%llu",
+                 static_cast<unsigned long long>(e.u.bg_refresh.generation));
+        return true;
+    }
+    auto* bg = static_cast<BgRefreshScene*>(top);
+    if (!bg->CompleteDoneEvent(e.u.bg_refresh.generation)) {
+        ESP_LOGW(kTag, "background refresh done ignored reason=generation_mismatch generation=%llu",
+                 static_cast<unsigned long long>(e.u.bg_refresh.generation));
+        return true;
     }
     return CompleteBackgroundRefreshSleep();
 }

@@ -61,6 +61,14 @@ function stepBlock(workflow, name) {
   return match?.[1] ?? '';
 }
 
+function shellFunctionBlock(script, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = script.match(
+    new RegExp(`(?:^|\\n)([ \\t]*)${escapedName}\\(\\) \\{([\\s\\S]*?)\\n\\1\\}`)
+  );
+  return match?.[2] ?? '';
+}
+
 function hasBoardSdkconfigCommand(workflow) {
   const block = stepBlock(workflow, 'ESP-IDF build');
   return containsCompact(
@@ -79,6 +87,11 @@ const releaseTagOrderingBlock = stepBlock(releaseWorkflow, 'Validate release tag
 const repositoryVersionsBlock = stepBlock(releaseWorkflow, 'Validate repository versions');
 const tagChangelogBlock = stepBlock(releaseWorkflow, 'Read tag changelog');
 const publishReleaseBlock = stepBlock(releaseWorkflow, 'Publish GitHub Release');
+const packageVersionFunction = shellFunctionBlock(repositoryVersionsBlock, 'check_package_version');
+const lockWorkspaceVersionFunction = shellFunctionBlock(
+  repositoryVersionsBlock,
+  'check_lock_workspace_version'
+);
 
 const boardProfileErrors = displayRegistry.boards
   .map((board) => {
@@ -188,7 +201,7 @@ assertContract(
 
 assertContract(
   containsCompact(
-    repositoryVersionsBlock,
+    packageVersionFunction,
     `
       value="$(jq -r '.version' "$file")"
       if [ "$value" != "$RELEASE_VERSION" ]; then
@@ -201,24 +214,20 @@ assertContract(
 );
 
 assertContract(
-  /awk -v workspace=/.test(repositoryVersionsBlock) &&
-    /' bun\.lock/.test(repositoryVersionsBlock) &&
-    /in_workspace &&/.test(repositoryVersionsBlock) &&
-    /if \[ "\$value" != "\$RELEASE_VERSION" \]; then/.test(repositoryVersionsBlock) &&
+  /awk -v workspace=/.test(lockWorkspaceVersionFunction) &&
+    /' bun\.lock/.test(lockWorkspaceVersionFunction) &&
+    /in_workspace &&/.test(lockWorkspaceVersionFunction) &&
     /bun\.lock workspace \$workspace version must be \$RELEASE_VERSION/.test(
-      repositoryVersionsBlock
+      lockWorkspaceVersionFunction
     ) &&
     containsCompact(
-      repositoryVersionsBlock,
+      lockWorkspaceVersionFunction,
       `
         if [ "$value" != "$RELEASE_VERSION" ]; then
-          echo "bun.lock workspace $workspace version must be $RELEASE_VERSION, got
+          echo "bun.lock workspace $workspace version must be $RELEASE_VERSION, got \${value:-missing}." >&2
+          exit 1
+        fi
       `
-    ) &&
-    /exit 1/.test(
-      repositoryVersionsBlock.slice(
-        repositoryVersionsBlock.indexOf('if [ "$value" != "$RELEASE_VERSION" ]; then')
-      )
     ),
   'Release workflow lock helper must read workspace versions from bun.lock, compare to RELEASE_VERSION, and exit 1 on mismatch.'
 );

@@ -24,4 +24,3 @@ inline constexpr gpio_num_t GPIO_NUM_45 = 45;
 inline constexpr gpio_num_t GPIO_NUM_46 = 46;
 inline constexpr gpio_num_t GPIO_NUM_47 = 47;
 inline constexpr gpio_num_t GPIO_NUM_48 = 48;
-

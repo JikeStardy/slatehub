@@ -287,4 +287,3 @@ bool cJSON_IsNumber(const cJSON* item) {
 bool cJSON_IsNull(const cJSON* item) {
     return item && item->type == cJSON::kNull;
 }
-

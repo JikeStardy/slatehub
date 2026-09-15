@@ -37,4 +37,3 @@ inline esp_err_t esp_littlefs_info(const char*, std::size_t* total, std::size_t*
 inline const char* esp_err_to_name(esp_err_t) {
     return "ESP_OK";
 }
-

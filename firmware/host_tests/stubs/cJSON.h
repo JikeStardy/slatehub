@@ -32,4 +32,3 @@ bool cJSON_IsObject(const cJSON* item);
 bool cJSON_IsString(const cJSON* item);
 bool cJSON_IsNumber(const cJSON* item);
 bool cJSON_IsNull(const cJSON* item);
-

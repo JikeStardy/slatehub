@@ -28,15 +28,57 @@ function matrixBoardIds(workflow) {
   return [...workflow.matchAll(/board_id:\s*([a-z0-9-]+)/g)].map((match) => match[1]);
 }
 
-const productionBoardIds = displayRegistry.boards
-  .filter((board) => {
+function compact(text) {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function containsCompact(text, snippet) {
+  return compact(text).includes(compact(snippet));
+}
+
+function exactOccurrences(text, snippet) {
+  const compactText = compact(text);
+  const compactSnippet = compact(snippet);
+  let count = 0;
+  let offset = 0;
+  while (true) {
+    const index = compactText.indexOf(compactSnippet, offset);
+    if (index === -1) {
+      return count;
+    }
+    count += 1;
+    offset = index + compactSnippet.length;
+  }
+}
+
+function hasBoardSdkconfigCommand(workflow) {
+  return containsCompact(
+    workflow,
+    `
+      BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.\${{ matrix.board_id }}.defaults" &&
+      printf "CONFIG_SLATE_BOARD_ID=\\"\${{ matrix.board_id }}\\"\\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
+      idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
+      idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-\${{ matrix.board_id }}-full.bin"
+    `
+  );
+}
+
+const boardProfileErrors = displayRegistry.boards
+  .map((board) => {
     const profile = displayRegistry.display_profiles.find(
       (candidate) => candidate.id === board.display_profile_id
     );
-    return profile?.availability?.includes('production');
+    if (!profile) {
+      return `${board.id} references missing profile ${board.display_profile_id}`;
+    }
+    if (!profile.availability?.includes('production')) {
+      return `${board.id} references non-production profile ${board.display_profile_id}`;
+    }
+    return null;
   })
-  .map((board) => board.id)
-  .sort();
+  .filter(Boolean);
+
+const realBoardIds = displayRegistry.boards.map((board) => board.id).sort();
 
 const firmwareBoardIds = matrixBoardIds(firmwareWorkflow).sort();
 const releaseBoardIds = matrixBoardIds(releaseWorkflow).sort();
@@ -56,8 +98,13 @@ assertContract(
 );
 
 assertContract(
-  sameList(firmwareBoardIds, productionBoardIds) && sameList(releaseBoardIds, productionBoardIds),
-  `Firmware rolling and release matrices must match production boards: ${productionBoardIds.join(', ')}.`
+  boardProfileErrors.length === 0,
+  `Every BoardDefinition must reference a production-capable DisplayProfile: ${boardProfileErrors.join('; ')}.`
+);
+
+assertContract(
+  sameList(firmwareBoardIds, realBoardIds) && sameList(releaseBoardIds, realBoardIds),
+  `Firmware rolling and release matrices must exactly match real boards: ${realBoardIds.join(', ')}.`
 );
 
 assertContract(
@@ -67,13 +114,8 @@ assertContract(
 );
 
 assertContract(
-  [firmwareWorkflow, releaseWorkflow].every(
-    (workflow) =>
-      /CONFIG_SLATE_BOARD_ID=.*\$\{\{\s*matrix\.board_id\s*\}\}/.test(workflow) &&
-      /SDKCONFIG_DEFAULTS=.*board/.test(workflow) &&
-      /idf\.py\s+-D\s+SDKCONFIG_DEFAULTS=/.test(workflow)
-  ),
-  'Every firmware workflow must pass matrix board id through an ESP-IDF sdkconfig defaults file.'
+  [firmwareWorkflow, releaseWorkflow].every(hasBoardSdkconfigCommand),
+  'Every firmware workflow must contain the complete board sdkconfig, build, and merge-bin command chain.'
 );
 
 assertContract(
@@ -106,17 +148,40 @@ assertContract(
   /pattern:\s*slate-release-firmware-\*/.test(releaseWorkflow) &&
     /merge-multiple:\s*true/.test(releaseWorkflow) &&
     /find "\$FIRMWARE_DIR"/.test(releaseWorkflow) &&
-    /slate-\*-\$\{RELEASE_TAG\}-\*.bin/.test(releaseWorkflow),
-  'GitHub Release publish step must download all board artifacts and collect board-named assets dynamically.'
+    /slate-\*-\$\{RELEASE_TAG\}-\*\.bin/.test(releaseWorkflow) &&
+    /slate-\*-\$\{RELEASE_TAG\}-sha256\.txt/.test(releaseWorkflow),
+  'GitHub Release publish step must download all board artifacts and collect board-named .bin and sha256 assets dynamically.'
 );
 
 assertContract(
-  /git cat-file -t "\$RELEASE_TAG"/.test(releaseWorkflow) &&
-    /sort -V/.test(releaseWorkflow) &&
-    /CONFIG_APP_PROJECT_VER/.test(releaseWorkflow) &&
-    /check_package_version package\.json/.test(releaseWorkflow) &&
-    /check_lock_workspace_version shared/.test(releaseWorkflow),
-  'Annotated-tag, highest-version, and repository version consistency safeguards must remain present.'
+  ['package.json', 'backend/package.json', 'frontend/package.json', 'shared/package.json'].every(
+    (file) => exactOccurrences(releaseWorkflow, `check_package_version ${file}`) === 1
+  ),
+  'Release workflow must verify all package versions: root, backend, frontend, and shared.'
+);
+
+assertContract(
+  ['backend', 'frontend', 'shared'].every(
+    (workspace) =>
+      exactOccurrences(releaseWorkflow, `check_lock_workspace_version ${workspace}`) === 1
+  ),
+  'Release workflow must verify backend/frontend/shared bun.lock workspace versions.'
+);
+
+assertContract(
+  /CONFIG_APP_PROJECT_VER/.test(releaseWorkflow),
+  'Release workflow must verify firmware CONFIG_APP_PROJECT_VER.'
+);
+
+assertContract(
+  /git cat-file -t "\$RELEASE_TAG"/.test(releaseWorkflow),
+  'Release workflow must require annotated tags.'
+);
+
+assertContract(
+  /LATEST_TAG=.*sort -V/.test(compact(releaseWorkflow)) &&
+    /\[ "\$LATEST_TAG" != "\$RELEASE_TAG" \]/.test(releaseWorkflow),
+  'Release workflow must keep the highest vX.Y.Z tag safeguard.'
 );
 
 if (failures.length > 0) {

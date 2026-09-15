@@ -16,9 +16,10 @@ idf.py -C firmware -p <serial> flash monitor
 CI 使用 ESP-IDF v5.5.2 构建：
 
 ```bash
-printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > "$RUNNER_TEMP/sdkconfig.zectrix-note4.defaults"
-idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$RUNNER_TEMP/sdkconfig.zectrix-note4.defaults" build
-idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$RUNNER_TEMP/sdkconfig.zectrix-note4.defaults" merge-bin -o slate-zectrix-note4-full.bin
+BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.zectrix-note4.defaults"
+printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > "$BOARD_SDKCONFIG_DEFAULTS"
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o slate-zectrix-note4-full.bin
 cp build/slate.bin build/slate-zectrix-note4-ota.bin
 ```
 

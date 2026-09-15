@@ -28,7 +28,7 @@ jobs:
           target: ${{ matrix.target }}
           path: 'firmware'
           command: >-
-            BOARD_SDKCONFIG_DEFAULTS="$RUNNER_TEMP/sdkconfig.${{ matrix.board_id }}.defaults" &&
+            BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.${{ matrix.board_id }}.defaults" &&
             printf "CONFIG_SLATE_BOARD_ID=\"${{ matrix.board_id }}\"\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
             idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
             idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-${{ matrix.board_id }}-full.bin" &&

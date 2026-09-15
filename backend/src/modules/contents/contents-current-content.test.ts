@@ -221,6 +221,9 @@ describe('ContentsService current content refresh', () => {
             };
           },
         },
+        contentSource: {
+          findUnique: async () => null,
+        },
         $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
           fn({
             $queryRaw: async () => [{ id: 'group-1' }],
@@ -236,6 +239,9 @@ describe('ContentsService current content refresh', () => {
                 contentEtag: 'updated-content-etag',
               }),
             },
+            contentSource: {
+              upsert: async () => ({}),
+            },
           }),
       } as never,
       {
@@ -244,6 +250,12 @@ describe('ContentsService current content refresh', () => {
           blobWrites.push(id);
           return { path: id, size: 1 };
         },
+        writeStorageKey: async () => ({ path: 'source', size: 1 }),
+        readStorageKey: async (key: string) =>
+          key.includes('zectrix-note4-400x300-mono') ? Buffer.from([0xff]) : null,
+        deleteStorageKey: async () => undefined,
+        sourceKey: () => 'sources/group-1/content-1.source',
+        frameKey: () => 'frames/zectrix-note4-400x300-mono/group-1/content-1.img',
       } as never,
       {
         assertOwned: async () => undefined,
@@ -259,7 +271,21 @@ describe('ContentsService current content refresh', () => {
       } as never,
       {} as never,
       {} as never,
-      { read: async () => null, delete: async () => undefined } as never
+      { read: async () => null, delete: async () => undefined } as never,
+      {
+        renderContentVariants: async () => ({
+          results: [
+            {
+              profileId: 'zectrix-note4-400x300-mono',
+              status: 'ready',
+              changed: true,
+              frameEtag: 'new-image',
+              frameSize: 1,
+              storageKey: 'frames/zectrix-note4-400x300-mono/group-1/content-1.img',
+            },
+          ],
+        }),
+      } as never
     );
 
     const response = await service.patchImage('content-1', 'user-1', {
@@ -272,7 +298,7 @@ describe('ContentsService current content refresh', () => {
     });
 
     expect(response.content_etag).toBe('updated-content-etag');
-    expect(recomputeCalls).toBe(1);
+    expect(recomputeCalls).toBe(2);
     expect(blobWrites).toEqual(['content-1']);
   });
 
@@ -292,6 +318,9 @@ describe('ContentsService current content refresh', () => {
             audioEtag,
             audioSource: 'upload',
           }),
+        },
+        contentSource: {
+          findUnique: async () => null,
         },
         $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
           fn({
@@ -360,6 +389,9 @@ describe('ContentsService current content refresh', () => {
             audioSource: 'upload',
           }),
         },
+        contentSource: {
+          findUnique: async () => null,
+        },
         $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
           fn({
             $queryRaw: async () => [{ id: 'group-1' }],
@@ -375,11 +407,20 @@ describe('ContentsService current content refresh', () => {
                 contentEtag: 'updated-content-etag',
               }),
             },
+            contentSource: {
+              upsert: async () => ({}),
+            },
           }),
       } as never,
       {
         read: async () => Buffer.from('old-image'),
         write: async () => ({ path: 'image', size: 1 }),
+        writeStorageKey: async () => ({ path: 'source', size: 1 }),
+        readStorageKey: async (key: string) =>
+          key.includes('zectrix-note4-400x300-mono') ? Buffer.from([0xff]) : null,
+        deleteStorageKey: async () => undefined,
+        sourceKey: () => 'sources/group-1/content-1.source',
+        frameKey: () => 'frames/zectrix-note4-400x300-mono/group-1/content-1.img',
       } as never,
       {
         assertOwned: async () => undefined,
@@ -397,6 +438,20 @@ describe('ContentsService current content refresh', () => {
           audioDeletes.push(etag);
           throw new Error('unlink failed');
         },
+      } as never,
+      {
+        renderContentVariants: async () => ({
+          results: [
+            {
+              profileId: 'zectrix-note4-400x300-mono',
+              status: 'ready',
+              changed: true,
+              frameEtag: 'new-image',
+              frameSize: 1,
+              storageKey: 'frames/zectrix-note4-400x300-mono/group-1/content-1.img',
+            },
+          ],
+        }),
       } as never
     );
 
@@ -455,6 +510,7 @@ describe('ContentsService current content refresh', () => {
           return 'group-etag';
         },
       } as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

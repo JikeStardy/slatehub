@@ -7,6 +7,7 @@ import { ValidationError } from '../../common/errors';
 export interface ParsedContentUpload {
   hasImage: boolean;
   imageBuf: Buffer | null;
+  imageMimeType?: string;
   hasAudio: boolean;
   audioBuf: Buffer | null;
   threshold?: number;
@@ -43,7 +44,10 @@ export class MultipartParser {
           assertImageMime(part);
           const buf = await readLimitedFile(part, MAX_IMAGE_BYTES, '图片文件不能超过 10MB');
           result.hasImage = buf.length > 0;
-          if (result.hasImage) result.imageBuf = buf;
+          if (result.hasImage) {
+            result.imageBuf = buf;
+            result.imageMimeType = normalizedMime(part);
+          }
         } else if (part.fieldname === 'audio') {
           assertAudioMime(part);
           const buf = await readLimitedFile(part, MAX_AUDIO_BYTES, '音频文件不能超过 5MB');

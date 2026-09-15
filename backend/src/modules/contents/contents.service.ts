@@ -1,7 +1,7 @@
 import { createId } from '@paralleldrive/cuid2';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { ContentAudioSource, ContentKind } from '@prisma/client';
+import type { ContentAudioSource, ContentKind, ContentSource } from '@prisma/client';
 import { type ContentMutationResponseT } from 'shared';
 import { BlobService } from '../../infra/blob/blob.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
@@ -17,7 +17,11 @@ import { audioBlobContentId } from '../../infra/blob/content-audio-blobs';
 import { MAX_TTS_TEXT_CHARS, TtsService } from '../tts/tts.service';
 import { GroupsService } from '../groups/groups.service';
 import { ImageRendererService } from '../image-renderer/image-renderer.service';
-import { NOTE4_RENDER_TARGET } from '../rendering/render-target';
+import { NOTE4_RENDER_TARGET, type RenderTarget } from '../rendering/render-target';
+import {
+  type VariantRenderResult,
+  VariantRenderService,
+} from '../rendering/variant-render.service';
 import { ContentAudioBlobService } from './content-audio-blob.service';
 import { BlobRollbackPlan } from './blob-rollback';
 import {
@@ -32,6 +36,8 @@ interface RenderedImageUpload {
   bytes: Buffer;
   etag: string;
   size: number;
+  mimeType: string;
+  storageKey?: string;
 }
 
 interface RenderedAudioUpload {
@@ -56,7 +62,8 @@ export class ContentsService {
     private readonly imageRenderer: ImageRendererService,
     private readonly audio: AudioTranscoderService,
     private readonly tts: TtsService,
-    private readonly audioBlobs: ContentAudioBlobService
+    private readonly audioBlobs: ContentAudioBlobService,
+    private readonly variantRenderer: VariantRenderService
   ) {}
 
   async appendImage(
@@ -224,10 +231,14 @@ export class ContentsService {
     if (!image) throw new ValidationError('创建图片内容时必须上传图片');
     const contentId = createId();
     const rollback = new BlobRollbackPlan(this.blob, this.logger);
+    const sourceKey = this.blob.sourceKey(gid, contentId);
+    image.storageKey = sourceKey;
+    let dbCreated = false;
     let mutation: { seq: number; groupEtag: string; contentEtag: string };
+    let finalImageEtag: string;
     try {
+      await this.blob.writeStorageKey(sourceKey, 'source', image.bytes);
       rollback.deleteCreated(gid, contentId, 'image');
-      await this.blob.write(gid, contentId, 'image', image.bytes);
       if (audio) {
         rollback.deleteCreated(gid, audioBlobContentId(contentId, audio.etag), 'audio');
         await this.blob.write(gid, audioBlobContentId(contentId, audio.etag), 'audio', audio.bytes);
@@ -244,12 +255,33 @@ export class ContentsService {
             imageSize: image.size,
             ...(audio ? readyUploadedAudioFields(audio.etag, audio.size) : resetAudioFields()),
             kind: 'image',
+            source: {
+              create: readySourceData(image),
+            },
           },
           select: { contentEtag: true },
         });
         return { seq: nextSeq, contentEtag: created.contentEtag };
       });
+      dbCreated = true;
+      const note4 = await this.renderStaticVariants(gid, contentId, image, parsed);
+      const legacy = await this.mirrorNote4ToLegacy(gid, contentId, note4, rollback);
+      finalImageEtag = legacy.etag;
+      mutation = await this.withGroupMutation(gid, async (tx) => {
+        const updated = await tx.content.update({
+          where: { id: contentId },
+          data: { imageEtag: legacy.etag, imageSize: legacy.size },
+          select: { contentEtag: true },
+        });
+        return { seq: mutation.seq, contentEtag: updated.contentEtag };
+      });
     } catch (err) {
+      if (dbCreated) await this.rollbackCreatedContent(gid, contentId, err);
+      await this.blob.deleteStorageKey(sourceKey).catch((rollbackErr: unknown) => {
+        this.logger.warn(
+          `Source blob rollback failed for created content ${contentId} in group ${gid}: ${formatError(rollbackErr)}`
+        );
+      });
       await rollback.restoreAll();
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')
         throw new ConflictError('内容序号已存在');
@@ -258,7 +290,7 @@ export class ContentsService {
     return toContentMutationResponse(
       contentId,
       mutation.seq,
-      image.etag,
+      finalImageEtag,
       audio?.etag ?? null,
       mutation.groupEtag,
       mutation.contentEtag
@@ -279,6 +311,18 @@ export class ContentsService {
       throw new ValidationError('没有可更新的字段', { code: 'nothing_to_patch' });
     }
     const { image, audio } = await this.renderUpload(parsed, signal);
+    const previousSource = image
+      ? await this.prisma.contentSource.findUnique({ where: { contentId } })
+      : null;
+    const sourceKey = image ? this.blob.sourceKey(gid, contentId) : null;
+    const previousSourceBytes =
+      previousSource?.storageKey && image
+        ? await this.blob.readStorageKey(previousSource.storageKey)
+        : null;
+    if (image && sourceKey) {
+      image.storageKey = sourceKey;
+      await this.blob.writeStorageKey(sourceKey, 'source', image.bytes);
+    }
 
     const rollback = new BlobRollbackPlan(this.blob, this.logger);
     let dbUpdated = false;
@@ -309,6 +353,38 @@ export class ContentsService {
         return { updated };
       });
       dbUpdated = true;
+      if (image) {
+        let note4: VariantRenderResult;
+        try {
+          note4 = await this.renderStaticVariants(gid, contentId, image, parsed);
+        } catch (err) {
+          await this.restoreSourceAfterFailedImageUpdate(
+            gid,
+            contentId,
+            previousSource,
+            previousSourceBytes
+          );
+          throw err;
+        }
+        const legacy = await this.mirrorNote4ToLegacy(gid, contentId, note4, rollback);
+        const remirrored = await this.withGroupMutation(gid, async (tx) => {
+          const updated = await tx.content.update({
+            where: { id: contentId },
+            data: { imageEtag: legacy.etag, imageSize: legacy.size },
+            select: { imageEtag: true, audioEtag: true, contentEtag: true },
+          });
+          return { updated };
+        });
+        await this.cleanupAudioBlobAfterCommit(gid, contentId, previousAudioEtagForCleanup);
+        return toContentMutationResponse(
+          contentId,
+          seq,
+          remirrored.updated.imageEtag,
+          remirrored.updated.audioEtag,
+          remirrored.groupEtag,
+          remirrored.updated.contentEtag
+        );
+      }
       await this.cleanupAudioBlobAfterCommit(gid, contentId, previousAudioEtagForCleanup);
       return toContentMutationResponse(
         contentId,
@@ -320,6 +396,7 @@ export class ContentsService {
       );
     } catch (err) {
       if (!dbUpdated) {
+        if (image && sourceKey) await this.restoreStorageKey(sourceKey, previousSourceBytes);
         await rollback.restoreAll();
       }
       throw err;
@@ -340,11 +417,12 @@ export class ContentsService {
     const { gid, contentId, currentAudioEtag, upload, rollback } = input;
     const data: Prisma.ContentUpdateInput = { ...input.baseData };
     if (upload.image) {
-      const previousImageBytes = await this.blob.read(gid, contentId, 'image');
-      rollback.restorePrevious(gid, contentId, 'image', previousImageBytes);
-      await this.blob.write(gid, contentId, 'image', upload.image.bytes);
-      data.imageEtag = upload.image.etag;
-      data.imageSize = upload.image.size;
+      data.source = {
+        upsert: {
+          create: readySourceData(upload.image),
+          update: readySourceData(upload.image),
+        },
+      };
       if (!upload.audio && currentAudioEtag) {
         Object.assign(data, resetAudioFields());
       }
@@ -376,17 +454,11 @@ export class ContentsService {
   ): Promise<RenderedUpload> {
     let image: RenderedImageUpload | null = null;
     if (parsed.hasImage && parsed.imageBuf) {
-      const sourceEtag = computeETag(parsed.imageBuf);
-      const rendered = await this.imageRenderer.renderTo1bpp(parsed.imageBuf, NOTE4_RENDER_TARGET, {
-        threshold: parsed.threshold,
-        mode: parsed.mode,
-        sourceEtag,
-      });
-      this.imageRenderer.validateFrameSize(rendered.data, NOTE4_RENDER_TARGET);
       image = {
-        bytes: rendered.data,
-        etag: computeETag(rendered.data),
-        size: rendered.data.byteLength,
+        bytes: Buffer.from(parsed.imageBuf),
+        etag: computeETag(parsed.imageBuf),
+        size: parsed.imageBuf.byteLength,
+        mimeType: parsed.imageMimeType ?? 'application/octet-stream',
       };
     }
 
@@ -396,6 +468,132 @@ export class ContentsService {
       audio = { bytes, etag: computeETag(bytes), size: bytes.byteLength };
     }
     return { image, audio };
+  }
+
+  private async renderStaticVariants(
+    gid: string,
+    contentId: string,
+    image: RenderedImageUpload,
+    parsed: ParsedContentUpload
+  ): Promise<VariantRenderResult> {
+    const result = await this.variantRenderer.renderContentVariants({
+      groupId: gid,
+      contentId,
+      render: (target) => this.renderStaticFrame(image, target, parsed),
+    });
+    const note4 = result.results.find(
+      (variant) => variant.profileId === NOTE4_RENDER_TARGET.profileId
+    );
+    if (
+      note4?.status === 'ready' &&
+      note4.storageKey &&
+      note4.frameEtag &&
+      note4.frameSize !== undefined
+    ) {
+      return note4;
+    }
+    await this.cleanupChangedVariantFrames(result.results);
+    throw new ValidationError('Note4 图片变体渲染失败，内容未保存', {
+      code: 'note4_variant_required',
+      error: note4?.error,
+    });
+  }
+
+  private async renderStaticFrame(
+    image: RenderedImageUpload,
+    target: RenderTarget,
+    parsed: ParsedContentUpload
+  ): Promise<Buffer> {
+    const rendered = await this.imageRenderer.renderTo1bpp(image.bytes, target, {
+      threshold: parsed.threshold,
+      mode: parsed.mode,
+      sourceEtag: image.etag,
+    });
+    this.imageRenderer.validateFrameSize(rendered.data, target);
+    return rendered.data;
+  }
+
+  private async mirrorNote4ToLegacy(
+    gid: string,
+    contentId: string,
+    note4: VariantRenderResult,
+    rollback: BlobRollbackPlan
+  ): Promise<{ etag: string; size: number }> {
+    if (!note4.storageKey) {
+      throw new ValidationError('Note4 图片变体缺少存储位置', {
+        code: 'note4_variant_missing_blob',
+      });
+    }
+    const frame = await this.blob.readStorageKey(note4.storageKey);
+    if (!frame) {
+      throw new ValidationError('Note4 图片变体文件不存在', { code: 'note4_variant_missing_blob' });
+    }
+    const previousImageBytes = await this.blob.read(gid, contentId, 'image');
+    rollback.restorePrevious(gid, contentId, 'image', previousImageBytes);
+    await this.blob.write(gid, contentId, 'image', frame);
+    return {
+      etag: note4.frameEtag ?? computeETag(frame),
+      size: note4.frameSize ?? frame.byteLength,
+    };
+  }
+
+  private async restoreSourceAfterFailedImageUpdate(
+    gid: string,
+    contentId: string,
+    previousSource: ContentSource | null,
+    previousBytes: Buffer | null
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      if (previousSource) {
+        await tx.contentSource.upsert({
+          where: { contentId },
+          create: { contentId, ...sourceSnapshotData(previousSource) },
+          update: sourceSnapshotData(previousSource),
+        });
+      } else {
+        await tx.contentSource.deleteMany({ where: { contentId } });
+      }
+    });
+    if (previousSource?.storageKey) {
+      await this.restoreStorageKey(previousSource.storageKey, previousBytes);
+    } else {
+      await this.blob.deleteStorageKey(this.blob.sourceKey(gid, contentId));
+    }
+  }
+
+  private async restoreStorageKey(storageKey: string, previousBytes: Buffer | null): Promise<void> {
+    if (previousBytes) await this.blob.writeStorageKey(storageKey, 'source', previousBytes);
+    else await this.blob.deleteStorageKey(storageKey);
+  }
+
+  private async cleanupChangedVariantFrames(results: VariantRenderResult[]): Promise<void> {
+    await Promise.all(
+      results
+        .filter((result) => result.changed && result.storageKey)
+        .map((result) =>
+          this.blob.deleteStorageKey(result.storageKey!).catch((err: unknown) => {
+            this.logger.warn(
+              `Variant blob rollback failed for ${result.profileId}: ${formatError(err)}`
+            );
+          })
+        )
+    );
+  }
+
+  private async rollbackCreatedContent(
+    gid: string,
+    contentId: string,
+    originalErr: unknown
+  ): Promise<void> {
+    await this.withGroupMutation(gid, async (tx) => {
+      await tx.content.delete({ where: { id: contentId } });
+      await compactContentSortOrders(tx, gid);
+      return {};
+    }).catch((rollbackErr: unknown) => {
+      this.logger.warn(
+        `Failed to roll back created content ${contentId} after static render error ${formatError(originalErr)}: ${formatError(rollbackErr)}`
+      );
+    });
   }
 
   private async requireContent(contentId: string): Promise<{
@@ -456,4 +654,26 @@ export class ContentsService {
       );
     });
   }
+}
+
+function readySourceData(
+  image: RenderedImageUpload
+): Prisma.ContentSourceCreateWithoutContentInput {
+  return {
+    status: 'ready',
+    sourceEtag: image.etag,
+    mimeType: image.mimeType,
+    size: image.size,
+    storageKey: image.storageKey,
+  };
+}
+
+function sourceSnapshotData(source: ContentSource): Prisma.ContentSourceCreateWithoutContentInput {
+  return {
+    status: source.status,
+    sourceEtag: source.sourceEtag,
+    mimeType: source.mimeType,
+    size: source.size,
+    storageKey: source.storageKey,
+  };
 }

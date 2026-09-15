@@ -4,8 +4,7 @@ import {
   frameByteLength,
   getDisplayProfile,
 } from 'shared';
-import { ValidationError } from '../../../common/errors';
-import { BitmapCanvas } from './bitmap-canvas';
+import { ValidationError } from '../../common/errors';
 
 export type RenderLayoutFamily = 'note4' | 'compact';
 
@@ -17,6 +16,12 @@ export interface RenderTarget {
   frameCodec: DisplayProfileT['frame_codec'];
   byteLength: number;
   layoutFamily: RenderLayoutFamily;
+}
+
+export interface MonoFrameCanvas {
+  readonly width: number;
+  readonly height: number;
+  toRaw1bpp(): Buffer;
 }
 
 export function renderTargetForProfile(profileId: string): RenderTarget {
@@ -37,12 +42,25 @@ export function renderTargetFromProfile(profile: DisplayProfileT): RenderTarget 
 
 export const NOTE4_RENDER_TARGET = renderTargetForProfile(DEFAULT_DISPLAY_PROFILE_ID);
 
-export function encodeMonoFrame(canvas: BitmapCanvas, target: RenderTarget): Buffer {
+export function assertSupportedMonoEncoding(target: RenderTarget): void {
   if (target.pixelFormat !== 'mono1' || target.frameCodec !== 'raw_mono1_msb') {
     throw new ValidationError(`不支持的帧编码: ${target.pixelFormat}/${target.frameCodec}`, {
       code: 'unsupported_frame_encoding',
     });
   }
+}
+
+export function assertFrameSize(buf: Buffer, target: RenderTarget): void {
+  if (buf.length !== target.byteLength) {
+    throw new ValidationError(
+      `帧大小不匹配: 当前 ${buf.length} 字节, 期望 ${target.byteLength} 字节`,
+      { code: 'frame_size_mismatch' }
+    );
+  }
+}
+
+export function encodeMonoFrame(canvas: MonoFrameCanvas, target: RenderTarget): Buffer {
+  assertSupportedMonoEncoding(target);
   if (canvas.width !== target.width || canvas.height !== target.height) {
     throw new ValidationError(
       `画布尺寸不匹配: 当前 ${canvas.width}x${canvas.height}, 期望 ${target.width}x${target.height}`,
@@ -50,12 +68,7 @@ export function encodeMonoFrame(canvas: BitmapCanvas, target: RenderTarget): Buf
     );
   }
   const raw = canvas.toRaw1bpp();
-  if (raw.byteLength !== target.byteLength) {
-    throw new ValidationError(
-      `帧大小不匹配: 当前 ${raw.byteLength} 字节, 期望 ${target.byteLength} 字节`,
-      { code: 'frame_size_mismatch' }
-    );
-  }
+  assertFrameSize(raw, target);
   return raw;
 }
 

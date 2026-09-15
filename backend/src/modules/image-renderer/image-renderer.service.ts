@@ -10,7 +10,11 @@ import {
 } from 'shared';
 import { ValidationError } from '../../common/errors';
 import { computeETag } from '../../common/utils/etag';
-import { type RenderTarget } from '../dynamic-content/rendering/render-target';
+import {
+  assertFrameSize,
+  assertSupportedMonoEncoding,
+  type RenderTarget,
+} from '../rendering/render-target';
 import { ImageRenderCacheService } from './image-render-cache.service';
 
 export interface RenderOptions {
@@ -49,11 +53,7 @@ export class ImageRendererService {
     target: RenderTarget,
     options: RenderOptions = {}
   ): Promise<RenderResult> {
-    if (target.pixelFormat !== 'mono1' || target.frameCodec !== 'raw_mono1_msb') {
-      throw new ValidationError(`不支持的帧编码: ${target.pixelFormat}/${target.frameCodec}`, {
-        code: 'unsupported_frame_encoding',
-      });
-    }
+    assertSupportedMonoEncoding(target);
     const W = target.width;
     const H = target.height;
     const threshold = options.threshold ?? BW_THRESHOLD_DEFAULT;
@@ -71,26 +71,35 @@ export class ImageRendererService {
     const sourceEtag = options.sourceEtag ?? computeETag(input);
     const key = this.cache.key({
       sourceEtag,
+      profileId: target.profileId,
       width: W,
       height: H,
+      pixelFormat: target.pixelFormat,
+      frameCodec: target.frameCodec,
       threshold,
       mode,
       autoInvert: doAutoInvert,
       letterbox,
     });
     const { data, fromCache } = await this.cache.getOrCompute(key, async () => {
-      return runSharpPipeline(input, { W, H, mode, threshold, doAutoInvert, letterbox });
+      const rendered = await runSharpPipeline(input, {
+        W,
+        H,
+        mode,
+        threshold,
+        doAutoInvert,
+        letterbox,
+      });
+      assertFrameSize(rendered, target);
+      return rendered;
     });
+    assertFrameSize(data, target);
 
     return { data, width: W, height: H, fromCache };
   }
 
   validateFrameSize(buf: Buffer, target: RenderTarget): void {
-    if (buf.length !== target.byteLength) {
-      throw new ValidationError(
-        `帧大小不匹配：当前 ${buf.length} 字节，期望 ${target.byteLength} 字节`
-      );
-    }
+    assertFrameSize(buf, target);
   }
 }
 

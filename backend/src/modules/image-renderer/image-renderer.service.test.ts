@@ -5,10 +5,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { ImageRendererService } from './image-renderer.service';
 import { ImageRenderCacheService } from './image-render-cache.service';
-import {
-  NOTE4_RENDER_TARGET,
-  renderTargetForProfile,
-} from '../dynamic-content/rendering/render-target';
+import { NOTE4_RENDER_TARGET, renderTargetForProfile } from '../rendering/render-target';
 
 const VIRTUAL_RENDER_TARGET = renderTargetForProfile('virtual-mono-296x128');
 
@@ -134,6 +131,49 @@ describe('ImageRendererService', () => {
     const r2 = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, { mode: 'floyd' });
     expect(r2.fromCache).toBe(true);
     expect(Buffer.compare(r1.data, r2.data)).toBe(0);
+  });
+
+  it('cache key 包含 profile 和编码身份', () => {
+    const base = {
+      sourceEtag: 'source-1',
+      profileId: NOTE4_RENDER_TARGET.profileId,
+      width: NOTE4_RENDER_TARGET.width,
+      height: NOTE4_RENDER_TARGET.height,
+      pixelFormat: NOTE4_RENDER_TARGET.pixelFormat,
+      frameCodec: NOTE4_RENDER_TARGET.frameCodec,
+      threshold: 128,
+      mode: 'threshold',
+      autoInvert: true,
+      letterbox: true,
+    };
+    const sameDimensionDifferentProfile = {
+      ...base,
+      profileId: 'same-size-test-profile',
+    };
+
+    expect(cache.key(base)).not.toBe(cache.key(sameDimensionDifferentProfile));
+  });
+
+  it('命中损坏缓存时仍在渲染入口拒绝错误帧大小', async () => {
+    const input = await makePng(400, 300, { r: 32, g: 64, b: 128 });
+    const sourceEtag = 'corrupt-cache-source';
+    const key = cache.key({
+      sourceEtag,
+      profileId: NOTE4_RENDER_TARGET.profileId,
+      width: NOTE4_RENDER_TARGET.width,
+      height: NOTE4_RENDER_TARGET.height,
+      pixelFormat: NOTE4_RENDER_TARGET.pixelFormat,
+      frameCodec: NOTE4_RENDER_TARGET.frameCodec,
+      threshold: 128,
+      mode: 'threshold',
+      autoInvert: true,
+      letterbox: true,
+    });
+    await cache.write(key, Buffer.alloc(1));
+
+    await expect(renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, { sourceEtag })).rejects.toThrow(
+      /帧大小不匹配/
+    );
   });
 
   it('同 key 并发未命中时只执行一次 compute', async () => {

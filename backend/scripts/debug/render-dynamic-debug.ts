@@ -19,7 +19,7 @@ import {
   type DynamicRenderContext,
 } from '../../src/modules/dynamic-content/rendering/dynamic-frame-renderer.service';
 import { DynamicFrameFontService } from '../../src/modules/dynamic-content/rendering/fonts/dynamic-frame-font.service';
-import { NOTE4_RENDER_TARGET } from '../../src/modules/dynamic-content/rendering/render-target';
+import { NOTE4_RENDER_TARGET } from '../../src/modules/rendering/render-target';
 import { CalendarDataService } from '../../src/modules/dynamic-content/calendar-data.service';
 import { DailyCalendarProvider } from '../../src/modules/dynamic-content/providers/daily-calendar.provider';
 

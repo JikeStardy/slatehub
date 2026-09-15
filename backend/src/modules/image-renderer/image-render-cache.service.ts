@@ -6,8 +6,11 @@ import { AppConfig } from '../../infra/config/app.config';
 
 export interface CacheKeyParts {
   sourceEtag: string;
+  profileId: string;
   width: number;
   height: number;
+  pixelFormat: string;
+  frameCodec: string;
   threshold: number;
   mode: string;
   autoInvert: boolean;
@@ -40,8 +43,11 @@ export class ImageRenderCacheService implements OnModuleInit, OnModuleDestroy {
   key(parts: CacheKeyParts): string {
     const raw = [
       parts.sourceEtag,
+      parts.profileId,
       parts.width,
       parts.height,
+      parts.pixelFormat,
+      parts.frameCodec,
       parts.threshold,
       parts.mode,
       parts.autoInvert ? 1 : 0,

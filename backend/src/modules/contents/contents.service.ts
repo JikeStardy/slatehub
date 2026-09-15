@@ -17,7 +17,7 @@ import { audioBlobContentId } from '../../infra/blob/content-audio-blobs';
 import { MAX_TTS_TEXT_CHARS, TtsService } from '../tts/tts.service';
 import { GroupsService } from '../groups/groups.service';
 import { ImageRendererService } from '../image-renderer/image-renderer.service';
-import { NOTE4_RENDER_TARGET } from '../dynamic-content/rendering/render-target';
+import { NOTE4_RENDER_TARGET } from '../rendering/render-target';
 import { ContentAudioBlobService } from './content-audio-blob.service';
 import { BlobRollbackPlan } from './blob-rollback';
 import {

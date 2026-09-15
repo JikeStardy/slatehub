@@ -17,9 +17,14 @@ import {
   DynamicFrameRendererService,
   type DynamicRenderContext,
 } from './dynamic-frame-renderer.service';
+import { buildCompactFrameModel } from './compact-frame-model';
 import { DynamicFrameFontService } from './fonts/dynamic-frame-font.service';
 import { BITMAP_1BPP_FONT_DIR } from '../../../infra/assets/asset-paths';
-import { encodeMonoFrame, NOTE4_RENDER_TARGET, renderTargetForProfile } from './render-target';
+import {
+  encodeMonoFrame,
+  NOTE4_RENDER_TARGET,
+  renderTargetForProfile,
+} from '../../rendering/render-target';
 import { BitmapCanvas, PIXEL_WHITE } from './bitmap-canvas';
 
 const renderer = new DynamicFrameRendererService(new DynamicFrameFontService());
@@ -251,7 +256,50 @@ describe('DynamicFrameRendererService', () => {
       const stats = countPixels(frame, VIRTUAL_RENDER_TARGET.width, VIRTUAL_RENDER_TARGET.height);
       expect(stats.black).toBeGreaterThan(40);
       expect(stats.white).toBeGreaterThan(40);
+      const bounds = blackBounds2d(
+        frame,
+        VIRTUAL_RENDER_TARGET.width,
+        VIRTUAL_RENDER_TARGET.height
+      );
+      expect(bounds).not.toBeNull();
+      expect(bounds!.minX).toBeGreaterThanOrEqual(0);
+      expect(bounds!.minY).toBeGreaterThanOrEqual(0);
+      expect(bounds!.maxX).toBeLessThan(VIRTUAL_RENDER_TARGET.width);
+      expect(bounds!.maxY).toBeLessThan(VIRTUAL_RENDER_TARGET.height);
     }
+  });
+
+  it('builds discriminating compact content for every built-in dynamic type', () => {
+    const byType = new Map(compactDynamicContexts().map((ctx) => [ctx.type, ctx]));
+
+    expect(buildCompactFrameModel(byType.get('daily_calendar')!).lines.join('\n')).toContain(
+      '宜 祭祀 祈福'
+    );
+    expect(buildCompactFrameModel(byType.get('weather')!).lines.join('\n')).toContain('东南风2级');
+    expect(buildCompactFrameModel(byType.get('history_today')!).lines.join('\n')).toContain(
+      '纽交所成立'
+    );
+    expect(buildCompactFrameModel(byType.get('weather_alert')!).lines.join('\n')).toContain(
+      '暴雨黄色预警'
+    );
+    expect(buildCompactFrameModel(byType.get('earthquake_report')!).lines.join('\n')).toContain(
+      '山西大同市云冈区'
+    );
+    expect(buildCompactFrameModel(byType.get('dashboard')!).lines.join('\n')).toContain(
+      'today_cost_usd'
+    );
+    expect(buildCompactFrameModel(byType.get('hot_list')!).lines.join('\n')).toContain(
+      '墨水屏设备发布'
+    );
+
+    const month = buildCompactFrameModel(byType.get('month_calendar')!);
+    expect(month.lines).toContain('2026-05 Asia/Shanghai');
+    expect(month.lines).toContain('标注 2 天');
+
+    const font = buildCompactFrameModel(byType.get('font_test')!);
+    expect(font.fontId).toBe('ark_pixel_16');
+    expect(font.invert).toBe(true);
+    expect(font.lines.join('\n')).toContain('16px');
   });
 
   it('rejects unsupported reserved frame encodings at the boundary', () => {
@@ -458,6 +506,30 @@ function countPixels(
   return { black, white };
 }
 
+function blackBounds2d(
+  frame: Buffer,
+  width: number,
+  height: number
+): { minX: number; maxX: number; minY: number; maxY: number } | null {
+  const bpr = width >> 3;
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const byte = frame[y * bpr + (x >> 3)]!;
+      const bit = (byte >> (7 - (x & 7))) & 1;
+      if (bit) continue;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  return Number.isFinite(minX) ? { minX, maxX, minY, maxY } : null;
+}
+
 function compactDynamicContexts(): DynamicRenderContext[] {
   return [
     {
@@ -480,7 +552,18 @@ function compactDynamicContexts(): DynamicRenderContext[] {
       type: 'month_calendar',
       frameName: '月历',
       config: { tz: 'Asia/Shanghai' },
-      data: { calendar: { months: {} } },
+      data: {
+        calendar: {
+          months: {
+            '2026-05': {
+              days: {
+                '2026-05-05': { solar_term: '立夏' },
+                '2026-05-21': { solar_term: '小满' },
+              },
+            },
+          },
+        },
+      },
       renderedAt,
     },
     {
@@ -527,7 +610,7 @@ function compactDynamicContexts(): DynamicRenderContext[] {
     {
       type: 'font_test',
       frameName: '字体测试',
-      config: { type: 'font_test', font_id: 'unifont_16', invert: false },
+      config: { type: 'font_test', font_id: 'ark_pixel_16', invert: true },
       data: null,
       renderedAt,
     },

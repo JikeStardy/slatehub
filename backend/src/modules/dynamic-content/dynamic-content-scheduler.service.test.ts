@@ -87,4 +87,44 @@ describe('DynamicContentSchedulerService', () => {
     expect(logged.some((msg) => msg.includes('Dynamic refresh job failed'))).toBe(true);
     expect(logged.some((msg) => msg.includes('Dynamic refresh retry marker failed'))).toBe(true);
   });
+
+  it('marks scheduler-owned retry due and next run at the same timestamp without incrementing attempts again', async () => {
+    const updates: Array<{ data: Record<string, unknown> }> = [];
+    const service = new DynamicContentSchedulerService(
+      { backgroundWorkers: true } as AppConfig,
+      {
+        content: {
+          findMany: async () => [
+            { id: 'content-1', dynamicType: 'weather', dynamicRefreshAttempts: 1 },
+          ],
+          updateMany: async (args: { data: Record<string, unknown> }) => {
+            updates.push(args);
+            if ('dynamicRefreshAttempts' in args.data) return { count: 1 };
+            return { count: 1 };
+          },
+          findFirst: async () => null,
+        },
+      } as unknown as PrismaService,
+      {
+        renderDynamicContent: async () => {
+          throw new Error('render failed');
+        },
+      } as unknown as DynamicContentRendererService
+    );
+
+    await service.tick();
+    service.onModuleDestroy();
+
+    const claim = updates.find((update) => 'dynamicRefreshAttempts' in update.data);
+    const retry = updates.find((update) => 'dynamicLastError' in update.data);
+    expect(claim?.data.dynamicRefreshAttempts).toEqual({ increment: 1 });
+    expect(retry?.data.dynamicRefreshAttempts).toBeUndefined();
+    expect(retry?.data.dynamicRefreshLeaseUntil).toBeNull();
+    expect(retry?.data.dynamicRefreshDueAt).toBeInstanceOf(Date);
+    expect(retry?.data.dynamicNextRunAt).toBeInstanceOf(Date);
+    expect(retry?.data.dynamicRefreshDueAt).toBe(retry?.data.dynamicNextRunAt);
+    expect((retry?.data.dynamicRefreshDueAt as Date).getTime()).toBe(
+      (retry?.data.dynamicNextRunAt as Date).getTime()
+    );
+  });
 });

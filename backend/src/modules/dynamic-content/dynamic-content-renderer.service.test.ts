@@ -443,6 +443,109 @@ describe('DynamicContentRendererService variant integration', () => {
     expect(harness.content.dynamicRefreshDueAt).toEqual(harness.content.dynamicNextRunAt);
   });
 
+  it('leaves scheduler-owned leased Note4 fallback failures for scheduler retry marking', async () => {
+    const now = new Date('2026-05-17T04:10:00.000Z');
+    const leaseUntil = new Date('2026-05-17T04:13:00.000Z');
+    const oldNext = new Date('2026-05-17T04:00:00.000Z');
+    const harness = createIntegrationHarness({
+      dynamicRefreshAttempts: 2,
+      dynamicRefreshLeaseUntil: leaseUntil,
+      dynamicLastError: 'previous error',
+      dynamicNextRunAt: oldNext,
+      dynamicRefreshDueAt: oldNext,
+      imageEtag: 'old-note4-etag',
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      renderFrame: async (_ctx, target) => {
+        if (target.profileId === NOTE4_RENDER_TARGET.profileId) {
+          throw new Error('note4 renderer failed');
+        }
+        return Buffer.alloc(target.byteLength, 0x88);
+      },
+    });
+    const oldNote4Key = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      NOTE4_RENDER_TARGET.profileId
+    );
+    const oldLegacyBytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x44);
+    await harness.blob.write('group-1', 'content-1', 'image', oldLegacyBytes);
+    await harness.blob.writeStorageKey(oldNote4Key, 'frame', oldLegacyBytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: 'old-note4-etag',
+        storageKey: oldNote4Key,
+        renderVersion: 7,
+        attempts: 2,
+      })
+    );
+
+    await expect(harness.service.renderDynamicContent('content-1', { now })).rejects.toThrow(
+      'Note4 动态变体渲染失败'
+    );
+
+    expect(await harness.blob.read('group-1', 'content-1', 'image')).toEqual(oldLegacyBytes);
+    expect(harness.content).toMatchObject({
+      dynamicRefreshAttempts: 2,
+      dynamicLastError: 'previous error',
+      dynamicRefreshLeaseUntil: leaseUntil,
+      dynamicNextRunAt: oldNext,
+      dynamicRefreshDueAt: oldNext,
+    });
+  });
+
+  it('marks exactly one direct failure after rolling back a reused-fetch finalization error', async () => {
+    const now = new Date('2026-05-17T04:10:00.000Z');
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x81);
+    const oldNote4Etag = computeETag(oldNote4Bytes);
+    const harness = createIntegrationHarness({
+      fetchData: async () => {
+        throw new Error('provider down');
+      },
+      dynamicData: {
+        tempC: 21,
+        summary: '晴',
+        updatedAt: '2026-05-17T04:00:00.000Z',
+      },
+      dynamicLastRunAt: new Date('2026-05-17T04:00:00.000Z'),
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      failNextContentUpdate: 'content db down',
+      renderFrame: async (_ctx, target) => Buffer.alloc(target.byteLength, 0x82),
+    });
+    const oldNote4Key = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      NOTE4_RENDER_TARGET.profileId
+    );
+    await harness.blob.write('group-1', 'content-1', 'image', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldNote4Key, 'frame', oldNote4Bytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: oldNote4Etag,
+        storageKey: oldNote4Key,
+      })
+    );
+
+    await expect(
+      harness.service.renderDynamicContent('content-1', { force: true, now })
+    ).rejects.toThrow('content db down');
+
+    const failureMarks = harness.contentUpdates.filter(
+      (update) =>
+        update.data.dynamicLastError === 'content db down' &&
+        update.data.dynamicRefreshAttempts === 1
+    );
+    expect(failureMarks).toHaveLength(1);
+    expect(harness.content).toMatchObject({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      dynamicRefreshAttempts: 1,
+      dynamicLastError: 'content db down',
+    });
+    expect(harness.content.dynamicRefreshDueAt).toEqual(harness.content.dynamicNextRunAt);
+    expect(harness.content.dynamicRefreshDueAt?.getTime()).toBeGreaterThan(now.getTime());
+  });
+
   it('restores content variants and legacy image when an unchanged final content update fails', async () => {
     const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x66);
     const oldVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0x77);
@@ -505,9 +608,13 @@ describe('DynamicContentRendererService variant integration', () => {
     expect(harness.content).toMatchObject({
       imageEtag: oldNote4Etag,
       imageSize: NOTE4_RENDER_TARGET.byteLength,
-      dynamicRefreshAttempts: 0,
-      dynamicLastError: null,
+      dynamicRefreshAttempts: 1,
+      dynamicLastError: 'content db down',
     });
+    expect(harness.content.dynamicRefreshDueAt).toEqual(harness.content.dynamicNextRunAt);
+    expect(harness.transactionCount).toBe(1);
+    expect(harness.variants.outsideDeleteManyCount).toBe(0);
+    expect(harness.variants.outsideCreateManyCount).toBe(0);
   });
 
   it('restores content variants and legacy image when a changed final content update fails', async () => {
@@ -569,9 +676,10 @@ describe('DynamicContentRendererService variant integration', () => {
     expect(harness.content).toMatchObject({
       imageEtag: oldNote4Etag,
       imageSize: NOTE4_RENDER_TARGET.byteLength,
-      dynamicRefreshAttempts: 0,
-      dynamicLastError: null,
+      dynamicRefreshAttempts: 1,
+      dynamicLastError: 'content db down',
     });
+    expect(harness.content.dynamicRefreshDueAt).toEqual(harness.content.dynamicNextRunAt);
   });
 
   it('restores committed variants when the legacy Note4 mirror write fails', async () => {
@@ -663,6 +771,56 @@ describe('DynamicContentRendererService variant integration', () => {
       },
     });
   });
+
+  it('rolls forward to a coherent rendered state when old database restore fails', async () => {
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x91);
+    const oldNote4Etag = computeETag(oldNote4Bytes);
+    const newNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x92);
+    const newNote4Etag = computeETag(newNote4Bytes);
+    const harness = createIntegrationHarness({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      failNextContentUpdate: 'content db down',
+      renderFrame: async (_ctx, target) =>
+        target.profileId === NOTE4_RENDER_TARGET.profileId
+          ? newNote4Bytes
+          : Buffer.alloc(target.byteLength, 0x93),
+    });
+    const note4Key = harness.blob.frameKey('group-1', 'content-1', NOTE4_RENDER_TARGET.profileId);
+    await harness.blob.write('group-1', 'content-1', 'image', oldNote4Bytes);
+    await harness.blob.writeStorageKey(note4Key, 'frame', oldNote4Bytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: oldNote4Etag,
+        storageKey: note4Key,
+      })
+    );
+    harness.variants.failNextCreateMany('variant restore down');
+
+    await expect(
+      harness.service.renderDynamicContent('content-1', { force: true })
+    ).rejects.toMatchObject({
+      message: '动态渲染失败，且回滚未完成',
+      detail: {
+        original_error: 'content db down',
+        rollback_error: 'variant restore down',
+      },
+    });
+
+    expect(await harness.blob.read('group-1', 'content-1', 'image')).toEqual(newNote4Bytes);
+    expect(await harness.blob.readStorageKey(note4Key)).toEqual(newNote4Bytes);
+    expect(harness.variants.row('content-1', NOTE4_RENDER_TARGET.profileId)).toMatchObject({
+      frameEtag: newNote4Etag,
+      storageKey: note4Key,
+      status: 'ready',
+    });
+    expect(harness.content).toMatchObject({
+      imageEtag: newNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      dynamicRefreshAttempts: 0,
+      dynamicLastError: null,
+    });
+  });
 });
 
 function createService(opts: {
@@ -726,6 +884,7 @@ function createService(opts: {
       deleteMany: async () => ({ count: 0 }),
       createMany: async (args: { data: unknown[] }) => ({ count: args.data.length }),
     },
+    $transaction: async <T>(fn: (tx: unknown) => Promise<T>) => fn(prisma),
   };
   const blob = {
     read: async () => null,
@@ -836,9 +995,16 @@ function deferred<T>(): {
 
 function createIntegrationHarness(opts: {
   renderFrame: DynamicFrameRendererService['render'];
+  fetchData?: () => Promise<unknown>;
   imageEtag?: string;
   imageSize?: number;
+  dynamicData?: unknown;
+  dynamicLastRunAt?: Date | null;
+  dynamicNextRunAt?: Date | null;
+  dynamicRefreshDueAt?: Date | null;
+  dynamicRefreshLeaseUntil?: Date | null;
   dynamicRefreshAttempts?: number;
+  dynamicLastError?: string | null;
   failNextContentUpdate?: string;
 }) {
   const content: IntegrationContent = {
@@ -848,18 +1014,20 @@ function createIntegrationHarness(opts: {
     kind: 'dynamic',
     dynamicType: 'weather',
     dynamicConfig: {},
-    dynamicData: null,
-    dynamicLastRunAt: null,
-    dynamicNextRunAt: new Date('2026-05-17T04:15:00.000Z'),
-    dynamicRefreshDueAt: new Date('2026-05-17T04:15:00.000Z'),
-    dynamicRefreshLeaseUntil: new Date('2026-05-17T04:09:00.000Z'),
+    dynamicData: opts.dynamicData ?? null,
+    dynamicLastRunAt: opts.dynamicLastRunAt ?? null,
+    dynamicNextRunAt: opts.dynamicNextRunAt ?? new Date('2026-05-17T04:15:00.000Z'),
+    dynamicRefreshDueAt: opts.dynamicRefreshDueAt ?? new Date('2026-05-17T04:15:00.000Z'),
+    dynamicRefreshLeaseUntil: opts.dynamicRefreshLeaseUntil ?? null,
     dynamicRefreshAttempts: opts.dynamicRefreshAttempts ?? 0,
-    dynamicLastError: null,
+    dynamicLastError: opts.dynamicLastError ?? null,
     audioEtag: null,
     imageEtag: opts.imageEtag ?? 'old-image-etag',
     imageSize: opts.imageSize ?? 0,
   };
   const variants = new FakeDynamicVariantStore();
+  let transactionCount = 0;
+  const contentUpdates: Array<{ data: Partial<IntegrationContent> }> = [];
   const prisma = {
     content: {
       findUnique: async (args?: { select?: { audioEtag?: boolean } }) => {
@@ -869,19 +1037,24 @@ function createIntegrationHarness(opts: {
         ) {
           return { audioEtag: content.audioEtag };
         }
-        return content;
+        return cloneIntegrationContent(content);
       },
       update: async (args: { data: Partial<IntegrationContent> }) => {
+        contentUpdates.push(args);
         if (opts.failNextContentUpdate) {
           const message = opts.failNextContentUpdate;
           opts.failNextContentUpdate = undefined;
           throw new Error(message);
         }
         Object.assign(content, args.data);
-        return content;
+        return cloneIntegrationContent(content);
       },
     },
     contentVariant: variants.client,
+    $transaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
+      transactionCount++;
+      return fn({ content: prisma.content, contentVariant: variants.transactionClient });
+    },
   };
   const blob = new FailableDynamicBlobService({ nodeEnv: 'test', blobDir } as AppConfig);
   const registry = {
@@ -891,7 +1064,7 @@ function createIntegrationHarness(opts: {
       provider: {
         type: 'weather',
         validateConfig: () => ({}),
-        fetchData: async () => ({ tempC: 25 }),
+        fetchData: opts.fetchData ?? (async () => ({ tempC: 25 })),
       },
     }),
     defaultTtlSec: () => 300,
@@ -922,7 +1095,16 @@ function createIntegrationHarness(opts: {
     groups as unknown as GroupsService,
     dynamicAudio as unknown as DynamicAudioService
   );
-  return { blob, content, service, variants };
+  return {
+    blob,
+    content,
+    service,
+    variants,
+    get transactionCount() {
+      return transactionCount;
+    },
+    contentUpdates,
+  };
 }
 
 interface IntegrationContent {
@@ -967,18 +1149,20 @@ interface StoredDynamicVariant {
 class FakeDynamicVariantStore {
   private readonly rows = new Map<string, StoredDynamicVariant>();
   private nextCreateManyError: Error | null = null;
+  outsideDeleteManyCount = 0;
+  outsideCreateManyCount = 0;
 
   readonly client = {
     findMany: async (args: { where: { contentId: string } }) =>
       [...this.rows.values()]
         .filter((row) => row.contentId === args.where.contentId)
-        .map((row) => ({ ...row })),
+        .map((row) => cloneStoredVariant(row)),
     findUnique: async (args: {
       where: { contentId_profileId: { contentId: string; profileId: string } };
     }) => {
       const { contentId, profileId } = args.where.contentId_profileId;
       const row = this.rows.get(this.key(contentId, profileId));
-      return row ? { ...row } : null;
+      return row ? cloneStoredVariant(row) : null;
     },
     upsert: async (args: {
       where: { contentId_profileId: { contentId: string; profileId: string } };
@@ -996,48 +1180,89 @@ class FakeDynamicVariantStore {
             createdAt: now,
             updatedAt: now,
           };
-      this.rows.set(this.key(contentId, profileId), next);
-      return { ...next };
+      this.rows.set(this.key(contentId, profileId), cloneStoredVariant(next));
+      return cloneStoredVariant(next);
     },
     deleteMany: async (args: { where: { contentId: string } }) => {
-      let count = 0;
-      for (const row of [...this.rows.values()]) {
-        if (row.contentId !== args.where.contentId) continue;
-        this.rows.delete(this.key(row.contentId, row.profileId));
-        count++;
-      }
-      return { count };
+      this.outsideDeleteManyCount++;
+      return this.deleteMany(args);
     },
     createMany: async (args: { data: StoredDynamicVariant[] }) => {
-      if (this.nextCreateManyError) {
-        const err = this.nextCreateManyError;
-        this.nextCreateManyError = null;
-        throw err;
-      }
-      for (const row of args.data) {
-        this.rows.set(this.key(row.contentId, row.profileId), { ...row });
-      }
-      return { count: args.data.length };
+      this.outsideCreateManyCount++;
+      return this.createMany(args);
     },
   };
 
+  readonly transactionClient = {
+    findMany: this.client.findMany,
+    findUnique: this.client.findUnique,
+    upsert: this.client.upsert,
+    deleteMany: async (args: { where: { contentId: string } }) => this.deleteMany(args),
+    createMany: async (args: { data: StoredDynamicVariant[] }) => this.createMany(args),
+  };
+
   seed(row: StoredDynamicVariant): void {
-    this.rows.set(this.key(row.contentId, row.profileId), { ...row });
+    this.rows.set(this.key(row.contentId, row.profileId), cloneStoredVariant(row));
   }
 
   row(contentId: string, profileId: string): StoredDynamicVariant {
     const row = this.rows.get(this.key(contentId, profileId));
     if (!row) throw new Error(`missing fake variant row ${contentId}/${profileId}`);
-    return { ...row };
+    return cloneStoredVariant(row);
   }
 
   failNextCreateMany(message: string): void {
     this.nextCreateManyError = new Error(message);
   }
 
+  private async deleteMany(args: { where: { contentId: string } }) {
+    let count = 0;
+    for (const row of [...this.rows.values()]) {
+      if (row.contentId !== args.where.contentId) continue;
+      this.rows.delete(this.key(row.contentId, row.profileId));
+      count++;
+    }
+    return { count };
+  }
+
+  private async createMany(args: { data: StoredDynamicVariant[] }) {
+    if (this.nextCreateManyError) {
+      const err = this.nextCreateManyError;
+      this.nextCreateManyError = null;
+      throw err;
+    }
+    for (const row of args.data) {
+      this.rows.set(this.key(row.contentId, row.profileId), cloneStoredVariant(row));
+    }
+    return { count: args.data.length };
+  }
+
   private key(contentId: string, profileId: string): string {
     return `${contentId}/${profileId}`;
   }
+}
+
+function cloneIntegrationContent(content: IntegrationContent): IntegrationContent {
+  return {
+    ...content,
+    dynamicLastRunAt: cloneDate(content.dynamicLastRunAt),
+    dynamicNextRunAt: cloneDate(content.dynamicNextRunAt),
+    dynamicRefreshDueAt: cloneDate(content.dynamicRefreshDueAt),
+    dynamicRefreshLeaseUntil: cloneDate(content.dynamicRefreshLeaseUntil),
+  };
+}
+
+function cloneStoredVariant(row: StoredDynamicVariant): StoredDynamicVariant {
+  return {
+    ...row,
+    leaseUntil: cloneDate(row.leaseUntil),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function cloneDate(value: Date | null): Date | null {
+  return value ? new Date(value) : null;
 }
 
 class FailableDynamicBlobService extends BlobService {

@@ -244,7 +244,7 @@ export class DynamicContentRendererService {
       config = entry.provider.validateConfig(content.dynamicConfig);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await this.markError(content, `配置非法: ${message}`, now);
+      await this.markErrorIfRendererOwned(content, `配置非法: ${message}`, now);
       throw new ValidationError(`动态配置非法: ${message}`);
     }
 
@@ -265,7 +265,6 @@ export class DynamicContentRendererService {
       this.logger.warn(
         `Dynamic data fetch failed for content ${contentId} of type ${content.dynamicType}: ${message}`
       );
-      await this.markError(content, message, now);
       if (
         !canReuseDynamicData(
           content.dynamicType,
@@ -276,6 +275,7 @@ export class DynamicContentRendererService {
           content.dynamicLastRunAt
         )
       ) {
+        await this.markErrorIfRendererOwned(content, message, now);
         throw err;
       }
       data = content.dynamicData;
@@ -300,10 +300,9 @@ export class DynamicContentRendererService {
       note4 = this.requireReadyNote4(variants.results);
       mirrored = await this.mirrorNote4ToLegacy(content.groupId, contentId, note4);
     } catch (err) {
-      await this.restoreDynamicRenderSnapshot(snapshot, err);
-      if (isRequiredNote4Failure(err)) {
-        await this.markError(content, note4ErrorMessage(err), now);
-      }
+      const forwardSnapshot = await this.snapshotDynamicRenderState(snapshot.content);
+      await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
+      await this.markErrorIfRendererOwned(content, renderFailureMessage(err), now);
       throw err;
     }
     const imageEtag = mirrored.etag;
@@ -314,12 +313,23 @@ export class DynamicContentRendererService {
       defaultTtlSec: this.registry.defaultTtlSec(content.dynamicType),
     });
 
+    const dynamicData = data == null ? null : data;
     if (!opts.force && imageEtag === content.imageEtag) {
+      const finalContent = dynamicContentSnapshotFrom(content, {
+        dynamicData,
+        dynamicLastRunAt: now,
+        dynamicNextRunAt: schedule.nextRunAt,
+        dynamicRefreshDueAt: schedule.refreshDueAt,
+        dynamicRefreshLeaseUntil: null,
+        dynamicRefreshAttempts: 0,
+        dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
+      });
+      const forwardSnapshot = await this.snapshotDynamicRenderState(finalContent);
       try {
         await this.prisma.content.update({
           where: { id: contentId },
           data: {
-            dynamicData: data == null ? Prisma.JsonNull : toPrismaInputJson(data),
+            dynamicData: dynamicData == null ? Prisma.JsonNull : toPrismaInputJson(dynamicData),
             dynamicLastRunAt: now,
             dynamicNextRunAt: schedule.nextRunAt,
             dynamicRefreshDueAt: schedule.refreshDueAt,
@@ -329,7 +339,8 @@ export class DynamicContentRendererService {
           },
         });
       } catch (err) {
-        await this.restoreDynamicRenderSnapshot(snapshot, err);
+        await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
+        await this.markErrorIfRendererOwned(content, formatError(err), now);
         throw err;
       }
       const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);
@@ -345,13 +356,25 @@ export class DynamicContentRendererService {
       };
     }
 
+    const finalContent = dynamicContentSnapshotFrom(content, {
+      imageEtag,
+      imageSize: mirrored.size,
+      dynamicData,
+      dynamicLastRunAt: now,
+      dynamicNextRunAt: schedule.nextRunAt,
+      dynamicRefreshDueAt: schedule.refreshDueAt,
+      dynamicRefreshLeaseUntil: null,
+      dynamicRefreshAttempts: 0,
+      dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
+    });
+    const forwardSnapshot = await this.snapshotDynamicRenderState(finalContent);
     try {
       await this.prisma.content.update({
         where: { id: contentId },
         data: {
           imageEtag,
           imageSize: mirrored.size,
-          dynamicData: data == null ? Prisma.JsonNull : toPrismaInputJson(data),
+          dynamicData: dynamicData == null ? Prisma.JsonNull : toPrismaInputJson(dynamicData),
           dynamicLastRunAt: now,
           dynamicNextRunAt: schedule.nextRunAt,
           dynamicRefreshDueAt: schedule.refreshDueAt,
@@ -361,7 +384,8 @@ export class DynamicContentRendererService {
         },
       });
     } catch (err) {
-      await this.restoreDynamicRenderSnapshot(snapshot, err);
+      await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
+      await this.markErrorIfRendererOwned(content, formatError(err), now);
       throw err;
     }
     const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);
@@ -408,6 +432,12 @@ export class DynamicContentRendererService {
   private async snapshotDynamicRender(
     content: DynamicRenderContentRow
   ): Promise<DynamicRenderSnapshot> {
+    return this.snapshotDynamicRenderState(dynamicContentSnapshotFrom(content));
+  }
+
+  private async snapshotDynamicRenderState(
+    content: DynamicContentSnapshot
+  ): Promise<DynamicRenderSnapshot> {
     const variants = await this.prisma.contentVariant.findMany({
       where: { contentId: content.id },
     });
@@ -418,19 +448,7 @@ export class DynamicContentRendererService {
       }
     }
     return {
-      content: {
-        id: content.id,
-        groupId: content.groupId,
-        imageEtag: content.imageEtag,
-        imageSize: content.imageSize,
-        dynamicData: content.dynamicData,
-        dynamicLastRunAt: content.dynamicLastRunAt,
-        dynamicNextRunAt: content.dynamicNextRunAt,
-        dynamicRefreshDueAt: content.dynamicRefreshDueAt,
-        dynamicRefreshLeaseUntil: content.dynamicRefreshLeaseUntil,
-        dynamicRefreshAttempts: content.dynamicRefreshAttempts,
-        dynamicLastError: content.dynamicLastError,
-      },
+      content,
       legacyImage: await this.blob.read(content.groupId, content.id, 'image'),
       variants,
       variantBytes,
@@ -439,11 +457,15 @@ export class DynamicContentRendererService {
 
   private async restoreDynamicRenderSnapshot(
     snapshot: DynamicRenderSnapshot,
-    originalErr: unknown
+    originalErr: unknown,
+    forwardSnapshot?: DynamicRenderSnapshot
   ): Promise<void> {
     try {
       await this.restoreDynamicRenderSnapshotOrThrow(snapshot);
     } catch (rollbackErr) {
+      if (forwardSnapshot) {
+        await this.rollForwardDynamicRenderSnapshot(originalErr, rollbackErr, forwardSnapshot);
+      }
       throw new InternalRenderRollbackError(originalErr, rollbackErr);
     }
   }
@@ -483,14 +505,32 @@ export class DynamicContentRendererService {
       await this.blob.delete(snapshot.content.groupId, snapshot.content.id, 'image');
     }
 
-    await this.prisma.content.update({
-      where: { id: snapshot.content.id },
-      data: restoreDynamicContentInput(snapshot.content),
-    });
-    await this.prisma.contentVariant.deleteMany({ where: { contentId: snapshot.content.id } });
-    if (snapshot.variants.length > 0) {
-      await this.prisma.contentVariant.createMany({ data: snapshot.variants });
+    await this.restoreDynamicRenderDb(snapshot);
+  }
+
+  private async rollForwardDynamicRenderSnapshot(
+    originalErr: unknown,
+    rollbackErr: unknown,
+    forwardSnapshot: DynamicRenderSnapshot
+  ): Promise<void> {
+    try {
+      await this.restoreDynamicRenderSnapshotOrThrow(forwardSnapshot);
+    } catch (rollForwardErr) {
+      throw new InternalRenderRollbackError(originalErr, rollbackErr, rollForwardErr);
     }
+  }
+
+  private async restoreDynamicRenderDb(snapshot: DynamicRenderSnapshot): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.content.update({
+        where: { id: snapshot.content.id },
+        data: restoreDynamicContentInput(snapshot.content),
+      });
+      await tx.contentVariant.deleteMany({ where: { contentId: snapshot.content.id } });
+      if (snapshot.variants.length > 0) {
+        await tx.contentVariant.createMany({ data: snapshot.variants });
+      }
+    });
   }
 
   private async mirrorNote4ToLegacy(
@@ -579,6 +619,18 @@ export class DynamicContentRendererService {
       );
     }
   }
+
+  private async markErrorIfRendererOwned(
+    content: Pick<
+      DynamicRenderContentRow,
+      'id' | 'dynamicRefreshAttempts' | 'dynamicRefreshLeaseUntil'
+    >,
+    message: string,
+    now: Date
+  ): Promise<void> {
+    if (content.dynamicRefreshLeaseUntil) return;
+    await this.markError(content, message, now);
+  }
 }
 
 function contentEtagFromGroupEtags(
@@ -616,6 +668,39 @@ function restoreDynamicContentInput(content: DynamicContentSnapshot): Prisma.Con
   };
 }
 
+function dynamicContentSnapshotFrom(
+  content: Pick<
+    DynamicContentSnapshot,
+    | 'id'
+    | 'groupId'
+    | 'imageEtag'
+    | 'imageSize'
+    | 'dynamicData'
+    | 'dynamicLastRunAt'
+    | 'dynamicNextRunAt'
+    | 'dynamicRefreshDueAt'
+    | 'dynamicRefreshLeaseUntil'
+    | 'dynamicRefreshAttempts'
+    | 'dynamicLastError'
+  >,
+  overrides: Partial<DynamicContentSnapshot> = {}
+): DynamicContentSnapshot {
+  return {
+    id: content.id,
+    groupId: content.groupId,
+    imageEtag: content.imageEtag,
+    imageSize: content.imageSize,
+    dynamicData: content.dynamicData,
+    dynamicLastRunAt: content.dynamicLastRunAt,
+    dynamicNextRunAt: content.dynamicNextRunAt,
+    dynamicRefreshDueAt: content.dynamicRefreshDueAt,
+    dynamicRefreshLeaseUntil: content.dynamicRefreshLeaseUntil,
+    dynamicRefreshAttempts: content.dynamicRefreshAttempts,
+    dynamicLastError: content.dynamicLastError,
+    ...overrides,
+  };
+}
+
 function isRequiredNote4Failure(err: unknown): boolean {
   return (
     err instanceof ValidationError &&
@@ -623,6 +708,10 @@ function isRequiredNote4Failure(err: unknown): boolean {
     err.detail !== null &&
     (err.detail as { code?: unknown }).code === 'note4_dynamic_variant_required'
   );
+}
+
+function renderFailureMessage(err: unknown): string {
+  return isRequiredNote4Failure(err) ? note4ErrorMessage(err) : formatError(err);
 }
 
 function note4ErrorMessage(err: unknown): string {
@@ -638,11 +727,12 @@ function note4ErrorMessage(err: unknown): string {
 }
 
 class InternalRenderRollbackError extends InternalError {
-  constructor(originalErr: unknown, rollbackErr: unknown) {
+  constructor(originalErr: unknown, rollbackErr: unknown, rollForwardErr?: unknown) {
     super('动态渲染失败，且回滚未完成', {
       code: 'dynamic_render_rollback_failed',
       original_error: formatError(originalErr),
       rollback_error: formatError(rollbackErr),
+      ...(rollForwardErr ? { roll_forward_error: formatError(rollForwardErr) } : {}),
     });
   }
 }

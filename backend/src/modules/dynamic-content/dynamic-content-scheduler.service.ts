@@ -152,6 +152,7 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
       RETRY_MAX_DELAY_MS,
       RETRY_BASE_DELAY_MS * 2 ** Math.max(job.attempts - 1, 0)
     );
+    const retryAt = new Date(now.getTime() + delayMs);
     await this.prisma.content.updateMany({
       where: {
         id: job.id,
@@ -160,7 +161,8 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
       },
       data: {
         dynamicLastError: formatError(err).slice(0, 512),
-        dynamicRefreshDueAt: new Date(now.getTime() + delayMs),
+        dynamicNextRunAt: retryAt,
+        dynamicRefreshDueAt: retryAt,
         dynamicRefreshLeaseUntil: null,
       },
     });

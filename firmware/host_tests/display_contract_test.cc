@@ -5,12 +5,14 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "bsp/board_platform.h"
 #include "drivers/display/display_contract.h"
 #include "power/status_bar_snapshot_identity.h"
 #include "scenes/bg_refresh/bg_refresh_transaction.h"
 #include "scenes/frame/frame_load_transaction.h"
+#include "sync/manifest_contract.h"
 
 namespace {
 
@@ -823,6 +825,144 @@ void TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange() {
     CHECK(!power_state::StatusBarSnapshotIdentityMatches(stored, kFakeDisplayInfo, {0, 0, 296, 16}, 296 * 16 / 8));
 }
 
+void TestApiV2PrefixAndRegisterPayload() {
+    const auto& platform = board::CurrentPlatform();
+    const std::string body =
+        sync_contract::BuildRegisterPayload("AA:BB:CC:DD:EE:FF", platform.Display(), "0.1.1");
+
+    CHECK(std::strcmp(sync_contract::ApiPrefix(), "/api/v2") == 0);
+    CHECK(body.find("\"mac\":\"AA:BB:CC:DD:EE:FF\"") != std::string::npos);
+    CHECK(body.find("\"board_id\":\"zectrix-note4\"") != std::string::npos);
+    CHECK(body.find("\"protocol_version\":2") != std::string::npos);
+    CHECK(body.find("\"fw_version\":\"0.1.1\"") != std::string::npos);
+    const std::string old_prefix = std::string("/api/") + "v1";
+    CHECK(body.find(old_prefix) == std::string::npos);
+}
+
+void TestManifestDescriptorValidation() {
+    using sync_contract::ContentIdentity;
+    using sync_contract::ManifestIdentity;
+
+    const auto& info = board::CurrentPlatform().Display();
+    ManifestIdentity valid;
+    valid.display_profile_id = "zectrix-note4-400x300-mono";
+    valid.frame              = info.frame;
+    valid.contents.push_back(ContentIdentity{0, "content-1", "image-etag", "audio-etag", "ready", 15000,
+                                             valid.display_profile_id, info.frame});
+
+    CHECK(sync_contract::ValidateManifestIdentity(valid, info));
+
+    ManifestIdentity missing_profile = valid;
+    missing_profile.display_profile_id.clear();
+    CHECK(!sync_contract::ValidateManifestIdentity(missing_profile, info));
+
+    ManifestIdentity missing_content_frame = valid;
+    missing_content_frame.contents[0].frame_profile_id.clear();
+    CHECK(!sync_contract::ValidateManifestIdentity(missing_content_frame, info));
+
+    ManifestIdentity wrong_profile = valid;
+    wrong_profile.display_profile_id = "virtual-mono-296x128";
+    CHECK(!sync_contract::ValidateManifestIdentity(wrong_profile, info));
+
+    ManifestIdentity wrong_dimensions = valid;
+    wrong_dimensions.frame.width = 296;
+    wrong_dimensions.frame.height = 128;
+    wrong_dimensions.frame.byte_size = 4736;
+    CHECK(!sync_contract::ValidateManifestIdentity(wrong_dimensions, info));
+
+    ManifestIdentity wrong_format = valid;
+    wrong_format.frame.pixel_format = display::PixelFormat::kGray2;
+    wrong_format.frame.byte_size = 30000;
+    CHECK(!sync_contract::ValidateManifestIdentity(wrong_format, info));
+
+    ManifestIdentity wrong_codec = valid;
+    wrong_codec.frame.codec = static_cast<display::FrameCodec>(99);
+    CHECK(!sync_contract::ValidateManifestIdentity(wrong_codec, info));
+
+    ManifestIdentity wrong_length = valid;
+    wrong_length.frame.byte_size = 14999;
+    CHECK(!sync_contract::ValidateManifestIdentity(wrong_length, info));
+
+    ManifestIdentity content_mismatch = valid;
+    content_mismatch.contents[0].frame.byte_size = 14999;
+    CHECK(!sync_contract::ValidateManifestIdentity(content_mismatch, info));
+
+    ManifestIdentity content_profile_mismatch = valid;
+    content_profile_mismatch.contents[0].frame_profile_id = "virtual-mono-296x128";
+    CHECK(!sync_contract::ValidateManifestIdentity(content_profile_mismatch, info));
+
+    ManifestIdentity overflow = valid;
+    overflow.frame.width = 524288;
+    overflow.frame.height = 65537;
+    overflow.frame.byte_size = 65536;
+    CHECK(!sync_contract::ValidateManifestIdentity(overflow, info));
+}
+
+void TestImagePayloadAndCacheIdentityValidation() {
+    const auto& info = board::CurrentPlatform().Display();
+    std::vector<uint8_t> exact(info.frame.byte_size, 0xA5);
+    std::vector<uint8_t> short_payload(info.frame.byte_size - 1, 0xA5);
+    std::vector<uint8_t> long_payload(info.frame.byte_size + 1, 0xA5);
+
+    CHECK(sync_contract::ImagePayloadMatchesDescriptor(exact, info.frame));
+    CHECK(!sync_contract::ImagePayloadMatchesDescriptor(short_payload, info.frame));
+    CHECK(!sync_contract::ImagePayloadMatchesDescriptor(long_payload, info.frame));
+
+    const sync_contract::CacheIdentity identity = sync_contract::MakeCacheIdentity(info);
+    CHECK(sync_contract::CacheIdentityMatches(identity, info));
+    CHECK(sync_contract::CachedManifestCanUseEtag(identity, info, "manifest-a", "manifest-a"));
+
+    sync_contract::CacheIdentity old_metadata = identity;
+    old_metadata.profile_id.clear();
+    CHECK(!sync_contract::CacheIdentityMatches(old_metadata, info));
+    CHECK(!sync_contract::CachedManifestCanUseEtag(old_metadata, info, "manifest-a", "manifest-a"));
+
+    sync_contract::CacheIdentity changed_profile = identity;
+    changed_profile.byte_length = 4736;
+    CHECK(!sync_contract::CacheIdentityMatches(changed_profile, info));
+}
+
+void TestAudioCapabilityFiltering() {
+    using sync_contract::ContentIdentity;
+
+    const auto& note4 = board::CurrentPlatform().Display();
+    ContentIdentity note4_content{0, "content-1", "image-etag", "audio-etag", "ready", 15000, note4.profile_id,
+                                  note4.frame};
+    CHECK(sync_contract::SanitizeAudioForDisplay(note4_content, note4));
+    CHECK(note4_content.audio_etag == "audio-etag");
+
+    display::DisplayInfo no_audio = note4;
+    no_audio.capabilities.audio = false;
+    ContentIdentity no_audio_content{0, "content-1", "image-etag", "audio-etag", "ready", 15000, no_audio.profile_id,
+                                     no_audio.frame};
+    CHECK(sync_contract::SanitizeAudioForDisplay(no_audio_content, no_audio));
+    CHECK(no_audio_content.audio_etag.empty());
+}
+
+void TestDownloadableContentRequiresReadyImage() {
+    const auto& info = board::CurrentPlatform().Display();
+    sync_contract::ContentIdentity ready{0, "content-1", "image-etag", "", "ready", 15000, info.profile_id,
+                                         info.frame};
+    CHECK(sync_contract::ContentIsDownloadable(ready));
+
+    sync_contract::ContentIdentity pending = ready;
+    pending.variant_status = "pending";
+    CHECK(!sync_contract::ContentIsDownloadable(pending));
+
+    sync_contract::ContentIdentity missing_etag = ready;
+    missing_etag.image_etag.clear();
+    CHECK(!sync_contract::ContentIsDownloadable(missing_etag));
+
+    sync_contract::ContentIdentity wrong_size = ready;
+    wrong_size.image_size = 14999;
+    CHECK(!sync_contract::ContentIsDownloadable(wrong_size));
+}
+
+void TestVirtualProfileIsNotFirmwareBoard() {
+    CHECK(std::strcmp(board::CurrentPlatform().BoardId(), "virtual-mono-296x128") != 0);
+    CHECK(std::strcmp(board::CurrentPlatform().Display().profile_id, "virtual-mono-296x128") != 0);
+}
+
 }  // namespace
 
 int main() {
@@ -851,5 +991,11 @@ int main() {
     TestBgRefreshGenZeroWaitingOnlyClaim();
     TestBgRefreshGenerationDoesNotReuseAcrossSceneInstances();
     TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
+    TestApiV2PrefixAndRegisterPayload();
+    TestManifestDescriptorValidation();
+    TestImagePayloadAndCacheIdentityValidation();
+    TestAudioCapabilityFiltering();
+    TestDownloadableContentRequiresReadyImage();
+    TestVirtualProfileIsNotFirmwareBoard();
     return g_failures == 0 ? 0 : 1;
 }

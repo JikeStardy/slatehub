@@ -2,8 +2,10 @@
 
 #include <esp_log.h>
 
+#include "bsp/board.h"
 #include "events/event_bus.h"
 #include "power/power_state.h"
+#include "sync/manifest_contract.h"
 #include "sync/sync_internal.h"
 #include "utils/time_utils.h"
 
@@ -52,12 +54,17 @@ bool SyncService::DownloadFramesToStage(cache::CacheWriter& writer, const std::s
                                         const std::string& previous_current, const std::string& selected_group_id,
                                         SyncReason reason, int& total_updates) {
     total_updates = 0;
+    const display::DisplayInfo& display_info = Board::Get().platform().Display();
     for (const auto& f : manifest.contents) {
-        if (f.id.empty() || f.image_etag.empty())
+        sync_contract::ContentIdentity content{f.seq,          f.id,         f.image_etag, f.audio_etag,
+                                               f.variant_status, f.image_size, f.frame_profile_id, f.frame};
+        if (!sync_contract::ContentIsDownloadable(content)) {
+            ESP_LOGW(kTag, "frame skipped reason=variant_not_ready seq=%d", f.seq);
             continue;
-        if (!writer.FrameImageExists(f.seq, f.image_etag))
+        }
+        if (!writer.FrameImageExists(f.seq, f.image_etag, display_info))
             ++total_updates;
-        if (!f.audio_etag.empty() && !writer.FrameAudioExists(f.seq, f.audio_etag))
+        if (!f.audio_etag.empty() && !writer.FrameAudioExists(f.seq, f.audio_etag, display_info))
             ++total_updates;
     }
 
@@ -82,29 +89,30 @@ bool SyncService::DownloadFramesToStage(cache::CacheWriter& writer, const std::s
     for (const auto& f : manifest.contents) {
         if (ShouldStop())
             return false;
-        if (f.id.empty()) {
+        sync_contract::ContentIdentity content{f.seq,          f.id,         f.image_etag, f.audio_etag,
+                                               f.variant_status, f.image_size, f.frame_profile_id, f.frame};
+        if (!sync_contract::ContentIsDownloadable(content)) {
             if (!warned_missing_id) {
-                ESP_LOGW(kTag, "frame skipped reason=id_missing seq=%d", f.seq);
+                ESP_LOGW(kTag, "frame skipped reason=not_downloadable seq=%d", f.seq);
                 warned_missing_id = true;
             }
             complete = false;
             continue;
         }
-        if (f.image_etag.empty()) {
-            ESP_LOGW(kTag, "frame skipped reason=image_etag_missing seq=%d", f.seq);
-            complete = false;
-            continue;
-        }
-        if (!writer.FrameImageExists(f.seq, f.image_etag)) {
+        if (!writer.FrameImageExists(f.seq, f.image_etag, display_info)) {
             bool          nm               = false;
             const int64_t image_started_ms = time_utils::NowMs();
-            const auto    image_if_none    = ExistingImageEtag(gid, f.seq, f.image_etag);
+            const auto    image_if_none    = ExistingImageEtag(gid, f.seq, f.image_etag, display_info);
             download_buf_.clear();
             if (api::DownloadContentImage(f.id, image_if_none, download_buf_, nm)) {
                 if (nm) {
                     ESP_LOGW(kTag, "frame image unexpected not_modified seq=%d", f.seq);
                     complete = false;
-                } else if (!writer.WriteFrameImage(f.seq, download_buf_, f.image_etag)) {
+                } else if (!sync_contract::ImagePayloadMatchesDescriptor(download_buf_, f.frame)) {
+                    ESP_LOGW(kTag, "frame image refused seq=%d bytes=%u expected=%u", f.seq,
+                             static_cast<unsigned>(download_buf_.size()), static_cast<unsigned>(f.frame.byte_size));
+                    complete = false;
+                } else if (!writer.WriteFrameImage(f.seq, download_buf_, f.image_etag, f.frame_profile_id, f.frame)) {
                     ESP_LOGW(kTag, "frame image write failed seq=%d", f.seq);
                     complete = false;
                 }
@@ -118,10 +126,10 @@ bool SyncService::DownloadFramesToStage(cache::CacheWriter& writer, const std::s
         }
         if (ShouldStop())
             return false;
-        if (!f.audio_etag.empty() && !writer.FrameAudioExists(f.seq, f.audio_etag)) {
+        if (!f.audio_etag.empty() && !writer.FrameAudioExists(f.seq, f.audio_etag, display_info)) {
             bool          nm               = false;
             const int64_t audio_started_ms = time_utils::NowMs();
-            const auto    audio_if_none    = ExistingAudioEtag(gid, f.seq, f.audio_etag);
+            const auto    audio_if_none    = ExistingAudioEtag(gid, f.seq, f.audio_etag, display_info);
             download_buf_.clear();
             if (api::DownloadContentAudio(f.id, audio_if_none, download_buf_, nm)) {
                 if (nm) {
@@ -140,13 +148,19 @@ bool SyncService::DownloadFramesToStage(cache::CacheWriter& writer, const std::s
             post_progress();
         }
 
-        if (writer.FrameImageExists(f.seq, f.image_etag) &&
-            (f.audio_etag.empty() || writer.FrameAudioExists(f.seq, f.audio_etag))) {
+        if (writer.FrameImageExists(f.seq, f.image_etag, display_info) &&
+            (f.audio_etag.empty() || writer.FrameAudioExists(f.seq, f.audio_etag, display_info))) {
             cache::FrameMeta fm;
             fm.status_bar_text = f.device_status_bar_text;
             fm.content_etag    = f.content_etag;
             fm.image_etag      = f.image_etag;
             fm.audio_etag      = f.audio_etag;
+            fm.profile_id      = f.frame_profile_id;
+            fm.width           = f.frame.width;
+            fm.height          = f.frame.height;
+            fm.pixel_format    = sync_contract::PixelFormatWire(f.frame.pixel_format);
+            fm.frame_codec     = sync_contract::FrameCodecWire(f.frame.codec);
+            fm.byte_length     = f.frame.byte_size;
             // next_wake_sec<=0 视为非动态帧(不配 RTC timer)：0 曾被当成动态并被 60s
             // 地板顶起来反复空醒。真正需要定时刷新的帧后端会给 >0 的秒数。
             fm.has_ttl = f.has_next_wake_sec && f.next_wake_sec > 0;
@@ -174,7 +188,7 @@ bool SyncService::CommitStagedFrames(cache::CacheWriter& writer, const std::stri
     if (total > 0)
         evt::PostGroupSyncStatus(saving_mode, gid, synced_name, 0, ClampProgressCount(total));
     for (const auto& f : manifest.contents) {
-        if (!writer.CommitFrame(f.seq, f.image_etag, f.audio_etag)) {
+        if (!writer.CommitFrame(f.seq, f.image_etag, f.audio_etag, Board::Get().platform().Display())) {
             ESP_LOGW(kTag, "frame commit failed seq=%d", f.seq);
             writer.Rollback();
             return false;
@@ -182,7 +196,8 @@ bool SyncService::CommitStagedFrames(cache::CacheWriter& writer, const std::stri
         ++saved;
         evt::PostGroupSyncStatus(saving_mode, gid, synced_name, ClampProgressCount(saved), ClampProgressCount(total));
     }
-    if (!cache::WriteManifest(gid, manifest.manifest_etag, manifest.contents.size(), synced_name)) {
+    if (!cache::WriteManifest(gid, manifest.manifest_etag, manifest.contents.size(), synced_name,
+                              Board::Get().platform().Display())) {
         ESP_LOGW(kTag, "manifest write failed action=rollback");
         writer.Rollback();
         return false;
@@ -226,9 +241,12 @@ bool SyncService::SyncManifestAndFrames(const std::string& gid, const std::strin
 
     cache::ManifestMeta cached_meta;
     bool                cached_meta_ok = cache::ReadManifestMeta(gid, cached_meta);
+    cached_meta_ok = cached_meta_ok && cache::ManifestIdentityMatches(cached_meta, Board::Get().platform().Display());
     if (cached_meta_ok && !group_name.empty() && cached_meta.name != group_name) {
-        cache::WriteManifest(gid, cached_meta.manifest_etag, cached_meta.content_count, group_name);
+        cache::WriteManifest(gid, cached_meta.manifest_etag, cached_meta.content_count, group_name,
+                             Board::Get().platform().Display());
         cached_meta_ok = cache::ReadManifestMeta(gid, cached_meta);
+        cached_meta_ok = cached_meta_ok && cache::ManifestIdentityMatches(cached_meta, Board::Get().platform().Display());
     }
     const std::string status_name = !group_name.empty() ? group_name : cached_meta.name;
 
@@ -255,7 +273,7 @@ bool SyncService::SyncManifestAndFrames(const std::string& gid, const std::strin
         return false;
 
     int old_content_count = 0;
-    cache::ReadManifestContentCount(gid, old_content_count);
+    cache::ReadManifestContentCount(gid, old_content_count, Board::Get().platform().Display());
     cache::CacheWriter writer(gid);
     if (!writer.Begin()) {
         ESP_LOGW(kTag, "frame stage init failed");
@@ -296,13 +314,20 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
     next_meta.content_etag    = f.content_etag;
     next_meta.image_etag      = f.image_etag;
     next_meta.audio_etag      = f.audio_etag;
+    next_meta.profile_id      = f.frame_profile_id;
+    next_meta.width           = f.frame.width;
+    next_meta.height          = f.frame.height;
+    next_meta.pixel_format    = sync_contract::PixelFormatWire(f.frame.pixel_format);
+    next_meta.frame_codec     = sync_contract::FrameCodecWire(f.frame.codec);
+    next_meta.byte_length     = f.frame.byte_size;
     // 同上：next_wake_sec<=0 当非动态帧，避免 0 被 60s 地板顶起来反复空醒。
     next_meta.has_ttl = f.has_next_wake_sec && f.next_wake_sec > 0;
     next_meta.ttl_sec = next_meta.has_ttl ? static_cast<uint32_t>(f.next_wake_sec) : 0;
 
     if (old_meta_ok && !f.content_etag.empty() && old_meta.content_etag == f.content_etag &&
-        cache::FrameImageExists(gid, f.seq, f.image_etag) &&
-        (f.audio_etag.empty() || cache::FrameAudioExists(gid, f.seq, f.audio_etag))) {
+        cache::FrameImageExists(gid, f.seq, f.image_etag, Board::Get().platform().Display()) &&
+        (f.audio_etag.empty() || cache::FrameAudioExists(gid, f.seq, f.audio_etag,
+                                                        Board::Get().platform().Display()))) {
         if (old_meta.status_bar_text != next_meta.status_bar_text || old_meta.has_ttl != next_meta.has_ttl ||
             old_meta.ttl_sec != next_meta.ttl_sec || old_meta.image_etag != next_meta.image_etag ||
             old_meta.audio_etag != next_meta.audio_etag) {
@@ -323,16 +348,25 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
     bool       image_downloaded   = false;
     if (ShouldStop())
         return false;
-    if (!cache::FrameImageExists(gid, f.seq, f.image_etag)) {
+    sync_contract::ContentIdentity content{f.seq,          f.id,         f.image_etag, f.audio_etag,
+                                           f.variant_status, f.image_size, f.frame_profile_id, f.frame};
+    if (!sync_contract::ContentIsDownloadable(content))
+        return false;
+    if (!cache::FrameImageExists(gid, f.seq, f.image_etag, Board::Get().platform().Display())) {
         bool       nm            = false;
-        const auto image_if_none = ExistingImageEtag(gid, f.seq, f.image_etag);
+        const auto image_if_none = ExistingImageEtag(gid, f.seq, f.image_etag, Board::Get().platform().Display());
         download_buf_.clear();
         if (api::DownloadContentImage(f.id, image_if_none, download_buf_, nm)) {
             if (nm) {
                 ESP_LOGW(kTag, "frame image unexpected not_modified seq=%d", f.seq);
                 return false;
             }
-            if (!cache::WriteFrameImage(gid, f.seq, download_buf_, f.image_etag)) {
+            if (!sync_contract::ImagePayloadMatchesDescriptor(download_buf_, f.frame)) {
+                ESP_LOGW(kTag, "frame image refused seq=%d bytes=%u expected=%u", f.seq,
+                         static_cast<unsigned>(download_buf_.size()), static_cast<unsigned>(f.frame.byte_size));
+                return false;
+            }
+            if (!cache::WriteFrameImage(gid, f.seq, download_buf_, f.image_etag, f.frame)) {
                 ESP_LOGW(kTag, "frame image write failed seq=%d", f.seq);
                 return false;
             }
@@ -343,11 +377,11 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
     }
     if (f.audio_etag.empty()) {
         cache::DeleteFrameAudio(gid, f.seq);
-    } else if (!cache::FrameAudioExists(gid, f.seq, f.audio_etag)) {
+    } else if (!cache::FrameAudioExists(gid, f.seq, f.audio_etag, Board::Get().platform().Display())) {
         if (ShouldStop())
             return false;
         bool       nm            = false;
-        const auto audio_if_none = ExistingAudioEtag(gid, f.seq, f.audio_etag);
+        const auto audio_if_none = ExistingAudioEtag(gid, f.seq, f.audio_etag, Board::Get().platform().Display());
         download_buf_.clear();
         if (api::DownloadContentAudio(f.id, audio_if_none, download_buf_, nm)) {
             if (nm) {

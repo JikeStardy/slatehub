@@ -167,13 +167,19 @@ bool WriteStateMeta(const std::string& selected_group_id, const std::string& eta
     return internal::PersistStateCacheUnlocked();
 }
 
-std::string ReadCurrentManifestEtag() {
+std::string ReadCurrentManifestEtag(const display::DisplayInfo& display_info) {
     ScopedMutexLock lock(internal::StateMutex());
     if (!lock.locked())
         return "";
     if (!internal::LoadStateCacheUnlocked())
         return "";
-    return internal::StateCacheUnlocked().last_etag;
+    const auto& cache = internal::StateCacheUnlocked();
+    if (cache.selected_group_id.empty())
+        return "";
+    ManifestMeta meta;
+    if (!ReadManifestMeta(cache.selected_group_id, meta) || !ManifestIdentityMatches(meta, display_info))
+        return "";
+    return cache.last_etag;
 }
 
 bool ReadCurrentFrameSeq(int& out) {
@@ -197,12 +203,12 @@ bool WriteCurrentFrameSeq(int seq) {
     return internal::PersistStateCacheUnlocked();
 }
 
-bool ReadCachedGroupSummary(CachedGroupSummary& out) {
+bool ReadCachedGroupSummary(CachedGroupSummary& out, const display::DisplayInfo& display_info) {
     out = {};
     if (!ReadStateMeta(out.gid, out.manifest_etag) || out.gid.empty())
         return false;
     ManifestMeta meta;
-    if (!ReadManifestMeta(out.gid, meta)) {
+    if (!ReadManifestMeta(out.gid, meta) || !ManifestIdentityMatches(meta, display_info)) {
         out = {};
         return false;
     }

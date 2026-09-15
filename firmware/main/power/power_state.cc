@@ -7,6 +7,7 @@
 
 #include <cstring>
 
+#include "bsp/board.h"
 #include "bsp/board_platform.h"
 #include "power/status_bar_snapshot_identity.h"
 #include "utils/scoped_mutex_lock.h"
@@ -167,7 +168,8 @@ bool RestoreCurrentFrameScheduleFromCache() {
     }
 
     int content_count = 0;
-    if (!cache::ReadManifestContentCount(gid, content_count) || content_count <= 0) {
+    if (!cache::ReadManifestContentCount(gid, content_count, Board::Get().platform().Display()) ||
+        content_count <= 0) {
         ClearCurrentFrame();
         return false;
     }

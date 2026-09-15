@@ -3,6 +3,7 @@
 #include <esp_log.h>
 #include <esp_sleep.h>
 
+#include "bsp/board.h"
 #include "bsp/config.h"
 #include "storage/cache/cache.h"
 
@@ -50,7 +51,7 @@ const char* WakeReason(WakeCause cause) {
 
 bool HasCachedGroup() {
     cache::CachedGroupSummary summary;
-    return cache::ReadCachedGroupSummary(summary);
+    return cache::ReadCachedGroupSummary(summary, Board::Get().platform().Display());
 }
 
 }  // namespace

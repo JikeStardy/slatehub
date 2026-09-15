@@ -47,6 +47,7 @@ set(SOURCES
 
     "sync/api_client.cc"
     "sync/sync_internal.cc"
+    "sync/manifest_contract.cc"
     "sync/sync_service.cc"
     "sync/sync_manifest.cc"
     "sync/sync_poll.cc"

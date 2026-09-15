@@ -380,7 +380,8 @@ bool FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
         }
         const auto& frame = ctx.epd ? ctx.epd->Info().frame : display::FrameDescriptor{};
         if (!ctx.epd || !display::ValidateFrameDescriptor(frame) ||
-            !cache::ReadFrameImage(gid_, candidate_idx, candidate.raw) || candidate.raw.size() != frame.byte_size) {
+            !cache::ReadFrameImage(gid_, candidate_idx, candidate.raw, ctx.epd->Info()) ||
+            candidate.raw.size() != frame.byte_size) {
             ESP_LOGW(kTag, "load frame failed idx=%d reason=image_miss bytes=%u", candidate_idx,
                      static_cast<unsigned>(candidate.raw.size()));
             return false;

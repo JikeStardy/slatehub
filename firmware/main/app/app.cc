@@ -62,7 +62,7 @@ void PostChargeSnapshot(const ChargeStatus::Snapshot& snap, TickType_t timeout =
 
 bool PostCachedGroupReadyIfAny() {
     cache::CachedGroupSummary summary;
-    if (!cache::ReadCachedGroupSummary(summary)) {
+    if (!cache::ReadCachedGroupSummary(summary, Board::Get().platform().Display())) {
         ESP_LOGD(kTag, "cached group missing");
         return false;
     }

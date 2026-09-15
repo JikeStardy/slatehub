@@ -133,6 +133,7 @@ std::string ActivationClient::SystemInfoJson() const {
     cJSON*                 ota     = cJSON_CreateObject();
     const esp_partition_t* running = esp_ota_get_running_partition();
     cJSON_AddStringToObject(ota, "label", running ? running->label : "unknown");
+    cJSON_AddStringToObject(ota, "board_id", Board::Get().platform().BoardId());
     cJSON_AddItemToObject(root, "ota", ota);
 
     const auto& display_info = Board::Get().platform().Display();
@@ -146,6 +147,7 @@ std::string ActivationClient::SystemInfoJson() const {
 
     cJSON* board = cJSON_CreateObject();
     cJSON_AddStringToObject(board, "type", Board::Get().platform().BoardId());
+    cJSON_AddStringToObject(board, "board_id", Board::Get().platform().BoardId());
     cJSON_AddStringToObject(board, "name", Board::Get().platform().BoardId());
     cJSON_AddStringToObject(board, "mac", DeviceId().c_str());
     cJSON_AddItemToObject(root, "board", board);

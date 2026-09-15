@@ -242,7 +242,7 @@ bool BgRefreshScene::SeedPreviousFrame(SceneContext& ctx) {
     }
 
     int content_count = 0;
-    if (!cache::ReadManifestContentCount(gid, content_count) || content_count <= 0) {
+    if (!cache::ReadManifestContentCount(gid, content_count, ctx.epd->Info()) || content_count <= 0) {
         ESP_LOGW(kTag, "seed skipped reason=manifest_missing");
         return false;
     }
@@ -254,7 +254,7 @@ bool BgRefreshScene::SeedPreviousFrame(SceneContext& ctx) {
     }
 
     std::vector<uint8_t> raw;
-    if (!cache::ReadFrameImage(gid, seq, raw) || raw.size() != frame.byte_size) {
+    if (!cache::ReadFrameImage(gid, seq, raw, ctx.epd->Info()) || raw.size() != frame.byte_size) {
         ESP_LOGW(kTag, "seed skipped reason=image_miss seq=%d bytes=%u", seq, static_cast<unsigned>(raw.size()));
         return false;
     }
@@ -272,7 +272,8 @@ bool BgRefreshScene::ResolveCurrentFrame(std::string& gid, int& seq, int& conten
         ESP_LOGW(kTag, "render skipped reason=cached_group_missing");
         return false;
     }
-    if (!cache::ReadManifestContentCount(gid, content_count) || content_count <= 0) {
+    if (!cache::ReadManifestContentCount(gid, content_count, Board::Get().platform().Display()) ||
+        content_count <= 0) {
         ESP_LOGW(kTag, "render skipped reason=manifest_missing");
         return false;
     }
@@ -298,7 +299,7 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
         return false;
 
     std::vector<uint8_t> raw;
-    if (!cache::ReadFrameImage(gid, seq, raw) || raw.size() != frame.byte_size) {
+    if (!cache::ReadFrameImage(gid, seq, raw, ctx.epd->Info()) || raw.size() != frame.byte_size) {
         ESP_LOGW(kTag, "render skipped reason=image_miss seq=%d bytes=%u", seq, static_cast<unsigned>(raw.size()));
         return false;
     }

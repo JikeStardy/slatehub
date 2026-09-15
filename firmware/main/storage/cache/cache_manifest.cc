@@ -14,6 +14,7 @@
 #include "storage/cache/cache_io.h"
 #include "storage/cache/cache_json.h"
 #include "storage/cache/cache_paths.h"
+#include "sync/manifest_contract.h"
 
 namespace {
 
@@ -30,8 +31,23 @@ bool ReadManifestMetaFile(const std::string& path, cache::ManifestMeta& out) {
     out.manifest_etag   = cache::internal::JsonStringField(root, "manifest_etag");
     out.content_count   = cache::internal::JsonNonNegativeIntField(root, "content_count", 0);
     out.last_access_seq = cache::internal::JsonUint32Field(root, "last_access_seq", 0);
+    out.profile_id      = cache::internal::JsonStringField(root, "profile_id");
+    out.width           = cache::internal::JsonNonNegativeIntField(root, "width", 0);
+    out.height          = cache::internal::JsonNonNegativeIntField(root, "height", 0);
+    out.pixel_format    = cache::internal::JsonStringField(root, "pixel_format");
+    out.frame_codec     = cache::internal::JsonStringField(root, "frame_codec");
+    out.byte_length     = static_cast<size_t>(cache::internal::JsonNonNegativeIntField(root, "byte_length", 0));
     cJSON_Delete(root);
     return !out.manifest_etag.empty();
+}
+
+void WriteManifestIdentity(cJSON* root, const cache::ManifestMeta& meta) {
+    cJSON_AddStringToObject(root, "profile_id", meta.profile_id.c_str());
+    cJSON_AddNumberToObject(root, "width", meta.width);
+    cJSON_AddNumberToObject(root, "height", meta.height);
+    cJSON_AddStringToObject(root, "pixel_format", meta.pixel_format.c_str());
+    cJSON_AddStringToObject(root, "frame_codec", meta.frame_codec.c_str());
+    cJSON_AddNumberToObject(root, "byte_length", static_cast<double>(meta.byte_length));
 }
 
 }  // namespace
@@ -39,7 +55,7 @@ bool ReadManifestMetaFile(const std::string& path, cache::ManifestMeta& out) {
 namespace cache {
 
 bool WriteManifest(const std::string& gid, const std::string& manifest_etag, int content_count,
-                   const std::string& name) {
+                   const std::string& name, const display::DisplayInfo& display_info) {
     internal::DirEnsure(std::string(internal::kRoot) + "/groups");
     internal::DirEnsure(internal::GroupDir(gid));
     internal::DirEnsure(internal::FramesDir(gid));
@@ -53,11 +69,27 @@ bool WriteManifest(const std::string& gid, const std::string& manifest_etag, int
     cJSON_AddStringToObject(root, "manifest_etag", manifest_etag.c_str());
     cJSON_AddNumberToObject(root, "content_count", content_count);
     cJSON_AddNumberToObject(root, "last_access_seq", static_cast<double>(old.last_access_seq));
+    ManifestMeta identity = old;
+    identity.profile_id   = display_info.profile_id ? display_info.profile_id : "";
+    identity.width        = display_info.frame.width;
+    identity.height       = display_info.frame.height;
+    identity.pixel_format = sync_contract::PixelFormatWire(display_info.frame.pixel_format);
+    identity.frame_codec  = sync_contract::FrameCodecWire(display_info.frame.codec);
+    identity.byte_length  = display_info.frame.byte_size;
+    WriteManifestIdentity(root, identity);
     char* s  = cJSON_PrintUnformatted(root);
     bool  ok = s && internal::WriteAll(internal::ManifestPath(gid), s, std::strlen(s));
     cJSON_free(s);
     cJSON_Delete(root);
     return ok;
+}
+
+bool ManifestIdentityMatches(const ManifestMeta& meta, const display::DisplayInfo& display_info) {
+    return meta.profile_id == (display_info.profile_id ? display_info.profile_id : "") &&
+           meta.width == display_info.frame.width && meta.height == display_info.frame.height &&
+           meta.pixel_format == sync_contract::PixelFormatWire(display_info.frame.pixel_format) &&
+           meta.frame_codec == sync_contract::FrameCodecWire(display_info.frame.codec) &&
+           meta.byte_length == display_info.frame.byte_size && display::ValidateFrameDescriptor(display_info.frame);
 }
 
 bool ReadManifestMeta(const std::string& gid, ManifestMeta& out) {
@@ -68,9 +100,11 @@ bool ReadManifestMeta(const std::string& gid, ManifestMeta& out) {
     return true;
 }
 
-bool ReadManifestContentCount(const std::string& gid, int& out) {
+bool ReadManifestContentCount(const std::string& gid, int& out, const display::DisplayInfo& display_info) {
     ManifestMeta meta;
     if (!ReadManifestMeta(gid, meta))
+        return false;
+    if (!ManifestIdentityMatches(meta, display_info))
         return false;
     out = meta.content_count;
     return true;
@@ -97,6 +131,7 @@ bool TouchGroup(const std::string& gid) {
     cJSON_AddStringToObject(root, "manifest_etag", meta.manifest_etag.c_str());
     cJSON_AddNumberToObject(root, "content_count", meta.content_count);
     cJSON_AddNumberToObject(root, "last_access_seq", static_cast<double>(meta.last_access_seq));
+    WriteManifestIdentity(root, meta);
     char* s = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!s)

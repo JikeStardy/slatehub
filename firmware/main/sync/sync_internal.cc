@@ -2,24 +2,26 @@
 
 namespace sync_internal {
 
-std::string ExistingImageEtag(const std::string& gid, int seq, const std::string& expected_etag) {
+std::string ExistingImageEtag(const std::string& gid, int seq, const std::string& expected_etag,
+                              const display::DisplayInfo& display_info) {
     cache::FrameMeta meta;
-    if (cache::ReadFrameMeta(gid, seq, meta) && cache::FrameImageExists(gid, seq, meta.image_etag)) {
+    if (cache::ReadFrameMeta(gid, seq, meta) && cache::FrameImageExists(gid, seq, meta.image_etag, display_info)) {
         return meta.image_etag;
     }
-    if (cache::FrameImageExists(gid, seq, expected_etag)) {
+    if (cache::FrameImageExists(gid, seq, expected_etag, display_info)) {
         return expected_etag;
     }
     return "";
 }
 
-std::string ExistingAudioEtag(const std::string& gid, int seq, const std::string& expected_etag) {
+std::string ExistingAudioEtag(const std::string& gid, int seq, const std::string& expected_etag,
+                              const display::DisplayInfo& display_info) {
     cache::FrameMeta meta;
     if (cache::ReadFrameMeta(gid, seq, meta) && !meta.audio_etag.empty() &&
-        cache::FrameAudioExists(gid, seq, meta.audio_etag)) {
+        cache::FrameAudioExists(gid, seq, meta.audio_etag, display_info)) {
         return meta.audio_etag;
     }
-    if (cache::FrameAudioExists(gid, seq, expected_etag)) {
+    if (cache::FrameAudioExists(gid, seq, expected_etag, display_info)) {
         return expected_etag;
     }
     return "";

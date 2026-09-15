@@ -37,7 +37,7 @@ api::Telemetry BuildTelemetry(const std::string& current_group, const std::strin
             tel.current_content_etag = meta.content_etag;
         }
     }
-    tel.manifest_etag = cache::ReadCurrentManifestEtag();
+    tel.manifest_etag = cache::ReadCurrentManifestEtag(Board::Get().platform().Display());
     return tel;
 }
 

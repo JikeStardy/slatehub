@@ -3,12 +3,12 @@
 // HTTP client 封装(所有 server 通讯走这里)。默认门面函数委托给 DefaultClient()。
 //
 // 端点:
-//   POST /api/v1/devices
-//   POST /api/v1/devices/current/poll
-//   POST /api/v1/devices/current/group/next|prev
-//   PUT  /api/v1/devices/current/group
-//   GET  /api/v1/groups/:gid/manifest
-//   GET  /api/v1/contents/:contentId/image|audio
+//   POST /api/v2/devices
+//   POST /api/v2/devices/current/poll
+//   POST /api/v2/devices/current/group/next|prev
+//   PUT  /api/v2/devices/current/group
+//   GET  /api/v2/groups/:gid/manifest
+//   GET  /api/v2/contents/:contentId/image|audio
 
 #include <esp_http_client.h>
 
@@ -17,6 +17,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include "drivers/display/display_contract.h"
 
 namespace api {
 
@@ -29,7 +31,10 @@ struct ContentMeta {
     std::string audio_etag;
     int         image_size = 0;
     int         audio_size = 0;
+    std::string              frame_profile_id;
+    display::FrameDescriptor frame{};
     std::string kind;
+    std::string variant_status;
     bool        has_next_wake_sec = false;
     int         next_wake_sec     = 0;
 };
@@ -65,6 +70,8 @@ struct Manifest {
     std::string              group_id;
     std::string              group_name;
     std::string              manifest_etag;
+    std::string              display_profile_id;
+    display::FrameDescriptor frame{};
     std::vector<ContentMeta> contents;
 };
 

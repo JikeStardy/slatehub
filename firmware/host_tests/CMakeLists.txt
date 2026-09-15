@@ -10,6 +10,7 @@ add_executable(display_contract_test
     display_contract_test.cc
     ../main/drivers/display/display_contract.cc
     ../main/bsp/board_platform.cc
+    ../main/sync/manifest_contract.cc
 )
 
 target_include_directories(display_contract_test PRIVATE ../main)

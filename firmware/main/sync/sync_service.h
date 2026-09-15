@@ -1,6 +1,6 @@
 #pragma once
 
-// 后台同步：POST /api/v1/devices/current/poll 后按 manifest 增量拉 frame image / audio。
+// 后台同步：POST /api/v2/devices/current/poll 后按 manifest 增量拉 frame image / audio。
 // 状态/进度通过 EventBus 反馈：
 //   - SyncStarted       每轮开始
 //   - SyncFinished{ok}  每轮结束(含 304 noop)

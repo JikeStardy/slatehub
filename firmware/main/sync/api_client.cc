@@ -1,17 +1,22 @@
 #include "sync/api_client.h"
 
 #include <cJSON.h>
+#include <esp_app_desc.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 #include <esp_log.h>
+#include <sdkconfig.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <utility>
 
+#include "bsp/board.h"
 #include "bsp/config.h"
+#include "sync/manifest_contract.h"
 #include "utils/json_utils.h"
 #include "utils/time_utils.h"
 
@@ -28,6 +33,7 @@ inline constexpr char kAudioEtag[]           = "audio_etag";
 inline constexpr char kAudioSize[]           = "audio_size";
 inline constexpr char kBatteryPct[]          = "battery_pct";
 inline constexpr char kBound[]               = "bound";
+inline constexpr char kByteLength[]          = "byte_length";
 inline constexpr char kCode[]                = "code";
 inline constexpr char kContentCount[]        = "content_count";
 inline constexpr char kContentEtag[]         = "content_etag";
@@ -41,9 +47,13 @@ inline constexpr char kDeviceStatusBarText[] = "device_status_bar_text";
 inline constexpr char kDetail[]              = "detail";
 inline constexpr char kDevice[]              = "device";
 inline constexpr char kDeviceSecret[]        = "device_secret";
+inline constexpr char kDisplayProfile[]      = "display_profile";
 inline constexpr char kError[]               = "error";
+inline constexpr char kFrame[]               = "frame";
+inline constexpr char kFrameCodec[]          = "frame_codec";
 inline constexpr char kFwVersion[]           = "fw_version";
 inline constexpr char kGroup[]               = "group";
+inline constexpr char kHeight[]              = "height";
 inline constexpr char kId[]                  = "id";
 inline constexpr char kImageEtag[]           = "image_etag";
 inline constexpr char kImageSize[]           = "image_size";
@@ -53,7 +63,9 @@ inline constexpr char kMac[]                 = "mac";
 inline constexpr char kName[]                = "name";
 inline constexpr char kNextWakeSec[]         = "next_wake_sec";
 inline constexpr char kPairCode[]            = "pair_code";
+inline constexpr char kPixelFormat[]         = "pixel_format";
 inline constexpr char kPosition[]            = "position";
+inline constexpr char kProfileId[]           = "profile_id";
 inline constexpr char kRssiDbm[]             = "rssi_dbm";
 inline constexpr char kSeq[]                 = "seq";
 inline constexpr char kServerTime[]          = "server_time";
@@ -61,7 +73,9 @@ inline constexpr char kSortOrder[]           = "sort_order";
 inline constexpr char kStructureEtag[]       = "structure_etag";
 inline constexpr char kTelemetry[]           = "telemetry";
 inline constexpr char kTotal[]               = "total";
+inline constexpr char kVariantStatus[]       = "variant_status";
 inline constexpr char kWakeReason[]          = "wake_reason";
+inline constexpr char kWidth[]               = "width";
 
 }  // namespace proto
 
@@ -172,7 +186,49 @@ std::string UrlEncodePathSegment(const std::string& value) {
     return out;
 }
 
-void ParseContentMeta(cJSON* item, ContentMeta& out) {
+bool ParseFrameDescriptor(cJSON* item, std::string& profile_id, display::FrameDescriptor& out) {
+    if (!cJSON_IsObject(item))
+        return false;
+    profile_id = JsonString(item, proto::kProfileId);
+    display::PixelFormat pixel_format{};
+    display::FrameCodec  frame_codec{};
+    if (profile_id.empty() || !sync_contract::ParsePixelFormat(JsonString(item, proto::kPixelFormat), pixel_format) ||
+        !sync_contract::ParseFrameCodec(JsonString(item, proto::kFrameCodec), frame_codec)) {
+        return false;
+    }
+    cJSON* byte_length = cJSON_GetObjectItemCaseSensitive(item, proto::kByteLength);
+    if (!cJSON_IsNumber(byte_length) || !std::isfinite(byte_length->valuedouble) || byte_length->valuedouble < 0.0 ||
+        byte_length->valuedouble > static_cast<double>(display::kMaxFrameBytes) ||
+        std::floor(byte_length->valuedouble) != byte_length->valuedouble) {
+        return false;
+    }
+    out.width        = JsonInt(item, proto::kWidth, 0);
+    out.height       = JsonInt(item, proto::kHeight, 0);
+    out.pixel_format = pixel_format;
+    out.codec        = frame_codec;
+    out.byte_size    = static_cast<std::size_t>(byte_length->valuedouble);
+    return display::ValidateFrameDescriptor(out);
+}
+
+bool ParseDisplayProfile(cJSON* item, std::string& profile_id, display::FrameDescriptor& out) {
+    if (!cJSON_IsObject(item))
+        return false;
+    profile_id = JsonString(item, proto::kId);
+    display::PixelFormat pixel_format{};
+    display::FrameCodec  frame_codec{};
+    if (profile_id.empty() || !sync_contract::ParsePixelFormat(JsonString(item, proto::kPixelFormat), pixel_format) ||
+        !sync_contract::ParseFrameCodec(JsonString(item, proto::kFrameCodec), frame_codec)) {
+        return false;
+    }
+    out.width        = JsonInt(item, proto::kWidth, 0);
+    out.height       = JsonInt(item, proto::kHeight, 0);
+    out.pixel_format = pixel_format;
+    out.codec        = frame_codec;
+    out.byte_size    = display::ExpectedFrameBytes(out);
+    return display::ValidateFrameDescriptor(out);
+}
+
+bool ParseContentMeta(cJSON* item, const display::DisplayInfo& display_info, ContentMeta& out) {
     out.seq                    = JsonInt(item, proto::kSeq, 0);
     out.id                     = JsonString(item, proto::kId);
     out.content_etag           = JsonString(item, proto::kContentEtag);
@@ -181,18 +237,26 @@ void ParseContentMeta(cJSON* item, ContentMeta& out) {
     out.audio_etag             = JsonString(item, proto::kAudioEtag);
     out.image_size             = JsonInt(item, proto::kImageSize, 0);
     out.audio_size             = JsonInt(item, proto::kAudioSize, 0);
+    out.variant_status         = JsonString(item, proto::kVariantStatus);
     out.kind                   = JsonString(item, proto::kKind);
+    cJSON* frame               = cJSON_GetObjectItemCaseSensitive(item, proto::kFrame);
+    if (!ParseFrameDescriptor(frame, out.frame_profile_id, out.frame) ||
+        !sync_contract::DescriptorMatchesDisplay(out.frame_profile_id, out.frame, display_info)) {
+        return false;
+    }
+    if (out.variant_status != "ready" || out.image_size != static_cast<int>(out.frame.byte_size))
+        return false;
+    if (!display_info.capabilities.audio)
+        out.audio_etag.clear();
     cJSON* next_wake           = cJSON_GetObjectItemCaseSensitive(item, proto::kNextWakeSec);
     out.has_next_wake_sec      = cJSON_IsNumber(next_wake);
     out.next_wake_sec          = out.has_next_wake_sec ? next_wake->valueint : 0;
     if (out.kind.empty())
         out.kind = "image";
+    return true;
 }
 
 }  // namespace
-
-// API 路径前缀(对应 backend shared API_PREFIX = "/api/v1")。
-constexpr char kApiPrefix[] = "/api/v1";
 
 // 取得可复用的持久 client。base_url 变化(换 host)时重建。调用者持 conn_mutex_。
 esp_http_client_handle_t ApiClient::EnsureClientLocked(const std::string& base_url) {
@@ -233,7 +297,7 @@ void ApiClient::ResetConnection() {
 }
 
 // 同步 HTTP 请求。
-//   path/method/body_in - 请求(path 已带 /api/v1 前缀)
+//   path/method/body_in - 请求(path 已带 /api/v2 前缀)
 //   body_out            - 响应 body
 //   status_out          - HTTP 状态码(可空)
 //   if_none_match       - 非空时设 If-None-Match 头
@@ -480,7 +544,11 @@ bool ParseDeviceState(const std::string& json, DeviceState& out) {
     cJSON* current = cJSON_GetObjectItemCaseSensitive(root, proto::kCurrentContent);
     if (cJSON_IsObject(current)) {
         out.has_current_content = true;
-        ParseContentMeta(current, out.current_content);
+        if (!ParseContentMeta(current, Board::Get().platform().Display(), out.current_content)) {
+            ESP_LOGW(kTag, "device state invalid reason=current_content_frame_mismatch");
+            cJSON_Delete(root);
+            return false;
+        }
     } else {
         out.has_current_content = false;
     }
@@ -498,22 +566,13 @@ bool ApiClient::Register(RegisterResult& out) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         mac = mac_;
     }
-    cJSON* j = cJSON_CreateObject();
-    if (!j) {
-        ESP_LOGW(kTag, "register alloc failed object=json");
-        return false;
-    }
-    cJSON_AddStringToObject(j, proto::kMac, mac.c_str());
-    char* body = cJSON_PrintUnformatted(j);
-    cJSON_Delete(j);
-    if (!body) {
-        ESP_LOGW(kTag, "register alloc failed object=body");
-        return false;
-    }
+    const esp_app_desc_t* app        = esp_app_get_description();
+    const std::string     fw_version = (app && app->version[0] != '\0') ? app->version : CONFIG_APP_PROJECT_VER;
+    const std::string     body       = sync_contract::BuildRegisterPayload(mac, Board::Get().platform().Display(),
+                                                                           fw_version);
     std::string resp;
-    std::string path = std::string(kApiPrefix) + "/devices";
+    std::string path = std::string(sync_contract::ApiPrefix()) + "/devices";
     bool        ok   = DoRequestJson(path, HTTP_METHOD_POST, body, resp, /*need_auth=*/false);
-    cJSON_free(body);
     if (!ok)
         return false;
 
@@ -582,7 +641,7 @@ bool ApiClient::Poll(const Telemetry& tel, DeviceState& out) {
         return false;
     }
     std::string resp;
-    std::string path = std::string(kApiPrefix) + "/devices/current/poll";
+    std::string path = std::string(sync_contract::ApiPrefix()) + "/devices/current/poll";
     bool        ok   = DoRequestJson(path, HTTP_METHOD_POST, body, resp, /*need_auth=*/true);
     cJSON_free(body);
     if (!ok)
@@ -590,12 +649,12 @@ bool ApiClient::Poll(const Telemetry& tel, DeviceState& out) {
     return ParseDeviceState(resp, out);
 }
 
-// direction: "next" | "prev" → POST /api/v1/devices/current/group/{direction}
+// direction: "next" | "prev" → POST /api/v2/devices/current/group/{direction}
 bool ApiClient::CycleGroup(const std::string& direction, DeviceState& out) {
     if (direction != "next" && direction != "prev")
         return false;
     std::string resp;
-    std::string path = std::string(kApiPrefix) + "/devices/current/group/" + direction;
+    std::string path = std::string(sync_contract::ApiPrefix()) + "/devices/current/group/" + direction;
     bool        ok   = DoRequestJson(path, HTTP_METHOD_POST, "", resp, /*need_auth=*/true);
     if (!ok)
         return false;
@@ -616,7 +675,7 @@ bool ApiClient::SelectGroup(const std::string& gid, DeviceState& out) {
         return false;
     }
     std::string resp;
-    std::string path = std::string(kApiPrefix) + "/devices/current/group";
+    std::string path = std::string(sync_contract::ApiPrefix()) + "/devices/current/group";
     bool        ok   = DoRequestJson(path, HTTP_METHOD_PUT, body, resp, /*need_auth=*/true);
     cJSON_free(body);
     if (!ok)
@@ -628,7 +687,7 @@ bool ApiClient::GetManifest(const std::string& group_id, const std::string& if_n
                             bool& not_modified) {
     not_modified              = false;
     out                       = Manifest{};
-    std::string          path = std::string(kApiPrefix) + "/groups/" + UrlEncodePathSegment(group_id) + "/manifest";
+    std::string          path = std::string(sync_contract::ApiPrefix()) + "/groups/" + UrlEncodePathSegment(group_id) + "/manifest";
     std::vector<uint8_t> bytes;
     int                  status = 0;
     std::string          etag_out;
@@ -661,14 +720,46 @@ bool ApiClient::GetManifest(const std::string& group_id, const std::string& if_n
         cJSON_Delete(root);
         return false;
     }
+    cJSON* display_profile = cJSON_GetObjectItemCaseSensitive(root, proto::kDisplayProfile);
+    if (!ParseDisplayProfile(display_profile, out.display_profile_id, out.frame)) {
+        ESP_LOGW(kTag, "manifest response invalid reason=display_profile_invalid");
+        cJSON_Delete(root);
+        return false;
+    }
     cJSON* contents = cJSON_GetObjectItemCaseSensitive(root, proto::kContents);
-    if (cJSON_IsArray(contents)) {
-        cJSON* item = nullptr;
-        cJSON_ArrayForEach(item, contents) {
-            ContentMeta f;
-            ParseContentMeta(item, f);
-            out.contents.push_back(f);
+    if (!cJSON_IsArray(contents)) {
+        ESP_LOGW(kTag, "manifest response invalid reason=contents_missing");
+        cJSON_Delete(root);
+        return false;
+    }
+    cJSON* item = nullptr;
+    cJSON_ArrayForEach(item, contents) {
+        ContentMeta f;
+        if (!ParseContentMeta(item, Board::Get().platform().Display(), f)) {
+            ESP_LOGW(kTag, "manifest response invalid reason=content_frame_mismatch");
+            cJSON_Delete(root);
+            return false;
         }
+        out.contents.push_back(f);
+    }
+    sync_contract::ManifestIdentity identity;
+    identity.display_profile_id = out.display_profile_id;
+    identity.frame              = out.frame;
+    identity.contents.reserve(out.contents.size());
+    for (const auto& content : out.contents) {
+        identity.contents.push_back(sync_contract::ContentIdentity{content.seq,
+                                                                   content.id,
+                                                                   content.image_etag,
+                                                                   content.audio_etag,
+                                                                   content.variant_status,
+                                                                   content.image_size,
+                                                                   content.frame_profile_id,
+                                                                   content.frame});
+    }
+    if (!sync_contract::ValidateManifestIdentity(identity, Board::Get().platform().Display())) {
+        ESP_LOGW(kTag, "manifest response invalid reason=descriptor_mismatch");
+        cJSON_Delete(root);
+        return false;
     }
     cJSON_Delete(root);
     return true;
@@ -691,13 +782,13 @@ bool ApiClient::DownloadBinary(const std::string& path, const std::string& if_no
 
 bool ApiClient::DownloadContentImage(const std::string& id, const std::string& if_none_match, std::vector<uint8_t>& out,
                                      bool& not_modified) {
-    std::string path = std::string(kApiPrefix) + "/contents/" + UrlEncodePathSegment(id) + "/image";
+    std::string path = std::string(sync_contract::ApiPrefix()) + "/contents/" + UrlEncodePathSegment(id) + "/image";
     return DownloadBinary(path, if_none_match, out, not_modified);
 }
 
 bool ApiClient::DownloadContentAudio(const std::string& id, const std::string& if_none_match, std::vector<uint8_t>& out,
                                      bool& not_modified) {
-    std::string path = std::string(kApiPrefix) + "/contents/" + UrlEncodePathSegment(id) + "/audio";
+    std::string path = std::string(sync_contract::ApiPrefix()) + "/contents/" + UrlEncodePathSegment(id) + "/audio";
     return DownloadBinary(path, if_none_match, out, not_modified);
 }
 

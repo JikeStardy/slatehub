@@ -71,17 +71,34 @@ function stepBlock(workflow, name) {
   return lines.slice(start + 1, end).join('\n');
 }
 
+function directYamlKeyIndexes(lines, key) {
+  const nonEmptyLines = lines.filter((line) => line.trim());
+  if (nonEmptyLines.length === 0) {
+    return [];
+  }
+
+  const directIndent = Math.min(
+    ...nonEmptyLines.map((line) => line.length - line.trimStart().length)
+  );
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return lines
+    .map((line, index) => ({ index, line }))
+    .filter(
+      ({ line }) =>
+        line.length - line.trimStart().length === directIndent &&
+        new RegExp(`^${escapedKey}:`).test(line.trimStart())
+    )
+    .map(({ index }) => index);
+}
+
 function yamlBlockScalar(block, key) {
   const lines = block.split('\n');
-  const directIndent = Math.min(
-    ...lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length)
-  );
-  const start = lines.findIndex(
-    (line) =>
-      line.length - line.trimStart().length === directIndent &&
-      new RegExp(`^\\s*${key}:\\s*[>|][+-]?(?:[1-9])?\\s*$`).test(line)
-  );
-  if (start === -1) {
+  const keyIndexes = directYamlKeyIndexes(lines, key);
+  if (keyIndexes.length !== 1) {
+    return '';
+  }
+  const start = keyIndexes[0];
+  if (!new RegExp(`^\\s*${key}:\\s*[>|][+-]?(?:[1-9])?\\s*$`).test(lines[start])) {
     return '';
   }
 
@@ -100,13 +117,12 @@ function yamlBlockScalar(block, key) {
 
 function yamlMappingBlock(block, key) {
   const lines = block.split('\n');
-  const directIndent = Math.min(
-    ...lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length)
-  );
-  const start = lines.findIndex(
-    (line) => line.length - line.trimStart().length === directIndent && line.trim() === `${key}:`
-  );
-  if (start === -1) {
+  const keyIndexes = directYamlKeyIndexes(lines, key);
+  if (keyIndexes.length !== 1) {
+    return '';
+  }
+  const start = keyIndexes[0];
+  if (lines[start].trim() !== `${key}:`) {
     return '';
   }
 
@@ -121,6 +137,16 @@ function yamlMappingBlock(block, key) {
     end += 1;
   }
   return lines.slice(start + 1, end).join('\n');
+}
+
+function yamlScalar(block, key) {
+  const lines = block.split('\n');
+  const keyIndexes = directYamlKeyIndexes(lines, key);
+  if (keyIndexes.length !== 1) {
+    return '';
+  }
+  const prefix = `${key}:`;
+  return lines[keyIndexes[0]].trimStart().slice(prefix.length).trim();
 }
 
 function shellFunctionBlocks(script, name) {
@@ -141,7 +167,7 @@ function hasBoardSdkconfigCommand(workflow) {
   const withBlock = yamlMappingBlock(block, 'with');
   const command = yamlBlockScalar(withBlock, 'command');
   return (
-    /uses:\s*espressif\/esp-idf-ci-action@v1/.test(block) &&
+    yamlScalar(block, 'uses') === 'espressif/esp-idf-ci-action@v1' &&
     containsCompact(
       command,
       `

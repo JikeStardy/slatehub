@@ -81,6 +81,7 @@ describe('BlobService storage-key I/O', () => {
       path: blob.path('group-1', 'content-1', 'image'),
       size: 2,
     });
+    expect(await blob.readStorageKey('group-1/content-1.img')).toEqual(bytes);
     expect(await blob.read('group-1', 'content-1', 'image')).toEqual(bytes);
 
     await blob.delete('group-1', 'content-1', 'image');

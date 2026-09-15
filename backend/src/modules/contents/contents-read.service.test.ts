@@ -106,6 +106,7 @@ function content(overrides: Partial<ContentRow> = {}): ContentRow {
 
 function createService(opts: {
   content?: ContentRow;
+  contents?: ContentRow[];
   groupOwnerUserId?: string | null;
   nodeEnv?: 'development' | 'production' | 'test';
   device?: {
@@ -121,6 +122,7 @@ function createService(opts: {
   calls?: { blobStorageReads: string[]; legacyBlobReads: number; audioRepairs?: number };
 }): ContentsReadService {
   const row = opts.content ?? content();
+  const rows = opts.contents ?? [row];
   const device =
     opts.device ??
     ({
@@ -168,14 +170,14 @@ function createService(opts: {
               manifestEtag: 'legacy-manifest',
               name: 'Group',
               sortOrder: 0,
-              contents: [row],
+              contents: rows,
             }
           : null,
     },
     content: {
-      findMany: async () => [row],
+      findMany: async () => rows,
       findUnique: async ({ where }: { where: { id: string } }) =>
-        where.id === row.id ? row : null,
+        rows.find((candidate) => candidate.id === where.id) ?? null,
     },
   };
   const blob = {
@@ -397,6 +399,34 @@ describe('ContentsReadService profile-scoped resources', () => {
     const manifest = await service.manifest('group-1', { deviceId: 'device-1' });
 
     expect(manifest.contents).toEqual([]);
+  });
+
+  it('renumbers device manifest seq over the playable ready projection while Web keeps DB order', async () => {
+    const service = createService({
+      contents: [
+        content({ id: 'content-1', sortOrder: 0, frameName: 'First' }),
+        content({
+          id: 'content-2',
+          sortOrder: 1,
+          frameName: 'Pending',
+          variants: [variant(NOTE4_PROFILE, { status: 'pending', frameEtag: null })],
+        }),
+        content({ id: 'content-3', sortOrder: 2, frameName: 'Third' }),
+      ],
+    });
+
+    const deviceManifest = await service.manifest('group-1', { deviceId: 'device-1' });
+    const webManifest = await service.manifest('group-1', { userId: 'user-1' });
+
+    expect(deviceManifest.contents.map((item) => [item.id, item.seq])).toEqual([
+      ['content-1', 0],
+      ['content-3', 1],
+    ]);
+    expect(webManifest.contents.map((item) => [item.id, item.seq, item.variant_status])).toEqual([
+      ['content-1', 0, 'ready'],
+      ['content-2', 1, 'pending'],
+      ['content-3', 2, 'ready'],
+    ]);
   });
 
   it('reads raw frames from the selected Web profile storage key', async () => {

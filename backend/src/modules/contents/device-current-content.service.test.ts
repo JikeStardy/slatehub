@@ -4,13 +4,14 @@ import type { PrismaService } from '../../infra/prisma/prisma.service';
 import type { DynamicContentRendererService } from '../dynamic-content/dynamic-content-renderer.service';
 import { ContentReadTargetResolver } from './content-read-target-resolver';
 import { DeviceCurrentContentService } from './device-current-content.service';
-import { contentToSummary, manifestReadEtag } from './content-presenter';
+import { devicePlayableProjection, manifestReadEtag } from './content-presenter';
 import type { GroupsService } from '../groups/groups.service';
 
 const NOTE4_PROFILE = 'zectrix-note4-400x300-mono';
 function contentRow(
   status: 'ready' | 'pending' | 'failed' | 'missing' = 'ready',
-  deviceProfileId = NOTE4_PROFILE
+  deviceProfileId = NOTE4_PROFILE,
+  overrides: { id?: string; sortOrder?: number; frameName?: string | null } = {}
 ) {
   const note4Frame = Buffer.alloc(15_000, 0x11);
   const note4Variant = {
@@ -52,6 +53,7 @@ function contentRow(
     audioLastError: null,
     audioUpdatedAt: null,
     variants,
+    ...overrides,
   };
 }
 
@@ -122,7 +124,7 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
 
     const request = await service.resolveCurrentContentRequest('device-1', {
       current_group: 'group-1',
-      current_content_seq: 2,
+      current_content_seq: 0,
       manifest_etag: manifestEtag,
     });
     const summary = request ? service.currentContentForDevice(request) : null;
@@ -130,6 +132,7 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
     expect(request?.manifestEtag).toBe(manifestEtag);
     expect(summary).toMatchObject({
       id: 'content-1',
+      seq: 0,
       image_size: 15_000,
       audio_etag: 'audio-etag',
       frame: {
@@ -162,20 +165,18 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
         position: { current: 2, total: 3 },
       },
       groupStructureEtag: 'structure-etag',
-      contents: [
-        contentToSummary(contentRow('ready', NOTE4_PROFILE), {
-          profile: {
-            id: NOTE4_PROFILE,
-            width: 400,
-            height: 300,
-            pixel_format: 'mono1',
-            frame_codec: 'raw_mono1_msb',
-            availability: ['production', 'development', 'test'],
-          },
-          audio: true,
-          device: true,
-        }),
-      ],
+      contents: devicePlayableProjection([contentRow('ready', NOTE4_PROFILE)], {
+        profile: {
+          id: NOTE4_PROFILE,
+          width: 400,
+          height: 300,
+          pixel_format: 'mono1',
+          frame_codec: 'raw_mono1_msb',
+          availability: ['production', 'development', 'test'],
+        },
+        audio: true,
+        device: true,
+      }).map((entry) => entry.summary),
     });
 
     await expect(
@@ -212,4 +213,65 @@ describe('DeviceCurrentContentService profile manifest handling', () => {
       expect(request ? service.currentContentForDevice(request) : null).toBeNull();
     }
   );
+
+  it('maps device telemetry seq through the compact playable projection instead of sparse DB sortOrder', async () => {
+    const rows = [
+      contentRow('ready', NOTE4_PROFILE, { id: 'content-1', sortOrder: 0, frameName: 'First' }),
+      contentRow('pending', NOTE4_PROFILE, { id: 'content-2', sortOrder: 1, frameName: 'Second' }),
+      contentRow('ready', NOTE4_PROFILE, { id: 'content-3', sortOrder: 2, frameName: 'Third' }),
+    ];
+    const device = {
+      id: 'device-1',
+      selectedGroupId: 'group-1',
+      selectedGroup: { manifestEtag: 'legacy-manifest' },
+      boardId: 'zectrix-note4',
+      displayProfileId: NOTE4_PROFILE,
+      protocolVersion: 2,
+    };
+    const prisma = {
+      device: {
+        findUnique: async () => device,
+      },
+      group: {
+        findUnique: async () => ({
+          id: 'group-1',
+          ownerUserId: 'user-1',
+          name: 'Group',
+          sortOrder: 0,
+          structureEtag: 'structure-etag',
+          contents: rows,
+        }),
+      },
+      content: {
+        findUnique: async () => {
+          throw new Error(
+            'device current-content must use the projection, not sparse DB sortOrder'
+          );
+        },
+      },
+    };
+    const service = new DeviceCurrentContentService(
+      prisma as unknown as PrismaService,
+      {} as DynamicContentRendererService,
+      new ContentReadTargetResolver(
+        prisma as unknown as PrismaService,
+        { nodeEnv: 'test' } as never
+      ),
+      {
+        ownerGroupPosition: async () => ({ current: 1, total: 1 }),
+      } as unknown as GroupsService
+    );
+    const manifestEtag = await service.manifestEtagForDeviceGroup(device, 'group-1');
+
+    const request = await service.resolveCurrentContentRequest(device, {
+      current_group: 'group-1',
+      current_content_seq: 1,
+      manifest_etag: manifestEtag,
+    });
+    const current = request ? service.currentContentForDevice(request) : null;
+
+    expect(request?.contentId).toBe('content-3');
+    expect(current?.id).toBe('content-3');
+    expect(current?.seq).toBe(1);
+  });
 });

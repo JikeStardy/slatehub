@@ -45,3 +45,13 @@ export function contentSelect<T extends Prisma.ContentSelect>(
 ): typeof CONTENT_SELECT & T {
   return (extra ? { ...CONTENT_SELECT, ...extra } : CONTENT_SELECT) as typeof CONTENT_SELECT & T;
 }
+
+export function contentSelectForProfile(profileId: string): typeof CONTENT_SELECT {
+  return {
+    ...CONTENT_SELECT,
+    variants: {
+      where: { profileId },
+      select: CONTENT_SELECT.variants.select,
+    },
+  } as unknown as typeof CONTENT_SELECT;
+}

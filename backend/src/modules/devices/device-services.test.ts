@@ -8,8 +8,10 @@ import {
 import type { PrismaService } from '../../infra/prisma/prisma.service';
 import type { DeviceSecretAuthCacheService } from '../../infra/auth/device-secret-auth-cache.service';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../common/errors';
+import { computeETag } from '../../common/utils/etag';
 import type { CycleResult, GroupsService } from '../groups/groups.service';
-import type { DeviceCurrentContentService } from '../contents/device-current-content.service';
+import { DeviceCurrentContentService } from '../contents/device-current-content.service';
+import { ContentReadTargetResolver } from '../contents/content-read-target-resolver';
 import type { PairCodeService } from './pair-code.service';
 import { DeviceFirmwareService } from './device-firmware.service';
 import { DeviceManagementService } from './device-management.service';
@@ -249,6 +251,7 @@ function createPollService(
     refreshed: Array<{ frame: PollFrame | null; device: DevicePollSnapshot }>;
     currentContent: unknown[];
     manifestEtags: unknown[];
+    manifestSnapshots: unknown[];
   };
 } {
   const deviceSnapshot = opts.device ?? pollDevice();
@@ -259,6 +262,7 @@ function createPollService(
     refreshed: [] as Array<{ frame: PollFrame | null; device: DevicePollSnapshot }>,
     currentContent: [] as unknown[],
     manifestEtags: [] as unknown[],
+    manifestSnapshots: [] as unknown[],
   };
   const prisma = {
     device: {
@@ -293,6 +297,16 @@ function createPollService(
     manifestEtagForDeviceGroup: async (device: DevicePollSnapshot, groupId: string) => {
       calls.manifestEtags.push({ device, groupId });
       return opts.profileManifestEtag ?? 'manifest-1';
+    },
+    manifestSnapshotForDeviceGroup: async (device: DevicePollSnapshot, groupId: string) => {
+      calls.manifestSnapshots.push({ device, groupId });
+      return {
+        groupId,
+        manifestEtag: opts.profileManifestEtag ?? 'manifest-1',
+        contentCount: groupSnapshot.contentCount,
+        contents: [],
+        entries: [],
+      };
     },
   };
   return {
@@ -458,13 +472,8 @@ describe('DeviceFirmwareService.poll', () => {
       group: pollGroup({ manifestEtag: 'legacy-global-manifest' }),
       currentFrame: pollFrame({ manifestEtag: 'profile-manifest' }),
       currentContent,
+      profileManifestEtag: 'profile-manifest',
     });
-    const currentContentService = service[
-      'currentContent'
-    ] as unknown as DeviceCurrentContentService & {
-      manifestEtagForDeviceGroup: () => Promise<string>;
-    };
-    currentContentService.manifestEtagForDeviceGroup = async () => 'profile-manifest';
 
     const state = await service.poll('device-1', {
       wake_reason: 'button',
@@ -476,7 +485,202 @@ describe('DeviceFirmwareService.poll', () => {
     expect(state.group?.manifest_etag).toBe('profile-manifest');
     expect(state.current_content).toEqual(currentContent);
   });
+
+  it('uses one playable projection for normal poll manifest count and telemetry seq lookup', async () => {
+    const harness = createProjectedPollService();
+    const manifestEtag = await harness.currentContent.manifestEtagForDeviceGroup(
+      harness.device,
+      'group-1'
+    );
+    harness.calls.projectionQueries = 0;
+
+    const state = await harness.service.poll('device-1', {
+      wake_reason: 'button',
+      current_group: 'group-1',
+      current_content_seq: 1,
+      manifest_etag: manifestEtag,
+    });
+
+    expect(harness.calls.projectionQueries).toBe(1);
+    expect(state.group?.content_count).toBe(2);
+    expect(state.current_content?.id).toBe('content-3');
+    expect(state.current_content?.seq).toBe(1);
+  });
+
+  it('does not repeat the playable projection for a timer poll when no render is due', async () => {
+    const harness = createProjectedPollService({
+      contentKind: 'image',
+      dynamicNextRunAt: null,
+    });
+    const manifestEtag = await harness.currentContent.manifestEtagForDeviceGroup(
+      harness.device,
+      'group-1'
+    );
+    harness.calls.projectionQueries = 0;
+
+    await harness.service.poll('device-1', {
+      wake_reason: 'timer',
+      current_group: 'group-1',
+      current_content_seq: 1,
+      manifest_etag: manifestEtag,
+    });
+
+    expect(harness.calls.projectionQueries).toBe(1);
+    expect(harness.calls.renders).toBe(0);
+  });
+
+  it('refreshes the playable projection exactly once after a timer render changes it', async () => {
+    const harness = createProjectedPollService({
+      contentKind: 'dynamic',
+      dynamicNextRunAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const manifestEtag = await harness.currentContent.manifestEtagForDeviceGroup(
+      harness.device,
+      'group-1'
+    );
+    harness.calls.projectionQueries = 0;
+
+    await harness.service.poll('device-1', {
+      wake_reason: 'timer',
+      current_group: 'group-1',
+      current_content_seq: 1,
+      manifest_etag: manifestEtag,
+    });
+
+    expect(harness.calls.renders).toBe(1);
+    expect(harness.calls.projectionQueries).toBe(2);
+  });
 });
+
+function createProjectedPollService(
+  opts: {
+    contentKind?: 'image' | 'dynamic';
+    dynamicNextRunAt?: Date | null;
+  } = {}
+) {
+  const deviceSnapshot = pollDevice();
+  const rows = [
+    projectedContent({ id: 'content-1', sortOrder: 0, frameName: 'First' }),
+    projectedContent({
+      id: 'content-2',
+      sortOrder: 1,
+      frameName: 'Pending',
+      variantStatus: 'pending',
+    }),
+    projectedContent({
+      id: 'content-3',
+      sortOrder: 2,
+      frameName: 'Third',
+      kind: opts.contentKind ?? 'image',
+      dynamicType: opts.contentKind === 'dynamic' ? 'weather' : null,
+      dynamicNextRunAt: opts.dynamicNextRunAt ?? null,
+      dynamicRefreshDueAt: opts.dynamicNextRunAt ?? null,
+    }),
+  ];
+  const calls = { projectionQueries: 0, renders: 0 };
+  const prisma = {
+    device: {
+      update: async () => deviceSnapshot,
+      findUnique: async () => deviceSnapshot,
+    },
+    group: {
+      findUnique: async () => {
+        calls.projectionQueries += 1;
+        return {
+          id: 'group-1',
+          ownerUserId: 'user-1',
+          name: 'Group',
+          sortOrder: 0,
+          structureEtag: 'structure-1',
+          contents: rows,
+        };
+      },
+    },
+    content: {
+      findUnique: async ({ where }: { where: { id?: string } }) =>
+        rows.find((row) => row.id === where.id) ?? null,
+    },
+  };
+  const groups = {
+    describeDeviceGroupSnapshot: async () => pollGroup({ contentCount: rows.length }),
+    ownerGroupPosition: async () => ({ current: 1, total: 1 }),
+  };
+  const currentContent = new DeviceCurrentContentService(
+    prisma as unknown as PrismaService,
+    {
+      renderDynamicContent: async () => {
+        calls.renders += 1;
+        return { groupEtag: 'rendered' };
+      },
+    } as never,
+    new ContentReadTargetResolver(prisma as unknown as PrismaService, { nodeEnv: 'test' } as never),
+    groups as unknown as GroupsService
+  );
+  return {
+    service: new DeviceFirmwareService(
+      prisma as unknown as PrismaService,
+      groups as unknown as GroupsService,
+      { invalidateHash: () => undefined } as unknown as DeviceSecretAuthCacheService,
+      currentContent,
+      pairCodeStub()
+    ),
+    currentContent,
+    device: deviceSnapshot,
+    calls,
+  };
+}
+
+function projectedContent(opts: {
+  id: string;
+  sortOrder: number;
+  frameName: string;
+  variantStatus?: 'ready' | 'pending' | 'failed';
+  kind?: 'image' | 'dynamic';
+  dynamicType?: string | null;
+  dynamicNextRunAt?: Date | null;
+  dynamicRefreshDueAt?: Date | null;
+}) {
+  const frame = Buffer.alloc(15_000, opts.sortOrder + 1);
+  const status = opts.variantStatus ?? 'ready';
+  return {
+    id: opts.id,
+    groupId: 'group-1',
+    sortOrder: opts.sortOrder,
+    frameName: opts.frameName,
+    contentEtag: `legacy-content-${opts.id}`,
+    imageEtag: `legacy-image-${opts.id}`,
+    audioEtag: null,
+    imageSize: frame.byteLength,
+    audioSize: null,
+    audioStatus: 'none' as const,
+    audioSource: null,
+    audioVoice: null,
+    kind: opts.kind ?? ('image' as const),
+    dynamicType: opts.dynamicType ?? null,
+    dynamicNextRunAt: opts.dynamicNextRunAt ?? null,
+    dynamicRefreshDueAt: opts.dynamicRefreshDueAt ?? null,
+    dynamicConfig: null,
+    dynamicData: null,
+    dynamicLastRunAt: null,
+    audioLastError: null,
+    audioUpdatedAt: null,
+    variants: [
+      {
+        profileId: 'zectrix-note4-400x300-mono',
+        status,
+        pixelFormat: 'mono1',
+        frameCodec: 'raw_mono1_msb',
+        width: 400,
+        height: 300,
+        frameEtag: status === 'ready' ? computeETag(frame) : null,
+        frameSize: status === 'ready' ? frame.byteLength : null,
+        storageKey:
+          status === 'ready' ? `frames/zectrix-note4-400x300-mono/group-1/${opts.id}.img` : null,
+        lastError: status === 'failed' ? 'failed' : null,
+      },
+    ],
+  };
+}
 
 function createClaimService(
   record?: DeviceRecord,

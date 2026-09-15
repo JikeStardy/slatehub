@@ -198,4 +198,59 @@ describe('profile-scoped read ETags', () => {
       })
     ).not.toBe(etag);
   });
+
+  it('uses unambiguous canonical serialization for manifest fields that contain separators', () => {
+    const base = {
+      profileId: 'zectrix-note4-400x300-mono',
+      group: {
+        id: 'group-1',
+        name: 'Group',
+        sort_order: 0,
+        position: { current: 1, total: 1 },
+      },
+      groupStructureEtag: 'structure',
+      contents: [
+        {
+          id: 'content-1',
+          seq: 0,
+          content_etag: 'content',
+          frame_name: 'a:b',
+          device_status_bar_text: 'c',
+          image_etag: 'image',
+          audio_etag: null,
+          image_size: 15_000,
+          audio_size: null,
+          variant_status: 'ready' as const,
+          audio_status: 'none' as const,
+          audio_source: null,
+          audio_voice: null,
+          kind: 'image' as const,
+          dynamic_type: null,
+          next_wake_sec: null,
+          dynamic_next_run_at: null,
+          dynamic_refresh_due_at: null,
+          frame: {
+            profile_id: 'zectrix-note4-400x300-mono',
+            width: 400,
+            height: 300,
+            pixel_format: 'mono1' as const,
+            frame_codec: 'raw_mono1_msb' as const,
+            byte_length: 15_000,
+          },
+        },
+      ],
+    };
+    const separatorAmbiguous = {
+      ...base,
+      contents: [
+        {
+          ...base.contents[0]!,
+          frame_name: 'a',
+          device_status_bar_text: 'b:c',
+        },
+      ],
+    };
+
+    expect(manifestReadEtag(separatorAmbiguous)).not.toBe(manifestReadEtag(base));
+  });
 });

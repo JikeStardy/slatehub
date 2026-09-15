@@ -95,6 +95,19 @@ export function contentToSummary(
   };
 }
 
+export function devicePlayableProjection(
+  rows: ContentRow[],
+  target: ContentReadProfileTarget
+): Array<{ content: ContentRow; summary: ContentSummaryT }> {
+  return rows
+    .map((content) => ({ content, summary: contentToSummary(content, target) }))
+    .filter((entry) => entry.summary.variant_status === 'ready')
+    .map((entry, seq) => ({
+      content: entry.content,
+      summary: { ...entry.summary, seq },
+    }));
+}
+
 export function contentFrameResourceEtag(profileId: string, frameEtag: string): string {
   return compactReadEtag(['frame', profileId, frameEtag]);
 }
@@ -115,41 +128,49 @@ export function manifestReadEtag(input: {
   contents: ContentSummaryT[];
 }): string {
   return compactReadEtag([
-    'manifest',
-    input.profileId,
-    input.group?.id ?? '',
-    input.group?.name ?? '',
-    input.group?.sort_order ?? '',
-    input.group?.position.current ?? '',
-    input.group?.position.total ?? '',
-    input.groupStructureEtag,
-    ...input.contents.map((content) =>
-      [
-        content.id,
-        content.seq,
-        content.frame_name ?? '',
-        content.device_status_bar_text,
-        content.content_etag,
-        content.variant_status,
-        content.image_etag,
-        content.image_size,
-        content.frame.profile_id,
-        content.frame.width,
-        content.frame.height,
-        content.frame.pixel_format,
-        content.frame.frame_codec,
-        content.frame.byte_length,
-        content.audio_etag ?? '',
-        content.audio_size ?? '',
-        content.audio_status,
-        content.audio_source ?? '',
-        content.audio_voice ?? '',
-        content.kind,
-        content.dynamic_type ?? '',
-        content.dynamic_next_run_at ?? '',
-        content.dynamic_refresh_due_at ?? '',
-      ].join(':')
-    ),
+    JSON.stringify({
+      type: 'manifest',
+      profileId: input.profileId,
+      group: input.group
+        ? {
+            id: input.group.id,
+            name: input.group.name,
+            sortOrder: input.group.sort_order,
+            position: {
+              current: input.group.position.current,
+              total: input.group.position.total,
+            },
+          }
+        : null,
+      groupStructureEtag: input.groupStructureEtag,
+      contents: input.contents.map((content) => ({
+        id: content.id,
+        seq: content.seq,
+        frameName: content.frame_name,
+        deviceStatusBarText: content.device_status_bar_text,
+        contentEtag: content.content_etag,
+        variantStatus: content.variant_status,
+        imageEtag: content.image_etag,
+        imageSize: content.image_size,
+        frame: {
+          profileId: content.frame.profile_id,
+          width: content.frame.width,
+          height: content.frame.height,
+          pixelFormat: content.frame.pixel_format,
+          frameCodec: content.frame.frame_codec,
+          byteLength: content.frame.byte_length,
+        },
+        audioEtag: content.audio_etag,
+        audioSize: content.audio_size,
+        audioStatus: content.audio_status,
+        audioSource: content.audio_source,
+        audioVoice: content.audio_voice,
+        kind: content.kind,
+        dynamicType: content.dynamic_type,
+        dynamicNextRunAt: content.dynamic_next_run_at,
+        dynamicRefreshDueAt: content.dynamic_refresh_due_at,
+      })),
+    }),
   ]);
 }
 

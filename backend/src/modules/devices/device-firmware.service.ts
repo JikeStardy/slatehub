@@ -14,7 +14,10 @@ import {
   hashDeviceSecret,
 } from '../../infra/auth/device-secret-auth-cache.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { DeviceCurrentContentService } from '../contents/device-current-content.service';
+import {
+  DeviceCurrentContentService,
+  type DeviceManifestSnapshot,
+} from '../contents/device-current-content.service';
 import { GroupsService, type CycleResult } from '../groups/groups.service';
 import type { DevicePollSnapshot, TelemetryInput } from './device-types';
 import { toDeviceStatePayload } from './device-state.presenter';
@@ -226,12 +229,26 @@ export class DeviceFirmwareService {
 
   async poll(deviceId: string, telemetry: TelemetryInput | undefined): Promise<DeviceStateT> {
     const device = await this.recordTelemetry(deviceId, telemetry);
-    const currentFrame = await this.currentContent.resolveCurrentContentRequest(device, telemetry);
+    const manifestSnapshot = device.selectedGroupId
+      ? await this.currentContent.manifestSnapshotForDeviceGroup(device, device.selectedGroupId)
+      : null;
+    const currentFrame = await this.currentContent.resolveCurrentContentRequest(
+      device,
+      telemetry,
+      manifestSnapshot
+    );
     const resolvedCurrentFrame =
       telemetry?.wake_reason === 'timer'
-        ? await this.currentContent.refreshCurrentContentForDeviceIfDue(currentFrame, device)
+        ? await this.currentContent.refreshCurrentContentForDeviceIfDue(
+            currentFrame,
+            device,
+            manifestSnapshot
+          )
         : currentFrame;
-    const state = await this.buildState(deviceId, { device });
+    const state = await this.buildState(deviceId, {
+      device,
+      manifestSnapshot: resolvedCurrentFrame?.manifestSnapshot ?? manifestSnapshot,
+    });
     if (
       state.group &&
       resolvedCurrentFrame &&
@@ -247,7 +264,11 @@ export class DeviceFirmwareService {
 
   async buildState(
     deviceId: string,
-    cached?: { group?: CycleResult; device?: DevicePollSnapshot }
+    cached?: {
+      group?: CycleResult;
+      device?: DevicePollSnapshot;
+      manifestSnapshot?: DeviceManifestSnapshot | null;
+    }
   ): Promise<DeviceStateT> {
     const device =
       cached?.device !== undefined
@@ -275,15 +296,19 @@ export class DeviceFirmwareService {
         ? cached.group
         : await this.groups.describeDeviceGroupSnapshot(device);
 
-    const profileManifestEtag = resolvedGroup.groupId
-      ? await this.currentContent.manifestEtagForDeviceGroup(device, resolvedGroup.groupId)
-      : null;
+    const profileManifestSnapshot =
+      cached?.manifestSnapshot !== undefined
+        ? cached.manifestSnapshot
+        : resolvedGroup.groupId
+          ? await this.currentContent.manifestSnapshotForDeviceGroup(device, resolvedGroup.groupId)
+          : null;
     return toDeviceStatePayload(
       device,
-      profileManifestEtag
+      profileManifestSnapshot
         ? {
             ...resolvedGroup,
-            manifestEtag: profileManifestEtag,
+            manifestEtag: profileManifestSnapshot.manifestEtag,
+            contentCount: profileManifestSnapshot.contentCount,
           }
         : resolvedGroup
     );

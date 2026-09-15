@@ -16,6 +16,7 @@ import {
   contentFrameResourceEtag,
   contentToDetail,
   contentToSummary,
+  devicePlayableProjection,
   manifestReadEtag,
   validateReadyVariantForProfile,
   type ContentReadProfileTarget,
@@ -86,9 +87,9 @@ export class ContentsReadService {
         ? { current: 1, total: 1 }
         : await this.groups.ownerGroupPosition(group.ownerUserId, group.sortOrder);
 
-    const contents = group.contents
-      .map((content) => contentToSummary(content, target))
-      .filter((content) => !target.device || content.variant_status === 'ready');
+    const contents = target.device
+      ? devicePlayableProjection(group.contents, target).map((entry) => entry.summary)
+      : group.contents.map((content) => contentToSummary(content, target));
     const manifestEtag = manifestReadEtag({
       profileId: target.profile.id,
       group: {

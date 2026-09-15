@@ -8,11 +8,20 @@ import { GroupsService } from '../groups/groups.service';
 import type { DevicePollSnapshot } from '../devices/device-types';
 import {
   contentToSummary,
+  devicePlayableProjection,
   manifestReadEtag,
   type ContentReadProfileTarget,
 } from './content-presenter';
-import { CONTENT_SELECT, type ContentSelectRow } from './content-select';
+import { contentSelectForProfile, type ContentSelectRow } from './content-select';
 import { ContentReadTargetResolver } from './content-read-target-resolver';
+
+export interface DeviceManifestSnapshot {
+  groupId: string;
+  manifestEtag: string;
+  contentCount: number;
+  contents: ContentSummaryT[];
+  entries: Array<{ content: ContentSelectRow; summary: ContentSummaryT }>;
+}
 
 export interface CurrentContentRequest {
   deviceId: string;
@@ -22,6 +31,7 @@ export interface CurrentContentRequest {
   manifestEtag: string;
   content: ContentSelectRow;
   readTarget: ContentReadProfileTarget;
+  manifestSnapshot?: DeviceManifestSnapshot;
 }
 
 @Injectable()
@@ -43,7 +53,8 @@ export class DeviceCurrentContentService {
           current_content_seq?: number;
           manifest_etag?: string;
         }
-      | undefined
+      | undefined,
+    manifestSnapshot?: DeviceManifestSnapshot | null
   ): Promise<CurrentContentRequest | null>;
   async resolveCurrentContentRequest(
     deviceOrId: DevicePollSnapshot,
@@ -53,7 +64,8 @@ export class DeviceCurrentContentService {
           current_content_seq?: number;
           manifest_etag?: string;
         }
-      | undefined
+      | undefined,
+    manifestSnapshot?: DeviceManifestSnapshot | null
   ): Promise<CurrentContentRequest | null>;
   async resolveCurrentContentRequest(
     deviceOrId: string | DevicePollSnapshot,
@@ -63,7 +75,8 @@ export class DeviceCurrentContentService {
           current_content_seq?: number;
           manifest_etag?: string;
         }
-      | undefined
+      | undefined,
+    manifestSnapshot?: DeviceManifestSnapshot | null
   ): Promise<CurrentContentRequest | null> {
     const seq = telemetry?.current_content_seq;
     if (seq === undefined || !Number.isInteger(seq) || seq < 0) return null;
@@ -84,37 +97,43 @@ export class DeviceCurrentContentService {
     const groupId = device?.selectedGroupId;
     if (!groupId) return null;
     if (telemetry?.current_group && telemetry.current_group !== groupId) return null;
-    const manifestEtag = await this.manifestEtagForDeviceGroup(device, groupId);
+    const snapshot =
+      manifestSnapshot ?? (await this.manifestSnapshotForDeviceGroup(device, groupId));
+    const manifestEtag = snapshot?.manifestEtag ?? '';
     if (!telemetry?.manifest_etag || telemetry.manifest_etag !== manifestEtag) return null;
-    const content = await this.prisma.content.findUnique({
-      where: { groupId_sortOrder: { groupId, sortOrder: seq } },
-      select: CONTENT_SELECT,
-    });
-    if (!content) return null;
+    const entry = snapshot?.entries[seq];
+    if (!entry) return null;
     return {
       deviceId: device.id,
       groupId,
       seq,
-      contentId: content.id,
+      contentId: entry.content.id,
       manifestEtag: telemetry.manifest_etag,
-      content,
+      content: entry.content,
       readTarget: this.readTargets.resolveSnapshot(device),
+      manifestSnapshot: snapshot ?? undefined,
     };
   }
 
   currentContentForDevice(request: CurrentContentRequest): ContentSummaryT | null {
-    const content = request.content;
-    if (!content || content.groupId !== request.groupId || content.sortOrder !== request.seq) {
-      return null;
+    const entry = request.manifestSnapshot?.entries[request.seq];
+    if (entry) {
+      if (entry.content.id !== request.contentId || entry.content.groupId !== request.groupId) {
+        return null;
+      }
+      return entry.summary;
     }
+    const content = request.content;
+    if (!content || content.groupId !== request.groupId) return null;
     const summary = contentToSummary(content, request.readTarget);
     if (summary.variant_status !== 'ready') return null;
-    return summary;
+    return { ...summary, seq: request.seq };
   }
 
   async refreshCurrentContentForDeviceIfDue(
     request: CurrentContentRequest | null,
-    deviceSnapshot?: DevicePollSnapshot
+    deviceSnapshot?: DevicePollSnapshot,
+    manifestSnapshot?: DeviceManifestSnapshot | null
   ): Promise<CurrentContentRequest | null> {
     if (!request) return null;
     const device =
@@ -130,39 +149,32 @@ export class DeviceCurrentContentService {
           protocolVersion: true,
         },
       }));
-    const currentManifestEtag = device
-      ? await this.manifestEtagForDeviceGroup(device, request.groupId)
-      : null;
+    const snapshot =
+      manifestSnapshot ??
+      request.manifestSnapshot ??
+      (device ? await this.manifestSnapshotForDeviceGroup(device, request.groupId) : null);
     if (
       !device ||
       device.selectedGroupId !== request.groupId ||
-      currentManifestEtag !== request.manifestEtag
+      snapshot?.manifestEtag !== request.manifestEtag
     ) {
       return null;
     }
     const content = request.content;
-    if (!content || content.groupId !== request.groupId || content.sortOrder !== request.seq) {
-      return null;
-    }
+    if (!content || content.groupId !== request.groupId) return null;
     if (isCurrentDynamicDue(content)) {
       try {
         await this.dynamicRenderer.renderDynamicContent(content.id);
-        const updatedContent = await this.prisma.content.findUnique({
-          where: { id: request.contentId },
-          select: CONTENT_SELECT,
-        });
-        if (
-          !updatedContent ||
-          updatedContent.groupId !== request.groupId ||
-          updatedContent.sortOrder !== request.seq
-        ) {
-          return null;
-        }
+        const updatedSnapshot = await this.manifestSnapshotForDeviceGroup(device, request.groupId);
+        const updatedEntry = updatedSnapshot?.entries[request.seq];
+        if (!updatedSnapshot || !updatedEntry) return null;
         return {
           ...request,
-          manifestEtag: await this.manifestEtagForDeviceGroup(device, request.groupId),
-          content: updatedContent,
+          manifestEtag: updatedSnapshot.manifestEtag,
+          contentId: updatedEntry.content.id,
+          content: updatedEntry.content,
           readTarget: this.readTargets.resolveSnapshot(device),
+          manifestSnapshot: updatedSnapshot,
         };
       } catch (err) {
         this.logger.warn(
@@ -177,6 +189,13 @@ export class DeviceCurrentContentService {
     device: Pick<DevicePollSnapshot, 'boardId' | 'displayProfileId' | 'protocolVersion'>,
     groupId: string
   ): Promise<string> {
+    return (await this.manifestSnapshotForDeviceGroup(device, groupId))?.manifestEtag ?? '';
+  }
+
+  async manifestSnapshotForDeviceGroup(
+    device: Pick<DevicePollSnapshot, 'boardId' | 'displayProfileId' | 'protocolVersion'>,
+    groupId: string
+  ): Promise<DeviceManifestSnapshot | null> {
     const readTarget = this.readTargets.resolveSnapshot(device);
     const group = await this.prisma.group.findUnique({
       where: { id: groupId },
@@ -188,19 +207,21 @@ export class DeviceCurrentContentService {
         structureEtag: true,
         contents: {
           orderBy: { sortOrder: 'asc' },
-          select: CONTENT_SELECT,
+          select: contentSelectForProfile(readTarget.profile.id),
         },
       },
     });
-    if (!group) return '';
+    if (!group) return null;
     const position =
       group.ownerUserId === null
         ? { current: 1, total: 1 }
         : await this.groups.ownerGroupPosition(group.ownerUserId, group.sortOrder);
-    const contents = group.contents
-      .map((content) => contentToSummary(content, readTarget))
-      .filter((content) => content.variant_status === 'ready');
-    return manifestReadEtag({
+    const entries = devicePlayableProjection(group.contents, readTarget) as Array<{
+      content: ContentSelectRow;
+      summary: ContentSummaryT;
+    }>;
+    const contents = entries.map((entry) => entry.summary);
+    const manifestEtag = manifestReadEtag({
       profileId: readTarget.profile.id,
       group: {
         id: group.id,
@@ -211,6 +232,13 @@ export class DeviceCurrentContentService {
       groupStructureEtag: group.structureEtag,
       contents,
     });
+    return {
+      groupId: group.id,
+      manifestEtag,
+      contentCount: contents.length,
+      contents,
+      entries,
+    };
   }
 }
 

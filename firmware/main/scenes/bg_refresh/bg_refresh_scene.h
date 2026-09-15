@@ -5,6 +5,7 @@
 #include <string>
 
 #include "scenes/core/scene.h"
+#include "storage/cache/cache.h"
 #include "ui/status_bar.h"
 
 class BgRefreshScene : public Scene {
@@ -34,7 +35,7 @@ class BgRefreshScene : public Scene {
     bool SeedPreviousFrame(SceneContext& ctx);
     bool ResolveCurrentFrame(std::string& gid, int& seq, int& content_count);
     bool RenderChangedFrame(SceneContext& ctx);
-    void StartWatcher(display::Display* display);
+    void StartWatcher(display::Display* display, int seq, const cache::FrameMeta& meta);
     void StartDeadlineWatchdog();
     void Finish();
 

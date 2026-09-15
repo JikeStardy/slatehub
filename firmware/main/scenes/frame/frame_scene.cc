@@ -356,61 +356,104 @@ bool FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
     ESP_LOGD(kTag, "load frame begin gid=%s idx=%d count=%d force_full=%d audio=%s", gid_.c_str(), idx, content_count_,
              force_full ? 1 : 0,
              audio_behavior == AudioBehavior::RestartIfAvailable ? "restart_if_available" : "stop_if_unavailable");
-    if (gid_.empty() || idx < 0 || content_count_ <= 0 || idx >= content_count_) {
-        ESP_LOGW(kTag, "load frame failed reason=invalid_state gid_empty=%d idx=%d count=%d", gid_.empty() ? 1 : 0, idx,
-                 content_count_);
-        return false;
-    }
-
     std::vector<uint8_t> raw;
-    const auto& frame = ctx.epd ? ctx.epd->Info().frame : display::FrameDescriptor{};
-    if (!ctx.epd || !cache::ReadFrameImage(gid_, idx, raw) || raw.size() != frame.byte_size ||
-        !display::ValidateFrameDescriptor(frame)) {
-        ESP_LOGW(kTag, "load frame failed idx=%d reason=image_miss bytes=%u", idx, static_cast<unsigned>(raw.size()));
-        if (ctx.audio)
-            ctx.audio->Stop();
-        return false;
-    }
     cache::FrameMeta meta;
-    cache::ReadFrameMeta(gid_, idx, meta);
+    std::vector<uint8_t> pcm;
+    bool                 audio_loaded = false;
+    const std::string    old_caption  = cached_status_bar_text_;
 
-    if (!ctx.epd->Lock(2000)) {
+    const frame_scene::FrameLoadRequest request{idx_,
+                                                idx,
+                                                force_full,
+                                                first_loaded_,
+                                                first_load_full_refresh_};
+
+    const auto prepare_candidate = [this, &ctx, &raw, &meta, &pcm, &audio_loaded](int candidate_idx) {
+        if (gid_.empty() || candidate_idx < 0 || content_count_ <= 0 || candidate_idx >= content_count_) {
+            ESP_LOGW(kTag, "load frame failed reason=invalid_state gid_empty=%d idx=%d count=%d",
+                     gid_.empty() ? 1 : 0, candidate_idx, content_count_);
+            return false;
+        }
+        const auto& frame = ctx.epd ? ctx.epd->Info().frame : display::FrameDescriptor{};
+        if (!ctx.epd || !display::ValidateFrameDescriptor(frame) || !cache::ReadFrameImage(gid_, candidate_idx, raw) ||
+            raw.size() != frame.byte_size) {
+            ESP_LOGW(kTag, "load frame failed idx=%d reason=image_miss bytes=%u", candidate_idx,
+                     static_cast<unsigned>(raw.size()));
+            return false;
+        }
+        if (!cache::ReadFrameMeta(gid_, candidate_idx, meta)) {
+            ESP_LOGW(kTag, "load frame failed idx=%d reason=meta_miss", candidate_idx);
+            return false;
+        }
+        audio_loaded =
+            !meta.audio_etag.empty() && cache::ReadFrameAudio(gid_, candidate_idx, pcm) && !pcm.empty();
+        return true;
+    };
+
+    const auto lock_display = [&ctx, idx]() {
+        if (ctx.epd->Lock(2000))
+            return true;
         ESP_LOGW(kTag, "load frame failed idx=%d reason=epd_lock_timeout", idx);
         return false;
-    }
-    ESP_LOGD(kTag, "lvgl refresh begin scene=frame idx=%d", idx);
-    if (status_bar_)
-        status_bar_->SetCaption(meta.status_bar_text);
-    lv_refr_now(NULL);
-    ESP_LOGD(kTag, "lvgl refresh done scene=frame idx=%d", idx);
-    ctx.epd->Unlock();
+    };
 
-    const bool full = force_full || (!first_loaded_ && first_load_full_refresh_);
-    if (!frame_view_ ||
-        !frame_view_->SetFrame(ctx.epd, raw, full ? display::PresentMode::kFull : display::PresentMode::kPartial)) {
-        ESP_LOGW(kTag, "load frame failed idx=%d reason=display_present", idx);
+    const auto apply_candidate_caption = [this, &meta]() {
+        if (status_bar_)
+            status_bar_->SetCaption(meta.status_bar_text);
+    };
+
+    const auto render_now = [idx]() {
+        ESP_LOGD(kTag, "lvgl refresh begin scene=frame idx=%d", idx);
+        lv_refr_now(nullptr);
+        ESP_LOGD(kTag, "lvgl refresh done scene=frame idx=%d", idx);
+    };
+
+    const auto present_candidate = [this, &ctx, &raw, idx](display::PresentMode mode) {
+        if (frame_view_ && frame_view_->SetFrameLocked(ctx.epd, raw, mode))
+            return true;
+        ESP_LOGW(kTag, "load frame failed idx=%d reason=display_present_request_rejected", idx);
         return false;
-    }
-    cached_status_bar_text_ = meta.status_bar_text;
-    first_loaded_           = true;
-    ESP_LOGD(kTag, "load frame refresh idx=%d full=%d first_loaded=%d", idx, full ? 1 : 0, first_loaded_ ? 1 : 0);
+    };
 
-    if (ctx.audio) {
-        std::vector<uint8_t> pcm;
-        if (!meta.audio_etag.empty() && cache::ReadFrameAudio(gid_, idx, pcm) && !pcm.empty()) {
-            if (audio_behavior == AudioBehavior::RestartIfAvailable) {
-                ESP_LOGD(kTag, "audio play idx=%d bytes=%u", idx, static_cast<unsigned>(pcm.size()));
-                ctx.audio->Play(pcm.data(), pcm.size());
+    const auto restore_previous_caption = [this, &old_caption]() {
+        if (status_bar_)
+            status_bar_->SetCaption(old_caption);
+    };
+
+    const auto unlock_display = [&ctx]() { ctx.epd->Unlock(); };
+
+    const auto commit_accepted = [this, &ctx, &meta, &pcm, audio_loaded, audio_behavior](int accepted_idx) {
+        cached_status_bar_text_ = meta.status_bar_text;
+        first_loaded_           = true;
+        ESP_LOGD(kTag, "load frame accepted idx=%d first_loaded=%d", accepted_idx, first_loaded_ ? 1 : 0);
+
+        if (ctx.audio) {
+            if (audio_loaded) {
+                if (audio_behavior == AudioBehavior::RestartIfAvailable) {
+                    ESP_LOGD(kTag, "audio play idx=%d bytes=%u", accepted_idx, static_cast<unsigned>(pcm.size()));
+                    ctx.audio->Play(pcm.data(), pcm.size());
+                }
+            } else {
+                ESP_LOGD(kTag, "audio stop idx=%d has_audio_etag=%d", accepted_idx,
+                         meta.audio_etag.empty() ? 0 : 1);
+                ctx.audio->Stop();
             }
-        } else {
-            ESP_LOGD(kTag, "audio stop idx=%d has_audio_etag=%d", idx, meta.audio_etag.empty() ? 0 : 1);
-            ctx.audio->Stop();
         }
-    }
 
-    if (ctx.set_current_frame_from_meta)
-        ctx.set_current_frame_from_meta(idx, meta);
-    return true;
+        if (ctx.set_current_frame_from_meta)
+            ctx.set_current_frame_from_meta(accepted_idx, meta);
+    };
+
+    return frame_scene::RunFrameLoadTransaction(
+        request,
+        prepare_candidate,
+        lock_display,
+        apply_candidate_caption,
+        render_now,
+        present_candidate,
+        restore_previous_caption,
+        unlock_display,
+        commit_accepted);
 }
 
 void FrameScene::ApplyEmptyState() {

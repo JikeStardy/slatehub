@@ -12,6 +12,8 @@ class FrameView {
 
     bool SetFrame(display::Display* display, const std::vector<uint8_t>& raw,
                   display::PresentMode mode = display::PresentMode::kPartial);
+    // Preconditions: caller already holds display lock and raw is stable until Present accepts/rejects it.
+    bool SetFrameLocked(display::Display* display, const std::vector<uint8_t>& raw, display::PresentMode mode);
     void Show();
     void Hide();
 

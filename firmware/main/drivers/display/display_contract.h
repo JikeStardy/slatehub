@@ -166,8 +166,9 @@ class Display {
     virtual void               Unlock() = 0;
     virtual bool               WaitForRefreshIdle(int timeout_ms) = 0;
     virtual void               RequestRefresh(PresentMode mode) = 0;
-    virtual bool               Present(const FrameRegion& region, const uint8_t* data, std::size_t len,
-                                       PresentMode mode) = 0;
+    // Returns true when the refresh request and source buffer are accepted by the display driver.
+    // It does not prove that the physical panel pixels have completed refreshing.
+    virtual bool Present(const FrameRegion& region, const uint8_t* data, std::size_t len, PresentMode mode) = 0;
     virtual bool               SeedPrevious(const FrameRegion& region, const uint8_t* data, std::size_t len) = 0;
     virtual bool               ReadPrevious(const FrameRegion& region, uint8_t* out, std::size_t len) = 0;
 };
@@ -176,9 +177,6 @@ bool SeedPreviousIfSupported(Display& display, const FrameRegion& region, const 
 bool ReadPreviousIfSupported(Display& display, const FrameRegion& region, uint8_t* out, std::size_t len);
 bool PresentWithFallback(Display& display, const FrameRegion& region, const uint8_t* data, std::size_t len,
                          PresentMode mode);
-using PresentCommitCallback = void (*)(void*);
-bool PresentWithFallbackThenCommit(Display& display, const FrameRegion& region, const uint8_t* data, std::size_t len,
-                                   PresentMode mode, PresentCommitCallback commit, void* commit_arg);
 void RequestRefreshWithFallback(Display& display, PresentMode mode);
 bool PresentFrameBody(Display& display, const uint8_t* raw, std::size_t len, int status_bar_height, PresentMode mode,
                       int lock_timeout_ms = 2000);

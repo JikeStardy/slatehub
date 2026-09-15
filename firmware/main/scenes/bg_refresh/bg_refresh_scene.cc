@@ -15,6 +15,7 @@
 #include "bsp/board_platform.h"
 #include "events/event_bus.h"
 #include "power/power_state.h"
+#include "scenes/bg_refresh/bg_refresh_transaction.h"
 #include "storage/cache/cache.h"
 #include "ui/status_bar.h"
 #include "ui/theme.h"
@@ -37,36 +38,33 @@ void PostBgRefreshDoneOnce(const std::shared_ptr<std::atomic<bool>>& done_posted
     PostBgRefreshDone();
 }
 
+void UpdateFrameSchedule(int seq, const cache::FrameMeta& meta) {
+    power_state::SetCurrentFrameFromMeta(seq, meta);
+}
+
 struct WatcherContext {
     display::Display*                  display = nullptr;
     std::shared_ptr<std::atomic<bool>> done_posted;
+    bool                               commit_current_frame = false;
+    int                                seq                  = 0;
+    cache::FrameMeta                   meta{};
 };
 
 void WatcherEntry(void* arg) {
     std::unique_ptr<WatcherContext> ctx(static_cast<WatcherContext*>(arg));
     auto*                           display    = ctx ? ctx->display : nullptr;
     constexpr int                   kTimeoutMs = 8000;
-    if (display)
-        display->WaitForRefreshIdle(kTimeoutMs);
-    auto done_posted = ctx ? ctx->done_posted : std::shared_ptr<std::atomic<bool>>();
-    PostBgRefreshDoneOnce(done_posted);
+    bg_refresh::CompleteAcceptedRefreshAfterIdle(
+        [display]() { return display && display->WaitForRefreshIdle(kTimeoutMs); },
+        [&ctx]() {
+            if (ctx && ctx->commit_current_frame)
+                UpdateFrameSchedule(ctx->seq, ctx->meta);
+        },
+        [&ctx]() {
+            auto done_posted = ctx ? ctx->done_posted : std::shared_ptr<std::atomic<bool>>();
+            PostBgRefreshDoneOnce(done_posted);
+        });
     vTaskDelete(nullptr);
-}
-
-void UpdateFrameSchedule(int seq, const cache::FrameMeta& meta) {
-    power_state::SetCurrentFrameFromMeta(seq, meta);
-}
-
-struct CommitFrameContext {
-    int                     seq  = 0;
-    const cache::FrameMeta* meta = nullptr;
-};
-
-void CommitPresentedFrame(void* arg) {
-    auto* commit = static_cast<CommitFrameContext*>(arg);
-    if (!commit || !commit->meta)
-        return;
-    UpdateFrameSchedule(commit->seq, *commit->meta);
 }
 
 // 截止看护任务：等到 kBgRefreshDeadlineMs；其间一旦 done_posted 置位(正常 finish)就提前退出，
@@ -105,7 +103,7 @@ void BgRefreshScene::OnEnter(SceneContext& ctx) {
 }
 
 void BgRefreshScene::StartDeadlineWatchdog() {
-    auto* ctx = new (std::nothrow) WatcherContext{nullptr, done_posted_};
+    auto* ctx = new (std::nothrow) WatcherContext{nullptr, done_posted_, false, 0, {}};
     if (!ctx) {
         ESP_LOGW(kTag, "deadline watchdog alloc failed");
         return;  // 退化到 SleepManager 的 idle/看门狗兜底
@@ -267,22 +265,20 @@ bool BgRefreshScene::RenderChangedFrame(SceneContext& ctx) {
     const display::FrameRegion body_region{0, y, frame.width, frame.height - y};
     const display::PresentMode mode =
         force_full_refresh_ ? display::PresentMode::kFull : display::PresentMode::kPartial;
-    CommitFrameContext commit{seq, &meta};
-    if (!display::PresentWithFallbackThenCommit(*ctx.epd, body_region, raw.data() + y * bpr,
-                                                display::ExpectedRegionBytes(body_region, frame), mode,
-                                                CommitPresentedFrame, &commit)) {
+    if (!display::PresentWithFallback(*ctx.epd, body_region, raw.data() + y * bpr,
+                                      display::ExpectedRegionBytes(body_region, frame), mode)) {
         ctx.epd->Unlock();
-        ESP_LOGW(kTag, "render failed reason=display_present");
+        ESP_LOGW(kTag, "render failed reason=display_present_request_rejected");
         return false;
     }
     ctx.epd->Unlock();
 
-    StartWatcher(ctx.epd);
+    StartWatcher(ctx.epd, seq, meta);
     return true;
 }
 
-void BgRefreshScene::StartWatcher(display::Display* display) {
-    auto* ctx = new (std::nothrow) WatcherContext{display, done_posted_};
+void BgRefreshScene::StartWatcher(display::Display* display, int seq, const cache::FrameMeta& meta) {
+    auto* ctx = new (std::nothrow) WatcherContext{display, done_posted_, true, seq, meta};
     if (!ctx) {
         ESP_LOGW(kTag, "watcher alloc failed action=finish");
         Finish();

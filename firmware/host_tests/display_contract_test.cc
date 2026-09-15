@@ -3,10 +3,12 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <string>
 
 #include "bsp/board_platform.h"
 #include "drivers/display/display_contract.h"
 #include "power/status_bar_snapshot_identity.h"
+#include "scenes/bg_refresh/bg_refresh_transaction.h"
 #include "scenes/frame/frame_load_transaction.h"
 
 namespace {
@@ -114,6 +116,91 @@ class FakeDisplay final : public display::Display {
     std::size_t          last_len      = 0;
     display::FrameRegion last_region{};
     display::PresentMode last_mode = display::PresentMode::kFull;
+};
+
+struct FrameTransactionFake {
+    bool prepare_result = true;
+    bool present_result = true;
+    int  order          = 0;
+
+    int prepare_order  = 0;
+    int lock_order     = 0;
+    int caption_order  = 0;
+    int present_order  = 0;
+    int rollback_order = 0;
+    int unlock_order   = 0;
+    int commit_order   = 0;
+
+    int         committed_idx = -1;
+    int         audio_state   = 7;
+    int         state_idx     = 2;
+    std::string caption{"old"};
+
+    bool PrepareCandidate(int /*candidate_idx*/) {
+        prepare_order = ++order;
+        return prepare_result;
+    }
+
+    bool LockDisplay() {
+        lock_order = ++order;
+        return true;
+    }
+
+    void ApplyCandidateCaption() {
+        caption_order = ++order;
+        caption       = "candidate";
+    }
+
+    void RenderNow() {
+        ++order;
+    }
+
+    bool PresentCandidate(display::PresentMode /*mode*/) {
+        present_order = ++order;
+        return present_result;
+    }
+
+    void RestorePreviousCaption() {
+        rollback_order = ++order;
+        caption        = "old";
+    }
+
+    void UnlockDisplay() {
+        unlock_order = ++order;
+    }
+
+    void CommitAccepted(int candidate_idx) {
+        commit_order  = ++order;
+        committed_idx = candidate_idx;
+        state_idx     = candidate_idx;
+        audio_state   = 11;
+    }
+};
+
+struct BgRefreshTransactionFake {
+    bool idle_result  = true;
+    int  order        = 0;
+    int  unlock_order = 0;
+    int  wait_order   = 0;
+    int  commit_order = 0;
+    int  done_order   = 0;
+
+    void UnlockDisplay() {
+        unlock_order = ++order;
+    }
+
+    bool WaitForIdle() {
+        wait_order = ++order;
+        return idle_result;
+    }
+
+    void Commit() {
+        commit_order = ++order;
+    }
+
+    void PostDone() {
+        done_order = ++order;
+    }
 };
 
 void TestNote4PlatformInfo() {
@@ -265,23 +352,70 @@ void TestFrameCandidateCommitKeepsCurrentOnFailure() {
     CHECK(frame_scene::PrevFrameCandidate(0, 4) == 3);
 }
 
-void TestPresentThenCommitTransactionOrder() {
-    FakeDisplay display{kFakeDisplayInfo};
-    uint8_t     body[296 * 104 / 8] = {};
-    int         commit_count        = 0;
-    const auto commit = [](void* arg) {
-        int* count = static_cast<int*>(arg);
-        ++(*count);
-    };
+void TestFrameLoadTransactionRollbackLeavesOldState() {
+    FrameTransactionFake ops;
+    ops.present_result = false;
 
-    CHECK(display::PresentWithFallbackThenCommit(display, {0, 24, 296, 104}, body, sizeof(body),
-                                                display::PresentMode::kPartial, commit, &commit_count));
-    CHECK(commit_count == 1);
+    const frame_scene::FrameLoadRequest request{2, 3, false, true, true};
+    CHECK(!frame_scene::RunFrameLoadTransaction(request, ops));
+    CHECK(ops.prepare_order > 0);
+    CHECK(ops.caption_order > ops.lock_order);
+    CHECK(ops.present_order > ops.caption_order);
+    CHECK(ops.rollback_order > ops.present_order);
+    CHECK(ops.unlock_order > ops.rollback_order);
+    CHECK(ops.commit_order == 0);
+    CHECK(ops.caption == "old");
+    CHECK(ops.audio_state == 7);
+    CHECK(ops.state_idx == 2);
+}
 
-    display.present_result = false;
-    CHECK(!display::PresentWithFallbackThenCommit(display, {0, 24, 296, 104}, body, sizeof(body),
-                                                 display::PresentMode::kPartial, commit, &commit_count));
-    CHECK(commit_count == 1);
+void TestFrameLoadTransactionPrepareFailureIsSideEffectFree() {
+    FrameTransactionFake ops;
+    ops.prepare_result = false;
+
+    const frame_scene::FrameLoadRequest request{2, 3, false, true, true};
+    CHECK(!frame_scene::RunFrameLoadTransaction(request, ops));
+    CHECK(ops.prepare_order > 0);
+    CHECK(ops.lock_order == 0);
+    CHECK(ops.commit_order == 0);
+    CHECK(ops.caption == "old");
+    CHECK(ops.audio_state == 7);
+    CHECK(ops.state_idx == 2);
+}
+
+void TestFrameLoadTransactionSuccessCommitsAfterUnlock() {
+    FrameTransactionFake ops;
+
+    const frame_scene::FrameLoadRequest request{2, 3, false, true, true};
+    CHECK(frame_scene::RunFrameLoadTransaction(request, ops));
+    CHECK(ops.rollback_order == 0);
+    CHECK(ops.unlock_order > ops.present_order);
+    CHECK(ops.commit_order > ops.unlock_order);
+    CHECK(ops.committed_idx == 3);
+    CHECK(ops.caption == "candidate");
+    CHECK(ops.audio_state == 11);
+    CHECK(ops.state_idx == 3);
+}
+
+void TestBgRefreshCommitsOnlyAfterIdle() {
+    BgRefreshTransactionFake ops;
+
+    ops.UnlockDisplay();
+    bg_refresh::CompleteAcceptedRefreshAfterIdle(
+        [&ops]() { return ops.WaitForIdle(); }, [&ops]() { ops.Commit(); }, [&ops]() { ops.PostDone(); });
+    CHECK(ops.wait_order > ops.unlock_order);
+    CHECK(ops.commit_order > ops.wait_order);
+    CHECK(ops.done_order > ops.commit_order);
+
+    BgRefreshTransactionFake failed;
+    failed.idle_result = false;
+    failed.UnlockDisplay();
+    bg_refresh::CompleteAcceptedRefreshAfterIdle(
+        [&failed]() { return failed.WaitForIdle(); }, [&failed]() { failed.Commit(); },
+        [&failed]() { failed.PostDone(); });
+    CHECK(failed.wait_order > failed.unlock_order);
+    CHECK(failed.commit_order == 0);
+    CHECK(failed.done_order > failed.wait_order);
 }
 
 void TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange() {
@@ -305,7 +439,10 @@ int main() {
     TestFakeDisplayDrivesGenericFramePresentation();
     TestRegionOffsetOverflowProtection();
     TestFrameCandidateCommitKeepsCurrentOnFailure();
-    TestPresentThenCommitTransactionOrder();
+    TestFrameLoadTransactionRollbackLeavesOldState();
+    TestFrameLoadTransactionPrepareFailureIsSideEffectFree();
+    TestFrameLoadTransactionSuccessCommitsAfterUnlock();
+    TestBgRefreshCommitsOnlyAfterIdle();
     TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
     return g_failures == 0 ? 0 : 1;
 }

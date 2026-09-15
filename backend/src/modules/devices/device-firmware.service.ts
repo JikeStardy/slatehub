@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { Prisma } from '@prisma/client';
-import { MacAddress, type DeviceStateT } from 'shared';
+import {
+  getBoardDefinition,
+  MacAddress,
+  type DeviceStateT,
+  type RegisterDeviceRequestT,
+} from 'shared';
 import { ConflictError, NotFoundError } from '../../common/errors';
 import { prismaUniqueTargetIncludes, type PrismaClientLike } from '../../common/db/prisma-utils';
 import {
@@ -58,14 +63,15 @@ export class DeviceFirmwareService {
   // 永久锁在 409 错误里，必须先能登 Web 端才能解开 —— 反而让设备失去物理控制权这条最后
   // 兜底。若未来用户量上来要堵 mac 后门，应通过物理重置 + 屏显 challenge + Web 端确认
   // 的方式重做，而不是简单拒绝 mac-only 注册。
-  async registerOrReset(mac: string): Promise<{
+  async registerOrReset(request: RegisterDeviceRequestT): Promise<{
     deviceId: string;
     deviceSecret: string;
     pairCode: string;
     reclaimed: boolean;
     serverTime: string;
   }> {
-    const normalizedMac = MacAddress.parse(mac);
+    const normalizedMac = MacAddress.parse(request.mac);
+    const board = getBoardDefinition(request.board_id);
     const now = new Date();
 
     // 预检：节流命中时直接拒绝，避免白白消耗熵 + 一次 pair_code 唯一性查询。
@@ -88,7 +94,16 @@ export class DeviceFirmwareService {
             const secretHash = hashDeviceSecret(secret);
             const pairCode = await this.pairCodes.generateUniquePairCode(tx);
             const created = await tx.device.create({
-              data: { mac: normalizedMac, secretHash, pairCode, lastRegisteredAt: now },
+              data: {
+                mac: normalizedMac,
+                secretHash,
+                pairCode,
+                lastRegisteredAt: now,
+                fwVersion: request.fw_version,
+                boardId: board.id,
+                displayProfileId: board.display_profile_id,
+                protocolVersion: request.protocol_version,
+              },
               select: { id: true },
             });
             return {
@@ -120,6 +135,10 @@ export class DeviceFirmwareService {
               ownerUserId: null,
               selectedGroupId: null,
               lastRegisteredAt: now,
+              fwVersion: request.fw_version,
+              boardId: board.id,
+              displayProfileId: board.display_profile_id,
+              protocolVersion: request.protocol_version,
             },
           });
           return {

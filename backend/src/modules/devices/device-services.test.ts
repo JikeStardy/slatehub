@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Prisma } from '@prisma/client';
-import type { ContentSummaryT } from 'shared';
+import type { ContentSummaryT, RegisterDeviceRequestT } from 'shared';
 import type { PrismaService } from '../../infra/prisma/prisma.service';
 import type { DeviceSecretAuthCacheService } from '../../infra/auth/device-secret-auth-cache.service';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../common/errors';
@@ -19,6 +19,10 @@ interface DeviceRecord {
   ownerUserId: string | null;
   selectedGroupId: string | null;
   lastRegisteredAt: Date | null;
+  fwVersion: string;
+  boardId: string;
+  displayProfileId: string;
+  protocolVersion: number;
 }
 
 interface FindUniqueArgs {
@@ -38,7 +42,17 @@ interface UpdateArgs {
 }
 
 interface CreateArgs {
-  data: Pick<DeviceRecord, 'mac' | 'secretHash' | 'pairCode' | 'lastRegisteredAt'>;
+  data: Pick<
+    DeviceRecord,
+    | 'mac'
+    | 'secretHash'
+    | 'pairCode'
+    | 'lastRegisteredAt'
+    | 'fwVersion'
+    | 'boardId'
+    | 'displayProfileId'
+    | 'protocolVersion'
+  >;
   select: {
     id: true;
   };
@@ -94,6 +108,10 @@ function createService(record?: DeviceRecord): {
         ownerUserId: null,
         selectedGroupId: null,
         lastRegisteredAt: args.data.lastRegisteredAt,
+        fwVersion: args.data.fwVersion,
+        boardId: args.data.boardId,
+        displayProfileId: args.data.displayProfileId,
+        protocolVersion: args.data.protocolVersion,
       };
       return { id: current.id };
     },
@@ -129,6 +147,10 @@ function device(overrides: Partial<DeviceRecord> = {}): DeviceRecord {
     ownerUserId: 'user-1',
     selectedGroupId: 'group-1',
     lastRegisteredAt: null,
+    fwVersion: '0.1.0',
+    boardId: 'zectrix-note4',
+    displayProfileId: 'zectrix-note4-400x300-mono',
+    protocolVersion: 2,
     ...overrides,
   };
 }
@@ -273,12 +295,18 @@ describe('DeviceFirmwareService.registerOrReset', () => {
   it('creates a new device with lastRegisteredAt', async () => {
     const { service, creates, getRecord } = createService();
 
-    const result = await service.registerOrReset('AA:BB:CC:DD:EE:FF');
+    const result = await service.registerOrReset(registerRequest());
 
     expect(result.deviceId).toBe('new-device');
     expect(result.reclaimed).toBe(false);
     expect(creates).toHaveLength(1);
     expect(creates[0]!.data.lastRegisteredAt).toBeInstanceOf(Date);
+    expect(creates[0]!.data).toMatchObject({
+      boardId: 'zectrix-note4',
+      displayProfileId: 'zectrix-note4-400x300-mono',
+      protocolVersion: 2,
+      fwVersion: '0.2.0',
+    });
     expect(getRecord()?.lastRegisteredAt).toBeInstanceOf(Date);
   });
 
@@ -287,7 +315,7 @@ describe('DeviceFirmwareService.registerOrReset', () => {
       device({ lastRegisteredAt: new Date(Date.now() - 1_000) })
     );
 
-    await expect(service.registerOrReset('AA:BB:CC:DD:EE:FF')).rejects.toThrow(ConflictError);
+    await expect(service.registerOrReset(registerRequest())).rejects.toThrow(ConflictError);
 
     expect(updates).toHaveLength(0);
     expect(getRecord()?.ownerUserId).toBe('user-1');
@@ -303,7 +331,7 @@ describe('DeviceFirmwareService.registerOrReset', () => {
       })
     );
 
-    await expect(service.registerOrReset('AA:BB:CC:DD:EE:FF')).rejects.toThrow(ConflictError);
+    await expect(service.registerOrReset(registerRequest())).rejects.toThrow(ConflictError);
 
     expect(updates).toHaveLength(0);
     expect(getRecord()?.ownerUserId).toBeNull();
@@ -314,12 +342,18 @@ describe('DeviceFirmwareService.registerOrReset', () => {
       device({ lastRegisteredAt: new Date(Date.now() - 61_000) })
     );
 
-    const result = await service.registerOrReset('AA:BB:CC:DD:EE:FF');
+    const result = await service.registerOrReset(registerRequest());
 
     expect(result.reclaimed).toBe(true);
     expect(updates).toHaveLength(1);
     expect(getRecord()?.ownerUserId).toBeNull();
     expect(getRecord()?.selectedGroupId).toBeNull();
+    expect(updates[0]!.data).toMatchObject({
+      boardId: 'zectrix-note4',
+      displayProfileId: 'zectrix-note4-400x300-mono',
+      protocolVersion: 2,
+      fwVersion: '0.2.0',
+    });
   });
 
   it('normalizes raw MAC input before looking up an existing device', async () => {
@@ -327,7 +361,7 @@ describe('DeviceFirmwareService.registerOrReset', () => {
       device({ mac: 'AA:BB:CC:DD:EE:FF', lastRegisteredAt: new Date(Date.now() - 61_000) })
     );
 
-    const result = await service.registerOrReset('aa-bb-cc-dd-ee-ff');
+    const result = await service.registerOrReset(registerRequest({ mac: 'aa-bb-cc-dd-ee-ff' }));
 
     expect(result.deviceId).toBe('device-1');
     expect(result.reclaimed).toBe(true);
@@ -337,6 +371,16 @@ describe('DeviceFirmwareService.registerOrReset', () => {
     expect(getRecord()?.mac).toBe('AA:BB:CC:DD:EE:FF');
   });
 });
+
+function registerRequest(overrides: Partial<RegisterDeviceRequestT> = {}): RegisterDeviceRequestT {
+  return {
+    mac: 'AA:BB:CC:DD:EE:FF',
+    board_id: 'zectrix-note4',
+    protocol_version: 2,
+    fw_version: '0.2.0',
+    ...overrides,
+  };
+}
 
 describe('DeviceFirmwareService.poll', () => {
   it('returns current_content for a non-timer poll when the current manifest still matches', async () => {
@@ -485,7 +529,12 @@ function currentContentStub(): DeviceCurrentContentService {
 describe('DeviceManagementService.claimByPairCode', () => {
   it('claims an unowned device and assigns the first owner group', async () => {
     const { service, getRecord } = createClaimService(
-      device({ ownerUserId: null, selectedGroupId: null })
+      device({
+        ownerUserId: null,
+        selectedGroupId: null,
+        displayProfileId: 'virtual-mono-296x128',
+        protocolVersion: 7,
+      })
     );
 
     const result = await service.claimByPairCode('ABC234', 'user-2');
@@ -494,6 +543,11 @@ describe('DeviceManagementService.claimByPairCode', () => {
     expect(result.owner_user_id).toBe('user-2');
     expect(result.selected_group_id).toBe('group-1');
     expect(result.sort_order).toBe(2);
+    expect(result).toMatchObject({
+      board_id: 'zectrix-note4',
+      display_profile_id: 'virtual-mono-296x128',
+      protocol_version: 7,
+    });
     expect(getRecord()?.pairCode).not.toBe('ABC234');
   });
 

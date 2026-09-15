@@ -3,29 +3,34 @@ import { DeviceFirmwareController } from './device-firmware.controller';
 
 describe('DeviceFirmwareController', () => {
   it('returns the service-normalized MAC address in register responses', async () => {
+    let received: unknown;
     const controller = new DeviceFirmwareController(
       {
-        registerOrReset: async () => ({
-          deviceId: 'device-1',
-          deviceSecret: 'a'.repeat(64),
-          pairCode: 'ABC123',
-          reclaimed: false,
-          serverTime: '2026-05-28T00:00:00.000Z',
-        }),
+        registerOrReset: async (request: unknown) => {
+          received = request;
+          return {
+            deviceId: 'device-1',
+            deviceSecret: 'a'.repeat(64),
+            pairCode: 'ABC123',
+            reclaimed: false,
+            serverTime: '2026-05-28T00:00:00.000Z',
+          };
+        },
       } as never,
       {} as never
     );
 
-    await expect(
-      controller.register({
-        mac: 'aa-bb-cc-dd-ee-ff',
-        board_id: 'zectrix-note4',
-        protocol_version: 2,
-        fw_version: '0.2.0',
-      })
-    ).resolves.toMatchObject({
+    const request = {
+      mac: 'aa-bb-cc-dd-ee-ff',
+      board_id: 'zectrix-note4' as const,
+      protocol_version: 2 as const,
+      fw_version: '0.2.0',
+    };
+
+    await expect(controller.register(request)).resolves.toMatchObject({
       mac: 'AA:BB:CC:DD:EE:FF',
     });
+    expect(received).toEqual(request);
   });
 
   it('delegates poll handling to DeviceFirmwareService', async () => {

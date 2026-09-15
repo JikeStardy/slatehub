@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import { DEFAULT_BOARD_ID, DEFAULT_DISPLAY_PROFILE_ID, type DeviceSummaryT } from 'shared';
+import type { DeviceSummaryT } from 'shared';
 import type { DeviceGroupSnapshot } from '../groups/groups.service';
 
 export interface TelemetryInput {
@@ -32,6 +32,9 @@ export const DEVICE_SUMMARY_SELECT = {
   batteryPct: true,
   rssiDbm: true,
   fwVersion: true,
+  boardId: true,
+  displayProfileId: true,
+  protocolVersion: true,
   ownerUserId: true,
   sortOrder: true,
 } as const satisfies Prisma.DeviceSelect;
@@ -53,9 +56,9 @@ export function toDeviceSummary(d: DeviceRow): DeviceSummaryT {
     battery_pct: d.batteryPct,
     rssi_dbm: d.rssiDbm,
     fw_version: d.fwVersion,
-    board_id: DEFAULT_BOARD_ID,
-    display_profile_id: DEFAULT_DISPLAY_PROFILE_ID,
-    protocol_version: 2,
+    board_id: d.boardId,
+    display_profile_id: d.displayProfileId,
+    protocol_version: d.protocolVersion,
     owner_user_id: d.ownerUserId,
     sort_order: d.sortOrder,
   };

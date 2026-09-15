@@ -34,6 +34,21 @@ enum ContentAudioSource {
   @@map("content_audio_source")
 }
 
+enum ContentSourceStatus {
+  ready
+  unavailable
+
+  @@map("content_source_status")
+}
+
+enum ContentVariantStatus {
+  pending
+  ready
+  failed
+
+  @@map("content_variant_status")
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -65,6 +80,9 @@ model Device {
   batteryPct       Int?      @map("battery_pct")
   rssiDbm          Int?      @map("rssi_dbm")
   fwVersion        String?   @map("fw_version") @db.VarChar(32)
+  boardId          String    @default("zectrix-note4") @map("board_id") @db.VarChar(64)
+  displayProfileId String    @default("zectrix-note4-400x300-mono") @map("display_profile_id") @db.VarChar(64)
+  protocolVersion  Int       @default(2) @map("protocol_version")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
@@ -128,7 +146,9 @@ model Content {
   createdAt                DateTime            @default(now()) @map("created_at")
   updatedAt                DateTime            @updatedAt @map("updated_at")
 
-  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  group    Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  source   ContentSource?
+  variants ContentVariant[]
 
   @@unique([groupId, sortOrder])
   @@index([groupId, kind])
@@ -136,4 +156,45 @@ model Content {
   @@index([kind, dynamicRefreshDueAt, dynamicRefreshLeaseUntil], map: "contents_dynamic_refresh_worker_idx")
   @@index([kind, dynamicType])
   @@map("contents")
+}
+
+model ContentSource {
+  contentId  String              @id @map("content_id")
+  status     ContentSourceStatus @default(unavailable)
+  sourceEtag String?             @map("source_etag") @db.VarChar(64)
+  mimeType   String?             @map("mime_type") @db.VarChar(127)
+  size       Int?
+  storageKey String?             @map("storage_key") @db.VarChar(512)
+  createdAt  DateTime            @default(now()) @map("created_at")
+  updatedAt  DateTime            @updatedAt @map("updated_at")
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("content_sources")
+}
+
+model ContentVariant {
+  id            String               @id @default(cuid())
+  contentId     String               @map("content_id")
+  profileId     String               @map("profile_id") @db.VarChar(64)
+  status        ContentVariantStatus @default(pending)
+  pixelFormat   String               @map("pixel_format") @db.VarChar(32)
+  frameCodec    String               @map("frame_codec") @db.VarChar(32)
+  width         Int
+  height        Int
+  frameEtag     String?              @map("frame_etag") @db.VarChar(64)
+  frameSize     Int?                 @map("frame_size")
+  storageKey    String?              @map("storage_key") @db.VarChar(512)
+  renderVersion Int                  @default(1) @map("render_version")
+  lastError     String?              @map("last_error") @db.VarChar(512)
+  leaseUntil    DateTime?            @map("lease_until")
+  attempts      Int                  @default(0)
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @updatedAt @map("updated_at")
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, profileId])
+  @@index([status, leaseUntil], map: "content_variants_worker_idx")
+  @@map("content_variants")
 }

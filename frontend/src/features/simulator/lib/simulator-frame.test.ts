@@ -2,6 +2,11 @@ import { describe, expect, it } from 'bun:test';
 import { frameDescriptorForProfile, type ContentSummaryT, type ManifestResponseT } from 'shared';
 import {
   batchSnapshotEntries,
+  manifestConditionalHeaders,
+  resolveManifestResponse,
+  runSimulatorDownload,
+  simulatorStageState,
+  stepContentId,
   frameQueryKey,
   manifestQueryKey,
   resolveSelectedContentId,
@@ -75,6 +80,71 @@ describe('simulator profile cache and selection helpers', () => {
         descriptor: virtualFrame,
       },
     ]);
+  });
+
+  it('models simulator loading, empty, non-ready and frame-error states distinctly', () => {
+    expect(simulatorStageState({ manifestPending: true })).toMatchObject({ tone: 'loading' });
+    expect(simulatorStageState({ manifestError: true })).toMatchObject({ tone: 'error' });
+    expect(simulatorStageState({ manifest: manifestFor([]) })).toMatchObject({ tone: 'empty' });
+    expect(
+      simulatorStageState({
+        manifest: manifestFor([content({ id: 'pending', status: 'pending', frame: virtualFrame })]),
+      })
+    ).toMatchObject({ tone: 'non-ready' });
+    expect(
+      simulatorStageState({
+        manifest: manifestFor([content({ id: 'ready', frame: virtualFrame })]),
+        selectedContentId: 'ready',
+        framePending: true,
+      })
+    ).toMatchObject({ tone: 'frame-loading' });
+    expect(
+      simulatorStageState({
+        manifest: manifestFor([content({ id: 'ready', frame: virtualFrame })]),
+        selectedContentId: 'ready',
+        frameError: true,
+      })
+    ).toMatchObject({ tone: 'frame-error' });
+  });
+
+  it('steps previous, next and auto over ready frames only', () => {
+    const contents = [
+      content({ id: 'ready-a', seq: 0 }),
+      content({ id: 'failed', seq: 1, status: 'failed' }),
+      content({ id: 'ready-b', seq: 2 }),
+    ];
+
+    expect(stepContentId(contents, 'ready-a', 1)).toBe('ready-b');
+    expect(stepContentId(contents, 'ready-b', 1)).toBe('ready-a');
+    expect(stepContentId(contents, 'ready-a', -1)).toBe('ready-b');
+  });
+
+  it('reuses the cached manifest body on 304 and keeps selection deterministic', () => {
+    const cached = manifestFor([
+      content({ id: 'ready-a', seq: 0, frame: virtualFrame }),
+      content({ id: 'ready-b', seq: 1, frame: virtualFrame }),
+    ]);
+
+    expect(manifestConditionalHeaders(cached)).toEqual({
+      'If-None-Match': 'manifest-virtual',
+    });
+    const reused = resolveManifestResponse({ status: 304, data: undefined, cached });
+
+    expect(reused).toBe(cached);
+    expect(resolveSelectedContentId(reused.contents, 'missing')).toBe('ready-a');
+  });
+
+  it('reports download errors instead of failing silently', async () => {
+    const states: unknown[] = [];
+
+    await runSimulatorDownload(
+      (state) => states.push(state),
+      async () => {
+        throw new Error('toBlob failed');
+      }
+    );
+
+    expect(states).toEqual([{ status: 'pending' }, { status: 'error', message: 'toBlob failed' }]);
   });
 });
 

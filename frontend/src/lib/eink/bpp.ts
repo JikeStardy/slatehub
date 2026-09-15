@@ -1,4 +1,10 @@
-import { FRAME_HEIGHT, FRAME_WIDTH, type FrameDescriptorT } from 'shared';
+import {
+  FRAME_HEIGHT,
+  FRAME_WIDTH,
+  FrameDescriptor,
+  frameDescriptorForProfile,
+  type FrameDescriptorT,
+} from 'shared';
 import { INK_RGB, PAPER_HEX, PAPER_RGB } from './colors';
 
 export interface DecodedRgbaFrame {
@@ -57,6 +63,28 @@ export function decodeBppImage(
 }
 
 export function validateRawFrameDescriptor(descriptor: FrameDescriptorT): RawFrameValidation {
+  const parsed = FrameDescriptor.safeParse(descriptor);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      reason: 'invalid-dimensions',
+      message: '帧描述符不匹配 Display Profile',
+    };
+  }
+  const expectedDescriptor = frameDescriptorForProfile(parsed.data.profile_id);
+  if (
+    parsed.data.width !== expectedDescriptor.width ||
+    parsed.data.height !== expectedDescriptor.height ||
+    parsed.data.pixel_format !== expectedDescriptor.pixel_format ||
+    parsed.data.frame_codec !== expectedDescriptor.frame_codec ||
+    parsed.data.byte_length !== expectedDescriptor.byte_length
+  ) {
+    return {
+      ok: false,
+      reason: 'invalid-dimensions',
+      message: '帧描述符不匹配 Display Profile',
+    };
+  }
   if (descriptor.pixel_format !== 'mono1' || descriptor.frame_codec !== 'raw_mono1_msb') {
     return {
       ok: false,

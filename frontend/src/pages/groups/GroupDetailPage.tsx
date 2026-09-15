@@ -50,7 +50,7 @@ function GroupDetailContent({
   const groupQuery = useGroup(gid);
   const [displayProfileId, setDisplayProfileId] = useState(defaultDisplayProfileId);
   const contents = useGroupContents(gid, displayProfileId);
-  const reorder = useReorderContents(gid);
+  const reorder = useReorderContents(gid, displayProfileId);
   const toast = useToast();
 
   const group = groupQuery.data;

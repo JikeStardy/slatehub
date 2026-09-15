@@ -1,5 +1,5 @@
 import { DEFAULT_DISPLAY_PROFILE_ID, frameDescriptorForProfile } from 'shared';
-import type { DitherMode } from 'shared';
+import type { DitherMode, FrameDescriptorT } from 'shared';
 import type { RefObject } from 'react';
 import { cn } from '@/lib/cn';
 import { StatusBarOverlay } from '@/components/eink/StatusBarOverlay';
@@ -9,6 +9,7 @@ interface PreviewCanvasProps {
   imageFile: File | null;
   existingImage: ArrayBuffer | undefined;
   existingImagePending?: boolean;
+  descriptor?: FrameDescriptorT;
   threshold: number;
   mode: DitherMode;
   scale: number;
@@ -23,6 +24,7 @@ export function PreviewCanvas({
   imageFile,
   existingImage,
   existingImagePending,
+  descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID),
   threshold,
   mode,
   scale,
@@ -32,7 +34,9 @@ export function PreviewCanvas({
   statusCaption,
   showStatusBar = true,
 }: PreviewCanvasProps) {
-  const descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID);
+  const authoringDescriptor = imageFile
+    ? frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID)
+    : descriptor;
   const pan = usePreviewCanvasRenderer({
     imageFile,
     existingImage,
@@ -42,10 +46,14 @@ export function PreviewCanvas({
     offset,
     onOffsetChange,
     canvasRef,
+    descriptor: authoringDescriptor,
   });
 
   return (
-    <div className="frame-preview-surface">
+    <div
+      className="frame-preview-surface"
+      style={{ aspectRatio: `${authoringDescriptor.width} / ${authoringDescriptor.height}` }}
+    >
       {existingImagePending && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <span className="font-serif italic text-[13px] text-stone-light">加载中…</span>
@@ -65,8 +73,8 @@ export function PreviewCanvas({
       )}
       <canvas
         ref={canvasRef}
-        width={descriptor.width}
-        height={descriptor.height}
+        width={authoringDescriptor.width}
+        height={authoringDescriptor.height}
         className={cn('block w-full h-full', pan.isDragging && 'cursor-grabbing')}
         style={{
           imageRendering: 'auto',

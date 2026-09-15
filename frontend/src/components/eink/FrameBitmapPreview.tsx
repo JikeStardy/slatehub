@@ -26,13 +26,24 @@ export function FrameBitmapPreview({
   const canvasRef = useContentBitmap(data, descriptor);
 
   return (
-    <div className={cn('relative h-full w-full overflow-hidden bg-paper', className)}>
+    <div
+      className={cn(
+        'relative flex h-full w-full items-center justify-center overflow-hidden bg-paper',
+        className
+      )}
+      style={{ aspectRatio: `${descriptor.width} / ${descriptor.height}` }}
+    >
       <canvas
         ref={canvasRef}
         width={descriptor.width}
         height={descriptor.height}
-        className="block h-full w-full"
-        style={{ imageRendering: 'pixelated' }}
+        className="block max-h-full max-w-full"
+        style={{
+          aspectRatio: `${descriptor.width} / ${descriptor.height}`,
+          height: 'auto',
+          imageRendering: 'pixelated',
+          width: '100%',
+        }}
       />
       {showStatusBar && <StatusBarOverlay caption={caption} />}
     </div>

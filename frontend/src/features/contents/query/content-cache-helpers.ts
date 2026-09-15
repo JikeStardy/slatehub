@@ -29,13 +29,38 @@ function isGeneratingAudio(row: AudioStatusRow | undefined): boolean {
   return row?.audio_status === 'pending' || row?.audio_status === 'generating';
 }
 
-function invalidateContentDependencies(qc: QueryClient, gid: string, contentId?: string) {
-  void qc.invalidateQueries({ queryKey: contentKeys.group(gid) });
-  void qc.invalidateQueries({ queryKey: groupKeys.list });
-  void qc.invalidateQueries({ queryKey: groupKeys.detail(gid) });
+export async function invalidateContentDependencies(
+  qc: QueryClient,
+  gid: string,
+  contentId?: string
+) {
+  await Promise.all([
+    qc.invalidateQueries({ queryKey: contentKeys.groupRoot(gid) }),
+    qc.invalidateQueries({ queryKey: groupKeys.list }),
+    qc.invalidateQueries({ queryKey: groupKeys.detail(gid) }),
+  ]);
   if (contentId) {
-    void qc.invalidateQueries({ queryKey: contentKeys.detail(contentId) });
-    qc.removeQueries({ queryKey: contentKeys.image(contentId) });
-    qc.removeQueries({ queryKey: contentKeys.audio(contentId) });
+    await qc.invalidateQueries({ queryKey: contentKeys.detailRoot(contentId) });
+    qc.removeQueries({ queryKey: contentKeys.imageRoot(contentId) });
+    qc.removeQueries({ queryKey: contentKeys.audioRoot(contentId) });
   }
+}
+
+export function applyOptimisticContentOrder(
+  qc: QueryClient,
+  groupKey: ReturnType<typeof contentKeys.group>,
+  order: string[]
+): ContentDetailT[] | undefined {
+  const previous = qc.getQueryData<ContentDetailT[]>(groupKey);
+  if (previous) {
+    const byId = new Map(previous.map((c) => [c.id, c]));
+    const reordered: ContentDetailT[] = order
+      .map((id, idx) => {
+        const item = byId.get(id);
+        return item ? { ...item, seq: idx } : undefined;
+      })
+      .filter((c): c is ContentDetailT => c !== undefined);
+    qc.setQueryData<ContentDetailT[]>(groupKey, reordered);
+  }
+  return previous;
 }

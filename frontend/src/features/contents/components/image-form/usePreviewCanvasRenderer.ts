@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react';
-import type { DitherMode } from 'shared';
-import { clearCanvas, decodeBppImage, isValidBppLength } from '@/lib/eink/bpp';
+import type { DitherMode, FrameDescriptorT } from 'shared';
+import { clearCanvas, decodeRawFrameToImageData, isValidRawFrameLength } from '@/lib/eink/bpp';
 import { drawImagePreview } from '@/lib/eink/image-preview';
 import { useCanvasPan } from './useCanvasPan';
 import { useLoadedImage } from './useLoadedImage';
@@ -19,6 +19,7 @@ export function usePreviewCanvasRenderer({
   offset,
   onOffsetChange,
   canvasRef,
+  descriptor,
 }: {
   imageFile: File | null;
   existingImage: ArrayBuffer | undefined;
@@ -28,6 +29,7 @@ export function usePreviewCanvasRenderer({
   offset: CanvasOffset;
   onOffsetChange: (offset: CanvasOffset) => void;
   canvasRef: RefObject<HTMLCanvasElement | null>;
+  descriptor: FrameDescriptorT;
 }) {
   const loadedImage = useLoadedImage(imageFile);
   const drawFrameRef = useRef<number | null>(null);
@@ -103,11 +105,11 @@ export function usePreviewCanvasRenderer({
     cancelScheduledDraw();
     if (existingImage) {
       const bytes = new Uint8Array(existingImage);
-      if (!isValidBppLength(bytes)) {
+      if (!isValidRawFrameLength(bytes, descriptor)) {
         clearCanvas(ctx, canvas);
         return;
       }
-      const data = decodeBppImage(bytes);
+      const data = decodeRawFrameToImageData(bytes, descriptor);
       ctx.putImageData(data, 0, 0);
       return;
     }
@@ -122,6 +124,7 @@ export function usePreviewCanvasRenderer({
     loadedImage,
     offset,
     scheduleImageDraw,
+    descriptor,
   ]);
 
   return pan;

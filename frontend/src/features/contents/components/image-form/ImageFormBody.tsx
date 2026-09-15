@@ -15,6 +15,7 @@ interface ImageFormBodyProps {
   isEdit: boolean;
   existingImage?: ArrayBuffer;
   existingImagePending?: boolean;
+  descriptor?: ContentDetailT['frame'];
   hasExistingAudio?: boolean;
   editingContentId?: string | null;
   audioStatus?: ContentDetailT['audio_status'];
@@ -32,6 +33,7 @@ export function ImageFormBody({
   isEdit,
   existingImage,
   existingImagePending,
+  descriptor: selectedDescriptor,
   hasExistingAudio = false,
   editingContentId = null,
   audioStatus,
@@ -42,7 +44,7 @@ export function ImageFormBody({
   beforeFields,
   actions,
 }: ImageFormBodyProps) {
-  const descriptor = frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID);
+  const descriptor = selectedDescriptor ?? frameDescriptorForProfile(DEFAULT_DISPLAY_PROFILE_ID);
   return (
     <div
       className={cn('grid grid-cols-1 gap-6 lg:gap-8', gridClassName ?? 'lg:grid-cols-[1.3fr_1fr]')}
@@ -56,6 +58,7 @@ export function ImageFormBody({
           imageFile={form.image.file}
           existingImage={existingImage}
           existingImagePending={existingImagePending}
+          descriptor={descriptor}
           threshold={form.dither.threshold}
           mode={form.dither.mode}
           scale={form.crop.scale}

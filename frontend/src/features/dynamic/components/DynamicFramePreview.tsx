@@ -21,7 +21,10 @@ export function DynamicFramePreview({
 }) {
   const showPlaceholder = !data;
   return (
-    <div className="frame-preview-surface">
+    <div
+      className="frame-preview-surface"
+      style={{ aspectRatio: `${descriptor.width} / ${descriptor.height}` }}
+    >
       <FrameBitmapPreview data={data} descriptor={descriptor} caption={caption} />
       {showPlaceholder && !pending && (
         <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">

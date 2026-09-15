@@ -5,12 +5,16 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { FlaskConical, LogOut } from 'lucide-react';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { IconBlock } from '@/components/ui/IconBlock';
-import { appRoutes } from '@/app/routes';
+import { appRoutes, layoutNavItems } from '@/app/routes';
 import { currentDisplayProfileEnvironment } from '@/features/profiles/profile-environment';
 
 export function Layout() {
   const { user, logout } = useAuth();
-  const showSimulator = currentDisplayProfileEnvironment() !== 'production';
+  const showSimulator =
+    import.meta.env.DEV &&
+    layoutNavItems(currentDisplayProfileEnvironment()).some(
+      (item) => item.href === appRoutes.simulator
+    );
 
   return (
     <div className="min-h-screen flex flex-col bg-paper">

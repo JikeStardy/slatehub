@@ -16,9 +16,15 @@ import { compatibilityLabel } from '@/features/contents/lib/variant-status';
 import {
   batchSnapshotEntries,
   frameQueryKey,
+  manifestConditionalHeaders,
   manifestQueryKey,
   resolveSelectedContentId,
+  resolveManifestResponse,
+  runSimulatorDownload,
   selectedFrameFilename,
+  simulatorStageState,
+  stepContentId,
+  type DownloadState,
 } from '@/features/simulator/lib/simulator-frame';
 
 export function SimulatorPage() {
@@ -28,6 +34,7 @@ export function SimulatorPage() {
   const [profileId, setProfileId] = useState(defaultDisplayProfileId);
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
   const [autoStep, setAutoStep] = useState(false);
+  const [singleDownload, setSingleDownload] = useState<DownloadState>({ status: 'idle' });
 
   useEffect(() => {
     if (!groupId && firstGroupId) setGroupId(firstGroupId);
@@ -43,6 +50,14 @@ export function SimulatorPage() {
     [manifest.data?.contents, selectedId]
   );
   const frame = useSimulatorFrame(selectedContent, profileId);
+  const stageState = simulatorStageState({
+    manifest: manifest.data,
+    selectedContentId,
+    manifestPending: manifest.isPending,
+    manifestError: manifest.isError,
+    framePending: frame.isPending,
+    frameError: frame.isError,
+  });
 
   useEffect(() => {
     if (selectedId !== selectedContentId) setSelectedContentId(selectedId);
@@ -68,7 +83,7 @@ export function SimulatorPage() {
       />
 
       <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.45fr)_340px]">
-        <SimulatorStage content={selectedContent} data={frame.data} pending={frame.isPending} />
+        <SimulatorStage state={stageState} data={frame.data} />
 
         <aside className="border border-ink bg-paper">
           <div className="border-b border-ink px-4 py-3">
@@ -130,10 +145,12 @@ export function SimulatorPage() {
                 disabled={!selectedContent || !frame.data}
                 onClick={() => {
                   if (manifest.data && selectedContent && frame.data) {
-                    void downloadPngFromRaw(
-                      frame.data,
-                      selectedContent.frame,
-                      selectedFrameFilename(manifest.data, selectedContent)
+                    void runSimulatorDownload(setSingleDownload, () =>
+                      downloadPngFromRaw(
+                        frame.data,
+                        selectedContent.frame,
+                        selectedFrameFilename(manifest.data!, selectedContent)
+                      )
                     );
                   }
                 }}
@@ -144,12 +161,11 @@ export function SimulatorPage() {
 
             <SimulatorReadout
               manifest={manifest.data}
-              content={selectedContent}
+              content={stageState.content}
               rawByteLength={frame.data?.byteLength ?? null}
-              error={
-                manifest.error ? 'Manifest 加载失败' : frame.error ? 'Raw frame 加载失败' : null
-              }
+              state={stageState.message}
             />
+            <DownloadFeedback state={singleDownload} />
 
             <BatchSnapshotButton manifest={manifest.data} />
           </div>
@@ -160,16 +176,25 @@ export function SimulatorPage() {
 }
 
 function useSimulatorManifest(groupId: string, profileId: string) {
+  const qc = useQueryClient();
+  const queryKey = manifestQueryKey(groupId || undefined, profileId);
   return useQuery({
-    queryKey: manifestQueryKey(groupId || undefined, profileId),
+    queryKey,
     queryFn: async () => {
-      const { data } = await api.get<ManifestResponseT>(
+      const cached = qc.getQueryData<ManifestResponseT>(queryKey);
+      const response = await api.get<ManifestResponseT>(
         `${API_PREFIX}/groups/${groupId}/manifest`,
         {
+          headers: manifestConditionalHeaders(cached),
           params: { display_profile_id: profileId },
+          validateStatus: (status) => status === 200 || status === 304,
         }
       );
-      return data;
+      return resolveManifestResponse({
+        status: response.status,
+        data: response.data,
+        cached,
+      });
     },
     enabled: !!groupId,
   });
@@ -193,15 +218,14 @@ async function fetchFrameBytes(content: ContentSummaryT, profileId: string): Pro
 }
 
 function SimulatorStage({
-  content,
+  state,
   data,
-  pending,
 }: {
-  content: ContentSummaryT | null;
+  state: ReturnType<typeof simulatorStageState>;
   data?: Uint8Array;
-  pending: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const content = state.content;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -225,9 +249,7 @@ function SimulatorStage({
         <p className="font-serif text-[15px] text-ink">{content?.frame_name ?? '待机'}</p>
       </div>
       <div className="flex min-h-[410px] items-center justify-center p-4">
-        {pending ? (
-          <Spinner label="读取 raw frame" />
-        ) : content ? (
+        {state.tone === 'ready' && content && data ? (
           <canvas
             ref={canvasRef}
             width={content.frame.width}
@@ -238,8 +260,17 @@ function SimulatorStage({
               imageRendering: 'pixelated',
             }}
           />
+        ) : state.tone === 'loading' || state.tone === 'frame-loading' ? (
+          <Spinner label={state.message} />
         ) : (
-          <p className="font-serif italic text-stone-light">没有 ready 变体可显示</p>
+          <div className="max-w-sm border border-ink bg-paper px-5 py-4 text-center">
+            <p className="font-serif text-[18px] font-bold text-ink">{state.message}</p>
+            {content && (
+              <p className="mt-2 font-sans text-[12px] text-stone">
+                {compatibilityLabel(content.variant_status)} · {content.frame.profile_id}
+              </p>
+            )}
+          </div>
         )}
       </div>
     </section>
@@ -291,12 +322,12 @@ function SimulatorReadout({
   manifest,
   content,
   rawByteLength,
-  error,
+  state,
 }: {
   manifest?: ManifestResponseT;
   content: ContentSummaryT | null;
   rawByteLength: number | null;
-  error: string | null;
+  state: string;
 }) {
   const rows = [
     ['profile', manifest?.display_profile.id ?? '—'],
@@ -307,7 +338,7 @@ function SimulatorReadout({
     ['frame etag', content?.image_etag || '—'],
     ['content etag', content?.content_etag ?? '—'],
     ['manifest etag', manifest?.group.manifest_etag ?? '—'],
-    ['state', error ?? (content ? compatibilityLabel(content.variant_status) : 'empty')],
+    ['state', state],
   ];
 
   return (
@@ -329,37 +360,56 @@ function SimulatorReadout({
 
 function BatchSnapshotButton({ manifest }: { manifest?: ManifestResponseT }) {
   const qc = useQueryClient();
+  const [download, setDownload] = useState<DownloadState>({ status: 'idle' });
   const readyContents =
     manifest?.contents.filter((content) => content.variant_status === 'ready') ?? [];
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      fullWidth
-      disabled={!manifest || readyContents.length === 0}
-      iconLeft={<Download size={14} />}
-      onClick={async () => {
-        if (!manifest) return;
-        const rawByContentId = new Map<string, Uint8Array>();
-        await Promise.all(
-          readyContents.map(async (content) => {
-            const bytes = await qc.fetchQuery({
-              queryKey: frameQueryKey(content.id, content.image_etag, content.frame.profile_id),
-              queryFn: () => fetchFrameBytes(content, content.frame.profile_id),
-              staleTime: Infinity,
-            });
-            rawByContentId.set(content.id, bytes);
-          })
-        );
-        await Promise.all(
-          batchSnapshotEntries(manifest, rawByContentId).map((entry) =>
-            downloadPngFromRaw(entry.bytes, entry.descriptor, entry.filename)
-          )
-        );
-      }}
-    >
-      批量快照
-    </Button>
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        fullWidth
+        disabled={!manifest || readyContents.length === 0 || download.status === 'pending'}
+        iconLeft={<Download size={14} />}
+        onClick={() => {
+          if (!manifest) return;
+          void runSimulatorDownload(setDownload, async () => {
+            const rawByContentId = new Map<string, Uint8Array>();
+            await Promise.all(
+              readyContents.map(async (content) => {
+                const bytes = await qc.fetchQuery({
+                  queryKey: frameQueryKey(content.id, content.image_etag, content.frame.profile_id),
+                  queryFn: () => fetchFrameBytes(content, content.frame.profile_id),
+                  staleTime: Infinity,
+                });
+                rawByContentId.set(content.id, bytes);
+              })
+            );
+            await Promise.all(
+              batchSnapshotEntries(manifest, rawByContentId).map((entry) =>
+                downloadPngFromRaw(entry.bytes, entry.descriptor, entry.filename)
+              )
+            );
+          });
+        }}
+      >
+        {download.status === 'pending' ? '导出中' : '批量快照'}
+      </Button>
+      <DownloadFeedback state={download} />
+    </>
+  );
+}
+
+function DownloadFeedback({ state }: { state: DownloadState }) {
+  if (state.status === 'idle') return null;
+  return (
+    <p className={`font-sans text-[12px] ${state.status === 'error' ? 'text-clay' : 'text-stone'}`}>
+      {state.status === 'pending'
+        ? '正在导出 PNG'
+        : state.status === 'success'
+          ? 'PNG 已生成'
+          : state.message}
+    </p>
   );
 }
 
@@ -386,18 +436,6 @@ function IconButton({
       {children}
     </button>
   );
-}
-
-function stepContentId(
-  contents: readonly ContentSummaryT[],
-  currentId: string | null,
-  direction: 1 | -1
-): string | null {
-  const ready = contents.filter((content) => content.variant_status === 'ready');
-  if (ready.length === 0) return null;
-  const currentIndex = ready.findIndex((content) => content.id === currentId);
-  const nextIndex = currentIndex < 0 ? 0 : (currentIndex + direction + ready.length) % ready.length;
-  return ready[nextIndex]!.id;
 }
 
 async function downloadPngFromRaw(

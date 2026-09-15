@@ -88,12 +88,12 @@ export function usePreviewDynamicContent(contentId: string | undefined) {
       const url = contentId
         ? `${API_PREFIX}/contents/${contentId}/preview`
         : `${API_PREFIX}/contents/preview`;
-      const body = {
+      const body = buildDynamicPreviewBody({
         config,
-        display_profile_id: displayProfileId,
-        frame_name: frameName,
+        displayProfileId,
+        frameName,
         data: previewData,
-      };
+      });
       const { data } = await api.post<ArrayBuffer>(url, body, {
         responseType: 'arraybuffer',
         signal,
@@ -101,4 +101,23 @@ export function usePreviewDynamicContent(contentId: string | undefined) {
       return data;
     },
   });
+}
+
+export function buildDynamicPreviewBody({
+  config,
+  displayProfileId,
+  frameName,
+  data,
+}: {
+  config: DynamicConfigT;
+  displayProfileId: DisplayProfileIdT;
+  frameName?: string | null;
+  data?: Record<string, unknown>;
+}) {
+  return {
+    config,
+    display_profile_id: displayProfileId,
+    frame_name: frameName,
+    data,
+  };
 }

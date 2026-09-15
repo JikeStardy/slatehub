@@ -47,7 +47,8 @@ function ScrollToTop() {
 }
 
 export function App() {
-  const simulatorEnabled = isSimulatorRouteEnabled(currentDisplayProfileEnvironment());
+  const simulatorEnabled =
+    import.meta.env.DEV && isSimulatorRouteEnabled(currentDisplayProfileEnvironment());
 
   return (
     <ErrorBoundary>

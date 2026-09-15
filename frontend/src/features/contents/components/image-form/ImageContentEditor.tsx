@@ -115,6 +115,7 @@ export function ImageContentEditor({ gid, content, onDone }: ImageContentEditorP
             isEdit
             existingImage={existingImg.data}
             existingImagePending={existingImg.isPending && !form.image.file}
+            descriptor={selectedContent.frame}
             hasExistingAudio={!!content.audio_etag}
             editingContentId={content.id}
             audioStatus={content.audio_status}

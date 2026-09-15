@@ -32,6 +32,17 @@ describe('descriptor-driven raw mono frame decoding', () => {
     expect(isValidRawFrameLength(new Uint8Array(note4.byte_length), note4)).toBe(true);
   });
 
+  it('rejects descriptors that spoof a profile with another profile dimensions', () => {
+    const spoofed = {
+      ...note4,
+      width: virtual.width,
+      height: virtual.height,
+      byte_length: virtual.byte_length,
+    };
+
+    expect(validateRawFrameDescriptor(spoofed).ok).toBe(false);
+  });
+
   it('decodes Note4 and virtual profile dimensions from descriptors', () => {
     expect(decodeRawFrameToRgba(new Uint8Array(note4.byte_length).fill(0xff), note4)).toMatchObject(
       {

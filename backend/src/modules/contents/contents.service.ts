@@ -451,9 +451,16 @@ export class ContentsService {
       });
       dbUpdated = true;
       if (image) {
+        let forwardSnapshot: StaticContentSnapshot | null = null;
         try {
           variantResults = await this.renderStaticVariants(gid, contentId, image, parsed);
           const note4 = this.requireReadyNote4(variantResults);
+          forwardSnapshot = await this.buildStaticReplacementForwardSnapshot({
+            gid,
+            contentId,
+            image,
+            note4,
+          });
           const legacy = await this.mirrorNote4ToLegacy(gid, contentId, note4, rollback);
           const remirrored = await this.withGroupMutation(gid, async (tx) => {
             const updated = await tx.content.update({
@@ -481,6 +488,7 @@ export class ContentsService {
             sourceKey: sourceKey ?? this.blob.sourceKey(gid, contentId),
             newAudioEtag: audio?.etag ?? null,
             variantResults,
+            forwardSnapshot,
             originalErr: err,
           });
           throw err;
@@ -690,6 +698,36 @@ export class ContentsService {
     };
   }
 
+  private async buildStaticReplacementForwardSnapshot(input: {
+    gid: string;
+    contentId: string;
+    image: RenderedImageUpload;
+    note4: VariantRenderResult;
+  }): Promise<StaticContentSnapshot> {
+    if (!input.note4.storageKey) {
+      throw new ValidationError('Note4 图片变体缺少存储位置', {
+        code: 'note4_variant_missing_blob',
+      });
+    }
+    const note4Bytes = await this.blob.readStorageKey(input.note4.storageKey);
+    if (!note4Bytes) {
+      throw new ValidationError('Note4 图片变体文件不存在', {
+        code: 'note4_variant_missing_blob',
+      });
+    }
+    const snapshot = await this.snapshotStaticContent(input.gid, input.contentId);
+    return {
+      ...snapshot,
+      content: {
+        ...snapshot.content,
+        imageEtag: input.note4.frameEtag ?? computeETag(note4Bytes),
+        imageSize: input.note4.frameSize ?? note4Bytes.byteLength,
+      },
+      sourceBytes: Buffer.from(input.image.bytes),
+      legacyImageBytes: Buffer.from(note4Bytes),
+    };
+  }
+
   private async restoreStaticReplacementOrThrow(input: {
     gid: string;
     contentId: string;
@@ -697,44 +735,55 @@ export class ContentsService {
     sourceKey: string;
     newAudioEtag: string | null;
     variantResults: VariantRenderResult[];
+    forwardSnapshot: StaticContentSnapshot | null;
     originalErr: unknown;
   }): Promise<void> {
-    const postSnapshot = await this.snapshotStaticContent(input.gid, input.contentId);
+    const forwardSnapshot =
+      input.forwardSnapshot ?? (await this.snapshotStaticContent(input.gid, input.contentId));
     const oldBlobRestore = await this.restoreStaticReplacementBlobs(input);
     if (oldBlobRestore.length > 0) {
-      const rollForward = await this.restoreStaticReplacementBlobs({
-        ...input,
-        snapshot: postSnapshot,
-        newAudioEtag: null,
-        variantResults: [],
-        extraStorageKeysToDelete: storageKeysMissingFrom(input.snapshot, postSnapshot),
-        extraAudioBlobKeysToDelete: audioBlobKeysMissingFrom(input.snapshot, postSnapshot),
-      });
-      throw combinedStaticMutationError(
-        'static_replace_compensation_failed',
-        input.originalErr,
-        oldBlobRestore,
-        rollForward.length > 0 ? rollForward : undefined
-      );
+      await this.rollForwardStaticReplacementOrThrow(input, forwardSnapshot, oldBlobRestore);
     }
     try {
       await this.restoreStaticReplacementDb(input.gid, input.contentId, input.snapshot);
     } catch (rollbackErr: unknown) {
-      const rollForward = await this.restoreStaticReplacementBlobs({
+      await this.rollForwardStaticReplacementOrThrow(input, forwardSnapshot, rollbackErr);
+    }
+  }
+
+  private async rollForwardStaticReplacementOrThrow(
+    input: {
+      gid: string;
+      contentId: string;
+      snapshot: StaticContentSnapshot;
+      sourceKey: string;
+      originalErr: unknown;
+    },
+    forwardSnapshot: StaticContentSnapshot,
+    rollbackErr: unknown
+  ): Promise<never> {
+    const rollForwardErrors: unknown[] = [];
+    rollForwardErrors.push(
+      ...(await this.restoreStaticReplacementBlobs({
         ...input,
-        snapshot: postSnapshot,
+        snapshot: forwardSnapshot,
         newAudioEtag: null,
         variantResults: [],
-        extraStorageKeysToDelete: storageKeysMissingFrom(input.snapshot, postSnapshot),
-        extraAudioBlobKeysToDelete: audioBlobKeysMissingFrom(input.snapshot, postSnapshot),
-      });
-      throw combinedStaticMutationError(
-        'static_replace_compensation_failed',
-        input.originalErr,
-        rollbackErr,
-        rollForward.length > 0 ? rollForward : undefined
-      );
+        extraStorageKeysToDelete: storageKeysMissingFrom(input.snapshot, forwardSnapshot),
+        extraAudioBlobKeysToDelete: audioBlobKeysMissingFrom(input.snapshot, forwardSnapshot),
+      }))
+    );
+    try {
+      await this.restoreStaticReplacementDb(input.gid, input.contentId, forwardSnapshot);
+    } catch (err: unknown) {
+      rollForwardErrors.push(err);
     }
+    throw combinedStaticMutationError(
+      'static_replace_compensation_failed',
+      input.originalErr,
+      rollbackErr,
+      rollForwardErrors.length > 0 ? rollForwardErrors : undefined
+    );
   }
 
   private async restoreStaticReplacementDb(

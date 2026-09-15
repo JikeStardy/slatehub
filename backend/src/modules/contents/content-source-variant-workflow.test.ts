@@ -535,16 +535,11 @@ describe('ContentsService source and variant workflow', () => {
     expect(store.content('content-1')).toMatchObject({
       frameName: 'Replacement',
       audioEtag: null,
+      imageEtag: computeETag(Buffer.alloc(15_000, 0x11)),
+      imageSize: 15_000,
     });
-    expect(store.source('content-1')).toMatchObject({
-      sourceEtag: computeETag(Buffer.from('replacement source bytes')),
-      storageKey: oldSourceKey,
-    });
-    expect(blobs.storage.get(oldSourceKey)).toEqual(Buffer.from('replacement source bytes'));
-    expect(blobs.storage.get(blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE))).toEqual(
-      Buffer.alloc(15_000, 0x11)
-    );
-    expect(blobs.legacy.get('group-1/content-1.image')).toEqual(Buffer.alloc(15_000, 0x11));
+    expectCoherentReplacementState(store, blobs, Buffer.from('replacement source bytes'));
+    expect(store.source('content-1')).toMatchObject({ storageKey: oldSourceKey });
   });
 
   it('rolls replacement blobs forward when old DB restore fails after blob restoration', async () => {
@@ -568,16 +563,11 @@ describe('ContentsService source and variant workflow', () => {
     expect(store.content('content-1')).toMatchObject({
       frameName: 'Replacement',
       audioEtag: null,
+      imageEtag: computeETag(Buffer.alloc(15_000, 0x11)),
+      imageSize: 15_000,
     });
-    expect(store.source('content-1')).toMatchObject({
-      sourceEtag: computeETag(Buffer.from('replacement source bytes')),
-      storageKey: sourceKey,
-    });
-    expect(blobs.storage.get(sourceKey)).toEqual(Buffer.from('replacement source bytes'));
-    expect(blobs.storage.get(blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE))).toEqual(
-      Buffer.alloc(15_000, 0x11)
-    );
-    expect(blobs.legacy.get('group-1/content-1.image')).toEqual(Buffer.alloc(15_000, 0x11));
+    expectCoherentReplacementState(store, blobs, Buffer.from('replacement source bytes'));
+    expect(store.source('content-1')).toMatchObject({ storageKey: sourceKey });
   });
 });
 
@@ -1111,6 +1101,44 @@ function snapshotState(
     storage: sortedBufferEntries(blobs.storage),
     legacy: sortedBufferEntries(blobs.legacy),
   };
+}
+
+function expectCoherentReplacementState(
+  store: FakeContentStore,
+  blobs: FakeBlobService,
+  source: Buffer
+): void {
+  const note4 = Buffer.alloc(15_000, 0x11);
+  const virtual = Buffer.alloc(4_736, 0x22);
+  const sourceKey = blobs.sourceKey('group-1', 'content-1');
+  const note4Key = blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+  const virtualKey = blobs.frameKey('group-1', 'content-1', VIRTUAL_PROFILE);
+
+  expect(store.source('content-1')).toMatchObject({
+    status: 'ready',
+    sourceEtag: computeETag(source),
+    size: source.byteLength,
+    storageKey: sourceKey,
+  });
+  expect(blobs.storage.get(sourceKey)).toEqual(source);
+
+  expect(store.variant('content-1', NOTE4_PROFILE)).toMatchObject({
+    status: 'ready',
+    frameEtag: computeETag(note4),
+    frameSize: note4.byteLength,
+    storageKey: note4Key,
+  });
+  expect(blobs.storage.get(note4Key)).toEqual(note4);
+
+  expect(store.variant('content-1', VIRTUAL_PROFILE)).toMatchObject({
+    status: 'ready',
+    frameEtag: computeETag(virtual),
+    frameSize: virtual.byteLength,
+    storageKey: virtualKey,
+  });
+  expect(blobs.storage.get(virtualKey)).toEqual(virtual);
+
+  expect(blobs.legacy.get('group-1/content-1.image')).toEqual(note4);
 }
 
 function sortedBufferEntries(map: Map<string, Buffer>): Array<[string, Buffer]> {

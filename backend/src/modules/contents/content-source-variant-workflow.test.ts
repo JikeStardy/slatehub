@@ -402,6 +402,183 @@ describe('ContentsService source and variant workflow', () => {
     );
     expect(store.content('content-1').frameName).toBe('Second');
   });
+
+  it('queues static name, TTS, audio delete, and delete mutations behind a failing replacement', async () => {
+    const cases: Array<{
+      name: string;
+      start: (service: ContentsService) => Promise<unknown>;
+      unchanged: (store: FakeContentStore) => void;
+    }> = [
+      {
+        name: 'frame name',
+        start: (service) => service.patchFrameName('content-1', 'user-1', 'Queued name'),
+        unchanged: (store) => expect(store.content('content-1').frameName).not.toBe('Queued name'),
+      },
+      {
+        name: 'TTS',
+        start: (service) =>
+          service.generateImageTts('content-1', 'user-1', {
+            text: 'queued speech',
+            voice: 'voice-a',
+          }),
+        unchanged: (store) =>
+          expect(store.content('content-1').audioText).not.toBe('queued speech'),
+      },
+      {
+        name: 'audio delete',
+        start: (service) => service.deleteAudio('content-1', 'user-1'),
+        unchanged: (store) => expect(store.content('content-1').audioStatus).toBe('none'),
+      },
+      {
+        name: 'content delete',
+        start: (service) => service.delete('content-1', 'user-1'),
+        unchanged: (store) => expect(store.contentCount()).toBe(1),
+      },
+    ];
+
+    for (const entry of cases) {
+      const { store, blobs } = seedReadyStaticContent();
+      const renderStarted = deferred<void>();
+      const replacementMayFail = deferred<void>();
+      const service = createContentsService({
+        store,
+        blobs,
+        renders: [],
+        failProfiles: new Set([NOTE4_PROFILE]),
+        preservePreviousOnFailure: false,
+        beforeRender: async (target) => {
+          if (target.profileId !== NOTE4_PROFILE) return;
+          renderStarted.resolve();
+          await replacementMayFail.promise;
+        },
+      });
+
+      const replacement = service.patchImage('content-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from(`replacement before queued ${entry.name}`),
+        hasAudio: false,
+        audioBuf: null,
+        hasFrameName: true,
+        frameName: 'Replacement',
+      });
+      await renderStarted.promise;
+      const queued = entry.start(service);
+      let queuedSettled = false;
+      queued.finally(() => {
+        queuedSettled = true;
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(queuedSettled).toBe(false);
+      entry.unchanged(store);
+
+      replacementMayFail.resolve();
+      await expect(replacement).rejects.toThrow(/Note4 图片变体渲染失败/);
+      await queued;
+    }
+  });
+
+  it('restores missing old source and variant blobs by deleting replacement blobs', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    const sourceKey = blobs.sourceKey('group-1', 'content-1');
+    const note4Key = blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE);
+    const virtualKey = blobs.frameKey('group-1', 'content-1', VIRTUAL_PROFILE);
+    blobs.storage.delete(sourceKey);
+    blobs.storage.delete(note4Key);
+    blobs.storage.delete(virtualKey);
+    store.failFinalImageUpdate = true;
+    const service = createContentsService({ store, blobs, renders: [] });
+    const before = snapshotState(store, blobs, 'content-1');
+
+    await expect(
+      service.patchImage('content-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from('replacement source bytes'),
+        hasAudio: false,
+        audioBuf: null,
+        hasFrameName: true,
+        frameName: 'Replacement',
+      })
+    ).rejects.toThrow(/final content update failed/);
+
+    expect(snapshotState(store, blobs, 'content-1')).toEqual(before);
+    expect(blobs.storage.has(sourceKey)).toBe(false);
+    expect(blobs.storage.has(note4Key)).toBe(false);
+    expect(blobs.storage.has(virtualKey)).toBe(false);
+  });
+
+  it('rolls replacement compensation forward when an old blob restore fails', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    store.failFinalImageUpdate = true;
+    const oldSourceKey = blobs.sourceKey('group-1', 'content-1');
+    const service = createContentsService({
+      store,
+      blobs,
+      renders: [],
+      beforeRender: async (target) => {
+        if (target.profileId === NOTE4_PROFILE) blobs.failWritesFor.add(oldSourceKey);
+      },
+    });
+
+    await expect(
+      service.patchImage('content-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from('replacement source bytes'),
+        hasAudio: false,
+        audioBuf: null,
+        hasFrameName: true,
+        frameName: 'Replacement',
+      })
+    ).rejects.toThrow(/static_replace_compensation_failed/);
+
+    expect(store.content('content-1')).toMatchObject({
+      frameName: 'Replacement',
+      audioEtag: null,
+    });
+    expect(store.source('content-1')).toMatchObject({
+      sourceEtag: computeETag(Buffer.from('replacement source bytes')),
+      storageKey: oldSourceKey,
+    });
+    expect(blobs.storage.get(oldSourceKey)).toEqual(Buffer.from('replacement source bytes'));
+    expect(blobs.storage.get(blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE))).toEqual(
+      Buffer.alloc(15_000, 0x11)
+    );
+    expect(blobs.legacy.get('group-1/content-1.image')).toEqual(Buffer.alloc(15_000, 0x11));
+  });
+
+  it('rolls replacement blobs forward when old DB restore fails after blob restoration', async () => {
+    const { store, blobs } = seedReadyStaticContent();
+    store.failFinalImageUpdate = true;
+    store.failRestoreDb = true;
+    const sourceKey = blobs.sourceKey('group-1', 'content-1');
+    const service = createContentsService({ store, blobs, renders: [] });
+
+    await expect(
+      service.patchImage('content-1', 'user-1', {
+        hasImage: true,
+        imageBuf: Buffer.from('replacement source bytes'),
+        hasAudio: false,
+        audioBuf: null,
+        hasFrameName: true,
+        frameName: 'Replacement',
+      })
+    ).rejects.toThrow(/static_replace_compensation_failed/);
+
+    expect(store.content('content-1')).toMatchObject({
+      frameName: 'Replacement',
+      audioEtag: null,
+    });
+    expect(store.source('content-1')).toMatchObject({
+      sourceEtag: computeETag(Buffer.from('replacement source bytes')),
+      storageKey: sourceKey,
+    });
+    expect(blobs.storage.get(sourceKey)).toEqual(Buffer.from('replacement source bytes'));
+    expect(blobs.storage.get(blobs.frameKey('group-1', 'content-1', NOTE4_PROFILE))).toEqual(
+      Buffer.alloc(15_000, 0x11)
+    );
+    expect(blobs.legacy.get('group-1/content-1.image')).toEqual(Buffer.alloc(15_000, 0x11));
+  });
 });
 
 function createContentsService(input: {
@@ -446,7 +623,9 @@ function createContentsService(input: {
     {
       transcodeAudio: async (audio: Buffer) => Buffer.from(audio),
     } as unknown as AudioTranscoderService,
-    {} as unknown as TtsService,
+    {
+      normalizeVoice: (voice: string) => voice,
+    } as unknown as TtsService,
     {
       delete: async () => undefined,
     } as unknown as ContentAudioBlobService,
@@ -554,6 +733,7 @@ class FakeContentStore {
   private readonly variants = new Map<string, Record<string, unknown>>();
   failFinalImageUpdate = false;
   failContentDelete = false;
+  failRestoreDb = false;
 
   readonly prisma = {
     content: {
@@ -573,74 +753,77 @@ class FakeContentStore {
       },
     },
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        $queryRaw: async () => [{ id: 'group-1' }],
-        content: {
-          findUnique: async ({ where }: { where: { id: string } }) =>
-            cloneRow(this.contents.get(where.id)),
-          findFirst: async () => null,
-          findMany: async () => [],
-          create: async ({ data }: { data: Record<string, unknown> }) => {
-            this.contents.set(String(data.id), { ...data, contentEtag: 'content-etag-1' });
-            if (data.source && typeof data.source === 'object' && 'create' in data.source) {
-              this.sources.set(String(data.id), {
-                contentId: String(data.id),
-                ...(data.source.create as Record<string, unknown>),
-              });
-            }
-            return { contentEtag: 'content-etag-1' };
+      this.runTransaction(() =>
+        fn({
+          $queryRaw: async () => [{ id: 'group-1' }],
+          content: {
+            findUnique: async ({ where }: { where: { id: string } }) =>
+              cloneRow(this.contents.get(where.id)),
+            findFirst: async () => null,
+            findMany: async () => [],
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              this.contents.set(String(data.id), { ...data, contentEtag: 'content-etag-1' });
+              if (data.source && typeof data.source === 'object' && 'create' in data.source) {
+                this.sources.set(String(data.id), {
+                  contentId: String(data.id),
+                  ...(data.source.create as Record<string, unknown>),
+                });
+              }
+              return { contentEtag: 'content-etag-1' };
+            },
+            update: async ({
+              where,
+              data,
+            }: {
+              where: { id: string };
+              data: Record<string, unknown>;
+            }) => {
+              if (this.shouldFailFinalImageUpdate(data))
+                throw new Error('final content update failed');
+              if (this.shouldFailRestoreDb(data)) throw new Error('restore database unavailable');
+              const current = this.content(where.id);
+              this.applySourceMutation(where.id, data);
+              Object.assign(current, data);
+              if (data.contentEtag === undefined) current.contentEtag = 'content-etag-2';
+              return {
+                imageEtag: current.imageEtag,
+                audioEtag: current.audioEtag,
+                contentEtag: current.contentEtag,
+              };
+            },
+            delete: async ({ where }: { where: { id: string } }) => {
+              if (this.failContentDelete) throw new Error('content compensation delete failed');
+              this.contents.delete(where.id);
+              this.sources.delete(where.id);
+              for (const key of [...this.variants.keys()]) {
+                if (key.startsWith(`${where.id}:`)) this.variants.delete(key);
+              }
+            },
           },
-          update: async ({
-            where,
-            data,
-          }: {
-            where: { id: string };
-            data: Record<string, unknown>;
-          }) => {
-            if (this.shouldFailFinalImageUpdate(data))
-              throw new Error('final content update failed');
-            const current = this.content(where.id);
-            this.applySourceMutation(where.id, data);
-            Object.assign(current, data);
-            if (data.contentEtag === undefined) current.contentEtag = 'content-etag-2';
-            return {
-              imageEtag: current.imageEtag,
-              audioEtag: current.audioEtag,
-              contentEtag: current.contentEtag,
-            };
+          contentSource: {
+            findUnique: async ({ where }: { where: { contentId: string } }) =>
+              cloneRow(this.sources.get(where.contentId)),
+            upsert: async ({
+              where,
+              create,
+              update,
+            }: {
+              where: { contentId: string };
+              create: Record<string, unknown>;
+              update: Record<string, unknown>;
+            }) => {
+              const next = this.sources.has(where.contentId) ? update : create;
+              this.sources.set(where.contentId, { contentId: where.contentId, ...next });
+              return this.sources.get(where.contentId);
+            },
+            deleteMany: async ({ where }: { where: { contentId: string } }) => {
+              this.sources.delete(where.contentId);
+              return { count: 1 };
+            },
           },
-          delete: async ({ where }: { where: { id: string } }) => {
-            if (this.failContentDelete) throw new Error('content compensation delete failed');
-            this.contents.delete(where.id);
-            this.sources.delete(where.id);
-            for (const key of [...this.variants.keys()]) {
-              if (key.startsWith(`${where.id}:`)) this.variants.delete(key);
-            }
-          },
-        },
-        contentSource: {
-          findUnique: async ({ where }: { where: { contentId: string } }) =>
-            cloneRow(this.sources.get(where.contentId)),
-          upsert: async ({
-            where,
-            create,
-            update,
-          }: {
-            where: { contentId: string };
-            create: Record<string, unknown>;
-            update: Record<string, unknown>;
-          }) => {
-            const next = this.sources.has(where.contentId) ? update : create;
-            this.sources.set(where.contentId, { contentId: where.contentId, ...next });
-            return this.sources.get(where.contentId);
-          },
-          deleteMany: async ({ where }: { where: { contentId: string } }) => {
-            this.sources.delete(where.contentId);
-            return { count: 1 };
-          },
-        },
-        contentVariant: this.contentVariantApi(),
-      }),
+          contentVariant: this.contentVariantApi(),
+        })
+      ),
     contentSource: {
       findUnique: async ({ where }: { where: { contentId: string } }) =>
         cloneRow(this.sources.get(where.contentId)),
@@ -724,6 +907,33 @@ class FakeContentStore {
     return shouldFail;
   }
 
+  private shouldFailRestoreDb(data: Record<string, unknown>): boolean {
+    const shouldFail =
+      this.failRestoreDb &&
+      data.frameName === 'Old' &&
+      data.imageEtag !== undefined &&
+      data.source === undefined;
+    if (shouldFail) this.failRestoreDb = false;
+    return shouldFail;
+  }
+
+  private async runTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    const contents = cloneTable(this.contents);
+    const sources = cloneTable(this.sources);
+    const variants = cloneTable(this.variants);
+    try {
+      return await fn();
+    } catch (err) {
+      this.contents.clear();
+      for (const entry of contents) this.contents.set(entry[0], entry[1]);
+      this.sources.clear();
+      for (const entry of sources) this.sources.set(entry[0], entry[1]);
+      this.variants.clear();
+      for (const entry of variants) this.variants.set(entry[0], entry[1]);
+      throw err;
+    }
+  }
+
   private contentVariantApi(): Record<string, unknown> {
     return {
       findMany: async ({ where }: { where: { contentId: string } }) =>
@@ -752,6 +962,7 @@ class FakeBlobService {
   readonly storage = new Map<string, Buffer>();
   readonly legacy = new Map<string, Buffer>();
   failLegacyWrite = false;
+  readonly failWritesFor = new Set<string>();
 
   sourceKey(groupId: string, contentId: string): string {
     return `sources/${groupId}/${contentId}.source`;
@@ -766,6 +977,10 @@ class FakeBlobService {
     _kind: string,
     data: Buffer
   ): Promise<{ path: string; size: number }> {
+    if (this.failWritesFor.has(key)) {
+      this.failWritesFor.delete(key);
+      throw new Error(`storage write failed for ${key}`);
+    }
     this.storage.set(key, Buffer.from(data));
     return { path: key, size: data.byteLength };
   }
@@ -785,7 +1000,12 @@ class FakeBlobService {
     kind: string,
     data: Buffer
   ): Promise<{ path: string; size: number }> {
+    if (this.failWritesFor.has(`${groupId}/${contentId}.${kind}`)) {
+      this.failWritesFor.delete(`${groupId}/${contentId}.${kind}`);
+      throw new Error(`legacy write failed for ${groupId}/${contentId}.${kind}`);
+    }
     if (this.failLegacyWrite && kind === 'image') {
+      this.failLegacyWrite = false;
       this.legacy.set(`${groupId}/${contentId}.${kind}`, Buffer.from(data));
       throw new Error('legacy write failed');
     }
@@ -899,6 +1119,12 @@ function sortedBufferEntries(map: Map<string, Buffer>): Array<[string, Buffer]> 
 
 function cloneRow(row: Record<string, unknown> | undefined): Record<string, unknown> | null {
   return row ? { ...row } : null;
+}
+
+function cloneTable(
+  map: Map<string, Record<string, unknown>>
+): Map<string, Record<string, unknown>> {
+  return new Map([...map.entries()].map(([key, row]) => [key, { ...row }]));
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {

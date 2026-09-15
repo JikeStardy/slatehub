@@ -118,26 +118,74 @@ export class ContentsService {
     parsed: ParsedContentUpload,
     signal?: AbortSignal
   ): Promise<ContentMutationResponseT> {
-    const content = await this.requireOwnedContent(contentId, ownerUserId);
-    if (content.kind !== 'image') {
-      throw new ValidationError('动态内容请使用 JSON 更新');
-    }
     return this.staticMutationQueue.run(
       contentId,
-      () =>
-        this.updateImage(
-          content.groupId,
-          content.sortOrder,
-          contentId,
-          parsed,
-          content.audioEtag,
-          signal
-        ),
+      () => this.patchImageUnqueued(contentId, ownerUserId, parsed, signal),
       { continueAfterFailure: true }
     );
   }
 
   async patchFrameName(
+    contentId: string,
+    ownerUserId: string,
+    frameName: string | null | undefined
+  ): Promise<ContentMutationResponseT> {
+    return this.staticMutationQueue.run(
+      contentId,
+      () => this.patchFrameNameUnqueued(contentId, ownerUserId, frameName),
+      { continueAfterFailure: true }
+    );
+  }
+
+  async delete(contentId: string, ownerUserId: string): Promise<void> {
+    return this.staticMutationQueue.run(
+      contentId,
+      () => this.deleteUnqueued(contentId, ownerUserId),
+      { continueAfterFailure: true }
+    );
+  }
+
+  async deleteAudio(contentId: string, ownerUserId: string): Promise<{ manifest_etag: string }> {
+    return this.staticMutationQueue.run(
+      contentId,
+      () => this.deleteAudioUnqueued(contentId, ownerUserId),
+      { continueAfterFailure: true }
+    );
+  }
+
+  async generateImageTts(
+    contentId: string,
+    ownerUserId: string,
+    raw: { text: string; voice: string }
+  ): Promise<ContentMutationResponseT> {
+    return this.staticMutationQueue.run(
+      contentId,
+      () => this.generateImageTtsUnqueued(contentId, ownerUserId, raw),
+      { continueAfterFailure: true }
+    );
+  }
+
+  private async patchImageUnqueued(
+    contentId: string,
+    ownerUserId: string,
+    parsed: ParsedContentUpload,
+    signal?: AbortSignal
+  ): Promise<ContentMutationResponseT> {
+    const content = await this.requireOwnedContent(contentId, ownerUserId);
+    if (content.kind !== 'image') {
+      throw new ValidationError('动态内容请使用 JSON 更新');
+    }
+    return this.updateImage(
+      content.groupId,
+      content.sortOrder,
+      contentId,
+      parsed,
+      content.audioEtag,
+      signal
+    );
+  }
+
+  private async patchFrameNameUnqueued(
     contentId: string,
     ownerUserId: string,
     frameName: string | null | undefined
@@ -167,7 +215,7 @@ export class ContentsService {
     );
   }
 
-  async delete(contentId: string, ownerUserId: string): Promise<void> {
+  private async deleteUnqueued(contentId: string, ownerUserId: string): Promise<void> {
     const content = await this.requireOwnedContent(contentId, ownerUserId);
     await this.withGroupMutation(content.groupId, async (tx) => {
       await tx.content.delete({ where: { id: contentId } });
@@ -186,7 +234,10 @@ export class ContentsService {
     }
   }
 
-  async deleteAudio(contentId: string, ownerUserId: string): Promise<{ manifest_etag: string }> {
+  private async deleteAudioUnqueued(
+    contentId: string,
+    ownerUserId: string
+  ): Promise<{ manifest_etag: string }> {
     const content = await this.requireOwnedContent(contentId, ownerUserId);
     const previousAudioEtag = content.audioEtag;
     const { groupEtag } = await this.withGroupMutation(content.groupId, async (tx) => {
@@ -200,7 +251,7 @@ export class ContentsService {
     return { manifest_etag: groupEtag };
   }
 
-  async generateImageTts(
+  private async generateImageTtsUnqueued(
     contentId: string,
     ownerUserId: string,
     raw: { text: string; voice: string }
@@ -648,16 +699,42 @@ export class ContentsService {
     variantResults: VariantRenderResult[];
     originalErr: unknown;
   }): Promise<void> {
-    try {
-      await this.restoreStaticReplacementDb(input.gid, input.contentId, input.snapshot);
-    } catch (rollbackErr: unknown) {
+    const postSnapshot = await this.snapshotStaticContent(input.gid, input.contentId);
+    const oldBlobRestore = await this.restoreStaticReplacementBlobs(input);
+    if (oldBlobRestore.length > 0) {
+      const rollForward = await this.restoreStaticReplacementBlobs({
+        ...input,
+        snapshot: postSnapshot,
+        newAudioEtag: null,
+        variantResults: [],
+        extraStorageKeysToDelete: storageKeysMissingFrom(input.snapshot, postSnapshot),
+        extraAudioBlobKeysToDelete: audioBlobKeysMissingFrom(input.snapshot, postSnapshot),
+      });
       throw combinedStaticMutationError(
         'static_replace_compensation_failed',
         input.originalErr,
-        rollbackErr
+        oldBlobRestore,
+        rollForward.length > 0 ? rollForward : undefined
       );
     }
-    await this.restoreStaticReplacementBlobs(input);
+    try {
+      await this.restoreStaticReplacementDb(input.gid, input.contentId, input.snapshot);
+    } catch (rollbackErr: unknown) {
+      const rollForward = await this.restoreStaticReplacementBlobs({
+        ...input,
+        snapshot: postSnapshot,
+        newAudioEtag: null,
+        variantResults: [],
+        extraStorageKeysToDelete: storageKeysMissingFrom(input.snapshot, postSnapshot),
+        extraAudioBlobKeysToDelete: audioBlobKeysMissingFrom(input.snapshot, postSnapshot),
+      });
+      throw combinedStaticMutationError(
+        'static_replace_compensation_failed',
+        input.originalErr,
+        rollbackErr,
+        rollForward.length > 0 ? rollForward : undefined
+      );
+    }
   }
 
   private async restoreStaticReplacementDb(
@@ -692,68 +769,80 @@ export class ContentsService {
     sourceKey: string;
     newAudioEtag: string | null;
     variantResults: VariantRenderResult[];
-  }): Promise<void> {
+    extraStorageKeysToDelete?: Set<string>;
+    extraAudioBlobKeysToDelete?: Set<string>;
+  }): Promise<unknown[]> {
     const snapshotVariantKeys = new Set(input.snapshot.variantBytes.keys());
+    const operations: Array<Promise<void>> = [];
     if (input.snapshot.source?.storageKey) {
-      await this.restoreStorageKey(input.snapshot.source.storageKey, input.snapshot.sourceBytes, {
-        deleteWhenMissing: false,
-      });
+      operations.push(
+        this.restoreStorageKey(input.snapshot.source.storageKey, input.snapshot.sourceBytes)
+      );
       if (input.snapshot.source.storageKey !== input.sourceKey) {
-        await this.blob.deleteStorageKey(input.sourceKey);
+        operations.push(this.blob.deleteStorageKey(input.sourceKey));
       }
     } else {
-      await this.blob.deleteStorageKey(input.sourceKey);
+      operations.push(this.blob.deleteStorageKey(input.sourceKey));
     }
-    await Promise.all(
-      [...input.snapshot.variantBytes.entries()].map(([storageKey, bytes]) =>
-        this.restoreStorageKey(storageKey, bytes, { deleteWhenMissing: false })
+    operations.push(
+      ...[...input.snapshot.variantBytes.entries()].map(([storageKey, bytes]) =>
+        this.restoreStorageKey(storageKey, bytes)
       )
     );
-    await Promise.all(
-      input.variantResults
+    operations.push(
+      ...input.variantResults
         .filter(
           (result) =>
             result.changed && result.storageKey && !snapshotVariantKeys.has(result.storageKey)
         )
         .map((result) => this.blob.deleteStorageKey(result.storageKey!))
     );
+    operations.push(
+      ...[...(input.extraStorageKeysToDelete ?? [])].map((storageKey) =>
+        this.blob.deleteStorageKey(storageKey)
+      )
+    );
     if (input.snapshot.legacyImageBytes) {
-      await this.blob.write(input.gid, input.contentId, 'image', input.snapshot.legacyImageBytes);
+      operations.push(
+        this.blob.write(input.gid, input.contentId, 'image', input.snapshot.legacyImageBytes).then()
+      );
     } else {
-      await this.blob.delete(input.gid, input.contentId, 'image');
+      operations.push(this.blob.delete(input.gid, input.contentId, 'image'));
     }
     if (input.snapshot.audioBlobKey && input.snapshot.audioBytes) {
-      await this.blob.write(
-        input.gid,
-        input.snapshot.audioBlobKey,
-        'audio',
-        input.snapshot.audioBytes
+      operations.push(
+        this.blob
+          .write(input.gid, input.snapshot.audioBlobKey, 'audio', input.snapshot.audioBytes)
+          .then()
       );
     }
     const oldAudioEtag = input.snapshot.content.audioEtag;
     if (input.newAudioEtag && input.newAudioEtag !== oldAudioEtag) {
-      await this.blob.delete(
-        input.gid,
-        audioBlobContentId(input.contentId, input.newAudioEtag),
-        'audio'
+      operations.push(
+        this.blob.delete(
+          input.gid,
+          audioBlobContentId(input.contentId, input.newAudioEtag),
+          'audio'
+        )
       );
     }
+    operations.push(
+      ...[...(input.extraAudioBlobKeysToDelete ?? [])].map((audioBlobKey) =>
+        this.blob.delete(input.gid, audioBlobKey, 'audio')
+      )
+    );
+    const settled = await Promise.allSettled(operations);
+    return settled
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
   }
 
-  private async restoreStorageKey(
-    storageKey: string,
-    previousBytes: Buffer | null,
-    options: { deleteWhenMissing?: boolean } = {}
-  ): Promise<void> {
+  private async restoreStorageKey(storageKey: string, previousBytes: Buffer | null): Promise<void> {
     if (previousBytes) {
       const kind = storageKey.startsWith('sources/') ? 'source' : 'frame';
       await this.blob.writeStorageKey(storageKey, kind, previousBytes);
-    } else if (options.deleteWhenMissing !== false) {
-      await this.blob.deleteStorageKey(storageKey);
     } else {
-      this.logger.warn(
-        `Static restore skipped deleting ${storageKey} because snapshot metadata still points at it`
-      );
+      await this.blob.deleteStorageKey(storageKey);
     }
   }
 
@@ -905,17 +994,57 @@ function variantSnapshotData(variant: ContentVariant): Prisma.ContentVariantCrea
   };
 }
 
+function storageKeysMissingFrom(
+  from: StaticContentSnapshot,
+  to: StaticContentSnapshot
+): Set<string> {
+  const toKeys = new Set<string>();
+  if (to.source?.storageKey) toKeys.add(to.source.storageKey);
+  for (const key of to.variantBytes.keys()) toKeys.add(key);
+
+  const missing = new Set<string>();
+  if (from.source?.storageKey && !toKeys.has(from.source.storageKey)) {
+    missing.add(from.source.storageKey);
+  }
+  for (const key of from.variantBytes.keys()) {
+    if (!toKeys.has(key)) missing.add(key);
+  }
+  return missing;
+}
+
+function audioBlobKeysMissingFrom(
+  from: StaticContentSnapshot,
+  to: StaticContentSnapshot
+): Set<string> {
+  if (!from.audioBlobKey || from.audioBlobKey === to.audioBlobKey) return new Set();
+  return new Set([from.audioBlobKey]);
+}
+
 function combinedStaticMutationError(
   code: 'static_create_compensation_failed' | 'static_replace_compensation_failed',
   originalErr: unknown,
-  rollbackErr: unknown
+  rollbackErr: unknown,
+  rollForwardErr?: unknown
 ): InternalError {
+  const rollbackMessage = formatStaticMutationFailure(rollbackErr);
+  const rollForwardMessage =
+    rollForwardErr === undefined ? null : formatStaticMutationFailure(rollForwardErr);
   return new InternalError(
-    `${code}: ${formatError(originalErr)}; rollback: ${formatError(rollbackErr)}`,
+    `${code}: ${formatError(originalErr)}; rollback: ${rollbackMessage}${
+      rollForwardMessage ? `; roll-forward: ${rollForwardMessage}` : ''
+    }`,
     {
       code,
       original_error: formatError(originalErr),
-      rollback_error: formatError(rollbackErr),
+      rollback_error: rollbackMessage,
+      ...(rollForwardMessage ? { roll_forward_error: rollForwardMessage } : {}),
     }
   );
+}
+
+function formatStaticMutationFailure(err: unknown): string {
+  if (Array.isArray(err)) {
+    return err.map((item) => formatError(item)).join('; ');
+  }
+  return formatError(err);
 }

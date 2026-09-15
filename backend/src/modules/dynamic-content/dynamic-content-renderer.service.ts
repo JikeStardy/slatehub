@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, type ContentVariant } from '@prisma/client';
 import { DEFAULT_DISPLAY_PROFILE_ID } from 'shared';
 import { BlobService } from '../../infra/blob/blob.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { toPrismaInputJson } from '../../common/db/prisma-json';
 import { computeETag } from '../../common/utils/etag';
-import { NotFoundError, ValidationError } from '../../common/errors';
+import { InternalError, NotFoundError, ValidationError } from '../../common/errors';
 import { formatError } from '../../common/utils/error-format';
 import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
 import { GroupsService } from '../groups/groups.service';
@@ -36,12 +36,38 @@ const DYNAMIC_RENDER_CONTENT_SELECT = {
   dynamicConfig: true,
   dynamicData: true,
   dynamicLastRunAt: true,
+  dynamicNextRunAt: true,
+  dynamicRefreshDueAt: true,
+  dynamicRefreshLeaseUntil: true,
   dynamicRefreshAttempts: true,
+  dynamicLastError: true,
 } as const satisfies Prisma.ContentSelect;
 
 type DynamicRenderContentRow = Prisma.ContentGetPayload<{
   select: typeof DYNAMIC_RENDER_CONTENT_SELECT;
 }>;
+
+type DynamicContentSnapshot = Pick<
+  DynamicRenderContentRow,
+  | 'id'
+  | 'groupId'
+  | 'imageEtag'
+  | 'imageSize'
+  | 'dynamicData'
+  | 'dynamicLastRunAt'
+  | 'dynamicNextRunAt'
+  | 'dynamicRefreshDueAt'
+  | 'dynamicRefreshLeaseUntil'
+  | 'dynamicRefreshAttempts'
+  | 'dynamicLastError'
+>;
+
+interface DynamicRenderSnapshot {
+  content: DynamicContentSnapshot;
+  legacyImage: Buffer | null;
+  variants: ContentVariant[];
+  variantBytes: Map<string, Buffer | null>;
+}
 
 export interface RenderDynamicContentOptions {
   force?: boolean;
@@ -262,13 +288,24 @@ export class DynamicContentRendererService {
       data: normalizeRenderData(data),
       renderedAt: now,
     };
-    const variants = await this.variantRenderer.renderContentVariants({
-      groupId: content.groupId,
-      contentId,
-      render: (target) => this.renderAndValidate({ ...renderContext, target }),
-    });
-    const note4 = this.requireReadyNote4(variants.results);
-    const mirrored = await this.mirrorNote4ToLegacy(content.groupId, contentId, note4);
+    const snapshot = await this.snapshotDynamicRender(content);
+    let note4: VariantRenderResult;
+    let mirrored: { etag: string; size: number; previousImage: Buffer | null };
+    try {
+      const variants = await this.variantRenderer.renderContentVariants({
+        groupId: content.groupId,
+        contentId,
+        render: (target) => this.renderAndValidate({ ...renderContext, target }),
+      });
+      note4 = this.requireReadyNote4(variants.results);
+      mirrored = await this.mirrorNote4ToLegacy(content.groupId, contentId, note4);
+    } catch (err) {
+      await this.restoreDynamicRenderSnapshot(snapshot, err);
+      if (isRequiredNote4Failure(err)) {
+        await this.markError(content, note4ErrorMessage(err), now);
+      }
+      throw err;
+    }
     const imageEtag = mirrored.etag;
     const schedule = computeDynamicRefreshSchedule({
       dynamicType: content.dynamicType,
@@ -278,18 +315,23 @@ export class DynamicContentRendererService {
     });
 
     if (!opts.force && imageEtag === content.imageEtag) {
-      await this.prisma.content.update({
-        where: { id: contentId },
-        data: {
-          dynamicData: data == null ? Prisma.JsonNull : toPrismaInputJson(data),
-          dynamicLastRunAt: now,
-          dynamicNextRunAt: schedule.nextRunAt,
-          dynamicRefreshDueAt: schedule.refreshDueAt,
-          dynamicRefreshLeaseUntil: null,
-          dynamicRefreshAttempts: 0,
-          dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
-        },
-      });
+      try {
+        await this.prisma.content.update({
+          where: { id: contentId },
+          data: {
+            dynamicData: data == null ? Prisma.JsonNull : toPrismaInputJson(data),
+            dynamicLastRunAt: now,
+            dynamicNextRunAt: schedule.nextRunAt,
+            dynamicRefreshDueAt: schedule.refreshDueAt,
+            dynamicRefreshLeaseUntil: null,
+            dynamicRefreshAttempts: 0,
+            dynamicLastError: fetchErrorMessage ? fetchErrorMessage.slice(0, 512) : null,
+          },
+        });
+      } catch (err) {
+        await this.restoreDynamicRenderSnapshot(snapshot, err);
+        throw err;
+      }
       const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);
       const etags = await this.groups.recomputeGroupEtags(content.groupId);
       return {
@@ -319,15 +361,7 @@ export class DynamicContentRendererService {
         },
       });
     } catch (err) {
-      if (mirrored.previousImage)
-        await this.blob.write(content.groupId, content.id, 'image', mirrored.previousImage);
-      else {
-        await this.blob.delete(content.groupId, content.id, 'image').catch((deleteErr: unknown) => {
-          this.logger.warn(
-            `Failed to delete dynamic image after database update rollback for content ${contentId}: ${formatError(deleteErr)}`
-          );
-        });
-      }
+      await this.restoreDynamicRenderSnapshot(snapshot, err);
       throw err;
     }
     const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);
@@ -360,7 +394,8 @@ export class DynamicContentRendererService {
       note4?.status === 'ready' &&
       note4.storageKey &&
       note4.frameEtag &&
-      note4.frameSize !== undefined
+      note4.frameSize !== undefined &&
+      !note4.error
     ) {
       return note4;
     }
@@ -368,6 +403,94 @@ export class DynamicContentRendererService {
       code: 'note4_dynamic_variant_required',
       error: note4?.error,
     });
+  }
+
+  private async snapshotDynamicRender(
+    content: DynamicRenderContentRow
+  ): Promise<DynamicRenderSnapshot> {
+    const variants = await this.prisma.contentVariant.findMany({
+      where: { contentId: content.id },
+    });
+    const variantBytes = new Map<string, Buffer | null>();
+    for (const variant of variants) {
+      if (variant.storageKey && !variantBytes.has(variant.storageKey)) {
+        variantBytes.set(variant.storageKey, await this.blob.readStorageKey(variant.storageKey));
+      }
+    }
+    return {
+      content: {
+        id: content.id,
+        groupId: content.groupId,
+        imageEtag: content.imageEtag,
+        imageSize: content.imageSize,
+        dynamicData: content.dynamicData,
+        dynamicLastRunAt: content.dynamicLastRunAt,
+        dynamicNextRunAt: content.dynamicNextRunAt,
+        dynamicRefreshDueAt: content.dynamicRefreshDueAt,
+        dynamicRefreshLeaseUntil: content.dynamicRefreshLeaseUntil,
+        dynamicRefreshAttempts: content.dynamicRefreshAttempts,
+        dynamicLastError: content.dynamicLastError,
+      },
+      legacyImage: await this.blob.read(content.groupId, content.id, 'image'),
+      variants,
+      variantBytes,
+    };
+  }
+
+  private async restoreDynamicRenderSnapshot(
+    snapshot: DynamicRenderSnapshot,
+    originalErr: unknown
+  ): Promise<void> {
+    try {
+      await this.restoreDynamicRenderSnapshotOrThrow(snapshot);
+    } catch (rollbackErr) {
+      throw new InternalRenderRollbackError(originalErr, rollbackErr);
+    }
+  }
+
+  private async restoreDynamicRenderSnapshotOrThrow(
+    snapshot: DynamicRenderSnapshot
+  ): Promise<void> {
+    const currentVariants = await this.prisma.contentVariant.findMany({
+      where: { contentId: snapshot.content.id },
+    });
+    const storageKeys = new Set<string>();
+    for (const variant of currentVariants) {
+      if (variant.storageKey) storageKeys.add(variant.storageKey);
+    }
+    for (const variant of snapshot.variants) {
+      if (variant.storageKey) storageKeys.add(variant.storageKey);
+    }
+
+    for (const storageKey of storageKeys) {
+      if (snapshot.variantBytes.has(storageKey)) {
+        const bytes = snapshot.variantBytes.get(storageKey);
+        if (bytes) await this.blob.writeStorageKey(storageKey, 'frame', bytes);
+        else await this.blob.deleteStorageKey(storageKey);
+      } else {
+        await this.blob.deleteStorageKey(storageKey);
+      }
+    }
+
+    if (snapshot.legacyImage) {
+      await this.blob.write(
+        snapshot.content.groupId,
+        snapshot.content.id,
+        'image',
+        snapshot.legacyImage
+      );
+    } else {
+      await this.blob.delete(snapshot.content.groupId, snapshot.content.id, 'image');
+    }
+
+    await this.prisma.content.update({
+      where: { id: snapshot.content.id },
+      data: restoreDynamicContentInput(snapshot.content),
+    });
+    await this.prisma.contentVariant.deleteMany({ where: { contentId: snapshot.content.id } });
+    if (snapshot.variants.length > 0) {
+      await this.prisma.contentVariant.createMany({ data: snapshot.variants });
+    }
   }
 
   private async mirrorNote4ToLegacy(
@@ -474,4 +597,52 @@ function normalizeRenderData(data: unknown): Record<string, unknown> | null {
     });
   }
   return data as Record<string, unknown>;
+}
+
+function restoreDynamicContentInput(content: DynamicContentSnapshot): Prisma.ContentUpdateInput {
+  return {
+    imageEtag: content.imageEtag,
+    imageSize: content.imageSize,
+    dynamicData:
+      content.dynamicData === null || content.dynamicData === undefined
+        ? Prisma.JsonNull
+        : toPrismaInputJson(content.dynamicData),
+    dynamicLastRunAt: content.dynamicLastRunAt,
+    dynamicNextRunAt: content.dynamicNextRunAt,
+    dynamicRefreshDueAt: content.dynamicRefreshDueAt,
+    dynamicRefreshLeaseUntil: content.dynamicRefreshLeaseUntil,
+    dynamicRefreshAttempts: content.dynamicRefreshAttempts,
+    dynamicLastError: content.dynamicLastError,
+  };
+}
+
+function isRequiredNote4Failure(err: unknown): boolean {
+  return (
+    err instanceof ValidationError &&
+    typeof err.detail === 'object' &&
+    err.detail !== null &&
+    (err.detail as { code?: unknown }).code === 'note4_dynamic_variant_required'
+  );
+}
+
+function note4ErrorMessage(err: unknown): string {
+  if (
+    err instanceof ValidationError &&
+    typeof err.detail === 'object' &&
+    err.detail !== null &&
+    typeof (err.detail as { error?: unknown }).error === 'string'
+  ) {
+    return (err.detail as { error: string }).error;
+  }
+  return formatError(err);
+}
+
+class InternalRenderRollbackError extends InternalError {
+  constructor(originalErr: unknown, rollbackErr: unknown) {
+    super('动态渲染失败，且回滚未完成', {
+      code: 'dynamic_render_rollback_failed',
+      original_error: formatError(originalErr),
+      rollback_error: formatError(rollbackErr),
+    });
+  }
 }

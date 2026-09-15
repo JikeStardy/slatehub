@@ -25,7 +25,7 @@
 ```text
 backend/
 ├── src/
-│   ├── main.ts                  Fastify bootstrap、/api/v1 前缀、multipart、static dist、SPA fallback
+│   ├── main.ts                  Fastify bootstrap、/api/v2 前缀、multipart、static dist、SPA fallback
 │   ├── app.module.ts            全局 filter / guard / pipe / interceptor 与业务模块装配
 │   ├── common/
 │   │   ├── db/                  行锁与批量 sort_order 更新 helper
@@ -72,6 +72,16 @@ backend/
     └── lib/                     job 共享 env / HTTP / Slate ingest helper
 ```
 
+## 多设备显示模型
+
+`shared/src/display-profiles.*` 是后端的显示契约来源：
+
+- `BoardDefinition` 表示真实设备板型和硬件能力，例如 `zectrix-note4` 是否支持音频与局刷。
+- `DisplayProfile` 表示后端需要渲染和下发的帧格式，包括宽高、`mono1` 像素格式、`raw_mono1_msb` 编码和可用环境。
+- 内容以 source 为管理入口，后端为目标 profile 生成 `ContentVariant`。manifest 只返回当前设备板型对应的变体；旧 400 × 300 静态 blob 不会被隐式复用到其它 profile。
+
+开发 / 测试 profile `virtual-mono-296x128` 只用于 backend/frontend 测试和 Web 模拟器的 HTML Canvas/PNG 输出，不属于真实 firmware board。当前真实硬件验证仅覆盖 Note4；virtual 输出只证明渲染字节与像素，不证明物理面板刷新、波形、电源或功耗行为。
+
 ## 数据模型
 
 核心模型在 [prisma/schema.prisma](prisma/schema.prisma)：
@@ -111,13 +121,13 @@ Content
 
 ## API
 
-除 `/healthz` 外，所有端点都在 `/api/v1` 下。
+除 `/healthz` 外，所有端点都在 `/api/v2` 下。
 
 ### 公开端点
 
 ```text
-POST /api/v1/users
-POST /api/v1/sessions
+POST /api/v2/users
+POST /api/v2/sessions
 GET  /healthz
 ```
 
@@ -138,34 +148,34 @@ GET  /healthz
 ### Web 管理端点（JWT）
 
 ```text
-GET    /api/v1/users/current
-DELETE /api/v1/sessions/current
+GET    /api/v2/users/current
+DELETE /api/v2/sessions/current
 
-GET    /api/v1/devices
-PUT    /api/v1/devices/order
-POST   /api/v1/devices/claims
-GET    /api/v1/devices/:id
-PATCH  /api/v1/devices/:id
-DELETE /api/v1/devices/:id/binding
+GET    /api/v2/devices
+PUT    /api/v2/devices/order
+POST   /api/v2/devices/claims
+GET    /api/v2/devices/:id
+PATCH  /api/v2/devices/:id
+DELETE /api/v2/devices/:id/binding
 
-GET    /api/v1/groups
-POST   /api/v1/groups
-PUT    /api/v1/groups/order
-GET    /api/v1/groups/:groupId
-PATCH  /api/v1/groups/:groupId
-DELETE /api/v1/groups/:groupId
+GET    /api/v2/groups
+POST   /api/v2/groups
+PUT    /api/v2/groups/order
+GET    /api/v2/groups/:groupId
+PATCH  /api/v2/groups/:groupId
+DELETE /api/v2/groups/:groupId
 
-POST   /api/v1/groups/:groupId/contents
-PUT    /api/v1/groups/:groupId/contents/order
-PATCH  /api/v1/contents/:contentId
-DELETE /api/v1/contents/:contentId
-DELETE /api/v1/contents/:contentId/audio
-POST   /api/v1/contents/:contentId/audio/tts
-POST   /api/v1/contents/:contentId/refresh
-POST   /api/v1/contents/preview
-POST   /api/v1/contents/:contentId/preview
+POST   /api/v2/groups/:groupId/contents
+PUT    /api/v2/groups/:groupId/contents/order
+PATCH  /api/v2/contents/:contentId
+DELETE /api/v2/contents/:contentId
+DELETE /api/v2/contents/:contentId/audio
+POST   /api/v2/contents/:contentId/audio/tts
+POST   /api/v2/contents/:contentId/refresh
+POST   /api/v2/contents/preview
+POST   /api/v2/contents/:contentId/preview
 
-GET    /api/v1/dynamic/weather/cities?q=北京
+GET    /api/v2/dynamic/weather/cities?q=北京
 ```
 
 `POST /groups/:groupId/contents` 和 `PATCH /contents/:contentId` 支持两种 content type：
@@ -176,11 +186,11 @@ GET    /api/v1/dynamic/weather/cities?q=北京
 ### 内容读取与设备资源下发（JWT 或 device secret）
 
 ```text
-GET /api/v1/groups/:groupId/contents
-GET /api/v1/groups/:groupId/manifest
-GET /api/v1/contents/:contentId
-GET /api/v1/contents/:contentId/image
-GET /api/v1/contents/:contentId/audio
+GET /api/v2/groups/:groupId/contents
+GET /api/v2/groups/:groupId/manifest
+GET /api/v2/contents/:contentId
+GET /api/v2/contents/:contentId/image
+GET /api/v2/contents/:contentId/audio
 ```
 
 这些端点由 `JwtOrDeviceAuthGuard` 保护，Web 预览和固件同步共用同一套读取路径。manifest、image、audio 都支持 ETag；ETag 命中时返回 304。
@@ -189,6 +199,14 @@ manifest response：
 
 ```ts
 {
+  display_profile: {
+    id: string;
+    width: number;
+    height: number;
+    pixel_format: 'mono1';
+    frame_codec: 'raw_mono1_msb';
+    byte_length: number;
+  };
   group: {
     id: string;
     structure_etag: string;
@@ -213,6 +231,14 @@ manifest response：
     kind: 'image' | 'dynamic';
     dynamic_type: string | null;
     next_wake_sec: number | null;
+    frame: {
+      profile_id: string;
+      width: number;
+      height: number;
+      pixel_format: 'mono1';
+      frame_codec: 'raw_mono1_msb';
+      byte_length: number;
+    };
   }>;
 }
 ```
@@ -220,7 +246,7 @@ manifest response：
 ### Dashboard 外部数据推送
 
 ```text
-POST /api/v1/contents/:contentId/data
+POST /api/v2/contents/:contentId/data
 ```
 
 该端点只用于 `dashboard` 动态内容，不需要 JWT。`contentId` 本身是 capability URL 凭证；拿到 URL 就能推送。保护措施是 body limit 64 KB 与 `30 req/min/contentId` 固定窗口限速。泄漏后应删除内容重建。
@@ -245,13 +271,18 @@ body：
 注册端点无鉴权：
 
 ```text
-POST /api/v1/devices
+POST /api/v2/devices
 ```
 
 body：
 
 ```json
-{ "mac": "AA:BB:CC:DD:EE:FF" }
+{
+  "mac": "AA:BB:CC:DD:EE:FF",
+  "board_id": "zectrix-note4",
+  "protocol_version": 2,
+  "fw_version": "0.1.1"
+}
 ```
 
 响应：
@@ -270,10 +301,10 @@ body：
 后续设备端点使用 `Authorization: Bearer <device_secret>`：
 
 ```text
-POST /api/v1/devices/current/poll
-PUT  /api/v1/devices/current/group
-POST /api/v1/devices/current/group/next
-POST /api/v1/devices/current/group/prev
+POST /api/v2/devices/current/poll
+PUT  /api/v2/devices/current/group
+POST /api/v2/devices/current/group/next
+POST /api/v2/devices/current/group/prev
 ```
 
 poll body 可选：
@@ -318,7 +349,7 @@ poll body 可选：
 }
 ```
 
-`current_content` 只在设备上报 timer wake 且当前帧确实需要刷新、并且无需完整 manifest 同步时返回，用于固件低功耗增量刷新当前帧。
+`current_content` 只在设备上报 timer wake 且当前帧确实需要刷新、并且无需完整 manifest 同步时返回，用于固件低功耗增量刷新当前帧。设备协议 v2 要求固件在缓存写入前校验 top-level `display_profile` 和每个 content `frame` descriptor；profile id、尺寸、格式、编码和 byte length 任一不匹配都会拒绝该 manifest 或资源。
 
 ## 鉴权矩阵
 
@@ -344,7 +375,7 @@ device secret 必须是 64 字符 hex bearer token；JWT 与 device secret 不�
 
 ```text
 {BLOB_DIR}/
-├── {groupId}/{contentId}.img                   400 x 300 1bpp packed，15000 bytes
+├── {groupId}/{profileId}/{contentId}.img       per-profile 1bpp packed frame
 ├── {groupId}/{contentId}.{audioEtag}.pcm       16 kHz mono s16le raw PCM
 └── image-render-cache/{xx}/{key}.bin
 ```
@@ -356,7 +387,7 @@ device secret 必须是 64 字符 hex bearer token；JWT 与 device secret 不�
 `ImageRendererService` 管线：
 
 1. sharp 解码，白底 flatten。
-2. resize 到 400 x 300，默认 `contain` letterbox。
+2. 按目标 DisplayProfile resize，默认 `contain` letterbox。
 3. grayscale raw。
 4. `shared.autoInvert` 四角判断黑底反相。
 5. `shared.autoContrast(cutoff=1)`。

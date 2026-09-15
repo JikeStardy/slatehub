@@ -34,6 +34,8 @@ frontend/src/
 │   ├── contents/             内容列表、卡片、新建页、图片编辑、音频预览、content queries
 │   ├── devices/              设备卡片、绑定弹窗、设备详情弹窗、device queries
 │   ├── dynamic/              动态内容配置表单、预览、默认 config、dashboard push panel
+│   ├── profiles/             DisplayProfile 选择与环境过滤
+│   ├── simulator/            虚拟 profile 的 HTML Canvas/PNG 渲染模拟器
 │   └── groups/               内容组卡片、新建弹窗、group queries
 ├── hooks/                    跨 feature hooks
 ├── lib/                      axios、错误解包、格式化、JSON helper、样式片段、eink 图片解码
@@ -67,6 +69,7 @@ frontend/src/
 | `/groups/:gid/contents/new` | `ContentNewPage` | 图片和动态内容统一新建入口 |
 | `/groups/:gid/contents/image/:contentId/edit` | `ImageContentEditorPage` | 编辑图片内容 |
 | `/groups/:gid/contents/dynamic/:contentId/edit` | `DynamicContentEditorPage` | 编辑动态内容 |
+| `/simulator` | `SimulatorPage` | 开发 / 测试用 profile 模拟器，渲染 HTML Canvas 并可导出 PNG |
 | `*` | redirect `/` | 兜底 |
 
 除登录/注册外，页面都包在 `RequireAuth + Layout` 下。
@@ -76,7 +79,7 @@ frontend/src/
 ### 设备
 
 - Dashboard 显示当前账号的设备列表。
-- `AddDeviceDialog` 输入设备屏幕上的 6 位 pair code，调用 `POST /api/v1/devices/claims`。
+- `AddDeviceDialog` 输入设备屏幕上的 6 位 pair code，调用 `POST /api/v2/devices/claims`。
 - `DeviceModal` 支持重命名、选择当前内容组、解绑。
 - 设备列表每 30 秒 refetch，用于刷新 `last_seen_at`、电量、RSSI、固件版本。
 
@@ -86,11 +89,17 @@ frontend/src/
 - 支持创建、重命名、删除、拖拽排序。
 - 进入 `/groups/:gid` 后管理该内容组下的内容，内容也支持拖拽排序。
 
+### DisplayProfile 与测试模拟器
+
+前端直接消费 `shared` 的 BoardDefinition / DisplayProfile registry。生产设备使用真实板型关联的 profile；开发和测试环境可以选择 `virtual-mono-296x128` 来验证布局和 1bpp 字节输出。
+
+模拟器不会注册设备，也不会代表真实 ESP BSP。它读取与固件相同的 manifest/frame descriptor，将 raw `mono1` / `raw_mono1_msb` 帧解码到 HTML Canvas，并可导出 PNG，用来快速检查小尺寸测试屏幕的渲染效果。当前真实硬件验证仅覆盖 Note4；virtual HTML/PNG 只证明渲染字节与像素，不证明物理面板刷新、波形、电源或功耗行为。
+
 ### 图片内容
 
 图片编辑器支持：
 
-- 上传图片并裁剪/平移/缩放到 400 x 300。
+- 上传图片并按当前 DisplayProfile 裁剪、平移、缩放。
 - 调整阈值与 dither 模式。
 - 浏览器端使用 `shared` 的 `rgbaToGray -> autoInvert -> autoContrast -> ditherToBinary` 生成预览。
 - 可附加上传音频，或提交 TTS 文案由后端生成音频。
@@ -115,11 +124,11 @@ frontend/src/
 动态预览调用：
 
 ```text
-POST /api/v1/contents/preview
-POST /api/v1/contents/:contentId/preview
+POST /api/v2/contents/preview
+POST /api/v2/contents/:contentId/preview
 ```
 
-响应是 400 x 300 1bpp binary，前端通过 `DynamicFramePreview` 转成 canvas 预览。
+响应是当前 DisplayProfile 的 1bpp binary，前端通过 `DynamicFramePreview` 转成 canvas 预览。
 
 ### Dashboard 推送
 
@@ -131,7 +140,7 @@ dashboard 动态内容可以选择系统模板或自定义 JSON 模板：
 创建时必须提供初始数据。编辑已有 dashboard 内容时，`DashboardPushPanel` 会展示：
 
 ```text
-POST /api/v1/contents/:contentId/data
+POST /api/v2/contents/:contentId/data
 ```
 
 这个 URL 使用 `contentId` 作为 capability 凭证，不需要 JWT。前端只负责展示和复制 URL；泄漏后需要删除内容重建。

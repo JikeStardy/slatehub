@@ -1,6 +1,6 @@
 # Slate
 
-Slate（墨笺）是一个面向 400 × 300 黑白墨水屏设备的开源相框 / 信息看板 / 语音玩具项目。把照片、实时资讯和自定义仪表板推送到一块墨水屏上，用按键翻页、用语音朗读。仓库涵盖设备固件、后端 API、Web 管理端和前后端共享 schema，可以完全自托管。
+Slate（墨笺）是一个面向 ESP + 黑白墨水屏设备的开源相框 / 信息看板 / 语音玩具项目。把照片、实时资讯和自定义仪表板推送到一块墨水屏上，用按键翻页、用语音朗读。仓库涵盖设备固件、后端 API、Web 管理端和前后端共享 schema，可以完全自托管。
 
 ![Slate 软件管理、设备同步和墨水屏内容形态总览](readme-hero.png)
 
@@ -36,7 +36,7 @@ Slate（墨笺）是一个面向 400 × 300 黑白墨水屏设备的开源相框
 
 ### 信息仪表板（Dashboard）
 
-仪表板是一种可编程的动态内容：用 JSON 描述区块布局（文本、指标、进度条、趋势线、矩形、直线等），再通过带能力 URL 的 `POST /api/v1/contents/:id/data` 把数据推上去，屏幕按间隔重渲染。适合把 CI 状态、家庭传感器、AI 用量等任意外部数据点亮到墙上的墨水屏。
+仪表板是一种可编程的动态内容：用 JSON 描述区块布局（文本、指标、进度条、趋势线、矩形、直线等），再通过带能力 URL 的 `POST /api/v2/contents/:id/data` 把数据推上去，屏幕按间隔重渲染。适合把 CI 状态、家庭传感器、AI 用量等任意外部数据点亮到墙上的墨水屏。
 
 ### 设备与同步
 
@@ -47,7 +47,7 @@ Slate（墨笺）是一个面向 400 × 300 黑白墨水屏设备的开源相框
 
 ## 技术栈
 
-- `firmware/`：ESP-IDF 5.5.x 固件，目标板为 ZecTrix Note4 V1.0（ESP32-S3 + 4.2" EPD + ES8311 音频 + 按键 + 电池）。
+- `firmware/`：ESP-IDF 5.5.x 固件，当前真实硬件目标为 ZecTrix Note4 V1.0（ESP32-S3 + 4.2" EPD + ES8311 音频 + 按键 + 电池）。
 - `backend/`：Bun + NestJS 11 + Fastify + Prisma 7 + MySQL 8，负责账号、设备、内容组、内容、动态帧渲染、音频转码和设备同步协议。
 - `frontend/`：React 19 + Vite 8 + Tailwind v4 的 Web 管理端。
 - `shared/`：前后端共享的 zod schema、动态内容配置、dither 和图像预处理纯函数。
@@ -75,6 +75,17 @@ slate/
 | 共享 schema、动态配置、1bpp 图像管线 | [shared/README.md](shared/README.md) |
 | 固件、硬件规格、GPIO/电源、同步协议、低功耗 | [firmware/README.md](firmware/README.md) |
 
+## 多设备架构
+
+Slate 把“真实板子”和“显示输出”分成两层：
+
+- `BoardDefinition` 描述一个真实 ESP 设备板型，例如 `zectrix-note4`，包含它使用的 `display_profile_id` 与音频、局刷等硬件能力。
+- `DisplayProfile` 描述帧格式，例如宽高、`mono1` 像素格式、`raw_mono1_msb` 编码与可用环境。后端按 profile 渲染内容变体，前端按 profile 预览，固件只接受与当前板型完全匹配的 descriptor。
+
+当前生产板型只有 `zectrix-note4`，对应 `zectrix-note4-400x300-mono`。真实硬件验证也仅覆盖 Note4。`virtual-mono-296x128` 是开发 / 测试 profile，用于 Web 模拟器以 HTML Canvas 和 PNG 导出验证渲染字节与像素，不会进入固件 BSP、CI firmware matrix 或 GitHub Release 产物；它不证明物理面板刷新、波形、电源或功耗行为。
+
+添加新的真实 ESP 屏幕设备时，先在 `shared` 中增加 BoardDefinition 和 DisplayProfile，再让后端为该 profile 生成内容 variant，前端提供预览，最后在 `firmware` 增加对应 BSP 并把 board id 加入 `.github/workflows/firmware.yml` 和 `release.yml` 的真实板型矩阵。
+
 ## 端到端流程
 
 ```text
@@ -83,7 +94,7 @@ slate/
      └─ 启动 SoftAP + captive portal（Slate-XXXX）
         └─ 用户填写 Wi-Fi 与 backend URL
            └─ 重启后连接 STA、SNTP 对时
-              └─ POST /api/v1/devices 注册设备，拿 device_secret + pair_code
+              └─ POST /api/v2/devices 注册设备，拿 device_secret + pair_code
 
 设备绑定
   └─ 固件屏幕显示 6 位 pair_code
@@ -98,7 +109,7 @@ slate/
      └─ 动态内容：后端实时拉取数据渲染成帧，按调度自动刷新
 
 设备同步
-  └─ POST /api/v1/devices/current/poll 上报 telemetry
+  └─ POST /api/v2/devices/current/poll 上报 telemetry
      └─ 收到 DeviceState（绑定状态、当前内容组、manifest etag、可选 current_content）
         └─ manifest 变化时 GET /groups/:gid/manifest
            └─ 增量 GET /contents/:id/image 与 /audio，ETag 命中返回 304
@@ -110,7 +121,7 @@ slate/
      └─ timer wake 后只刷新当前帧；manifest 变化时回退完整同步
 ```
 
-HTTP API 统一挂在 `/api/v1` 下，`/healthz` 是唯一不带前缀的健康检查端点。设备鉴权使用 `Authorization: Bearer <device_secret>`，Web 管理使用 JWT。完整端点和鉴权矩阵见 [backend/README.md](backend/README.md)。
+HTTP API 统一挂在 `/api/v2` 下，`/healthz` 是唯一不带前缀的健康检查端点。设备注册会上报 `board_id`、`protocol_version: 2` 和固件版本；manifest 会携带 display profile 与每帧 descriptor，固件在下载和缓存前做严格匹配。设备鉴权使用 `Authorization: Bearer <device_secret>`，Web 管理使用 JWT。完整端点和鉴权矩阵见 [backend/README.md](backend/README.md)。
 
 ## 本地开发
 
@@ -156,11 +167,12 @@ bun run dev:frontend    # http://localhost:5173，Vite proxy /api 与 /healthz �
 
 ```bash
 source $IDF_PATH/export.sh
-idf.py -C firmware build
+printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > /tmp/slate-zectrix-note4.defaults
+idf.py -C firmware -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;/tmp/slate-zectrix-note4.defaults" build
 idf.py -C firmware -p <serial> flash monitor
 ```
 
-target、分区表、Flash/PSRAM 配置已经固化在 `firmware/sdkconfig.defaults`，无需手动 `idf.py set-target`。
+target、分区表、Flash/PSRAM 配置已经固化在 `firmware/sdkconfig.defaults`，无需手动 `idf.py set-target`。真实板型由 `CONFIG_SLATE_BOARD_ID` 选择，CI/release 通过 board matrix 注入；当前只有 `zectrix-note4`。
 
 ## 常用校验
 
@@ -231,7 +243,7 @@ docker compose up -d
 
 ## 版本与发布
 
-稳定版本见 GitHub Releases。Slate 使用单一产品版本号：一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和固件产物。
+稳定版本见 GitHub Releases。Slate 使用单一产品版本号：一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和所有真实板型固件产物。固件附件命名为 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin` 和对应 sha256 文件；虚拟测试 profile 不发布固件。
 
 正式发布由 annotated tag 触发：
 
@@ -248,10 +260,10 @@ tag body 会作为 GitHub Release notes。详细流程见 [CONTRIBUTING.md](CONT
 
 | 工作流 | 触发 | 内容 |
 | --- | --- | --- |
-| `ci.yml` | PR、push 到 `master`、手动触发 | format + lint、typecheck、backend test、frontend build |
+| `ci.yml` | PR、push 到 `master`、手动触发 | release contract check、format + lint、typecheck、backend test、frontend build |
 | `docker.yml` | push 到 `master`、手动触发 | buildx 构建 linux/amd64 + linux/arm64 并推送 GHCR |
-| `firmware.yml` | `firmware/**` 变化、手动触发 | ESP-IDF v5.5.2 构建并上传 `slate-full.bin` / `slate-ota.bin` |
-| `release.yml` | push `vX.Y.Z` tag | 校验版本，推送 release Docker tag，构建固件并创建 GitHub Release |
+| `firmware.yml` | `firmware/**` 变化、手动触发 | 按真实板型矩阵运行 ESP-IDF v5.5.2，上传 board-named full / OTA artifact |
+| `release.yml` | push `vX.Y.Z` tag | 校验版本，推送 release Docker tag，按真实板型矩阵构建固件并创建 GitHub Release |
 
 ## 贡献
 

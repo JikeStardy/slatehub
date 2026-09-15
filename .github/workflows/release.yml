@@ -161,6 +161,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           prisma: 'true'
+      - run: bun run check:release-contract
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
@@ -208,14 +209,17 @@ jobs:
           cache-to: type=gha,mode=max
 
   firmware:
-    name: build release firmware
+    name: build release firmware (${{ matrix.board_id }})
     runs-on: ubuntu-latest
     needs:
       - prepare
       - quality
-    outputs:
-      full_name: ${{ steps.package.outputs.full_name }}
-      ota_name: ${{ steps.package.outputs.ota_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board_id: zectrix-note4
+            target: esp32s3
     steps:
       - uses: actions/checkout@v6
 
@@ -223,29 +227,32 @@ jobs:
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: 'v5.5.2'
-          target: esp32s3
+          target: ${{ matrix.target }}
           path: 'firmware'
           command: >-
-            idf.py build &&
-            idf.py merge-bin -o slate-full.bin &&
-            cp build/slate.bin build/slate-ota.bin
+            BOARD_SDKCONFIG_DEFAULTS="$RUNNER_TEMP/sdkconfig.${{ matrix.board_id }}.defaults" &&
+            printf "CONFIG_SLATE_BOARD_ID=\"${{ matrix.board_id }}\"\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
+            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
+            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-${{ matrix.board_id }}-full.bin" &&
+            cp build/slate.bin "build/slate-${{ matrix.board_id }}-ota.bin"
 
       - name: Prepare firmware assets
         id: package
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          BOARD_ID: ${{ matrix.board_id }}
         run: |
           set -euo pipefail
 
-          FULL_NAME="slate-zectrix-note4-${RELEASE_TAG}-full.bin"
-          OTA_NAME="slate-zectrix-note4-${RELEASE_TAG}-ota.bin"
+          FULL_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-full.bin"
+          OTA_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-ota.bin"
 
-          cp firmware/build/slate-full.bin "$RUNNER_TEMP/$FULL_NAME"
-          cp firmware/build/slate-ota.bin "$RUNNER_TEMP/$OTA_NAME"
+          cp "firmware/build/slate-${BOARD_ID}-full.bin" "$RUNNER_TEMP/$FULL_NAME"
+          cp "firmware/build/slate-${BOARD_ID}-ota.bin" "$RUNNER_TEMP/$OTA_NAME"
 
           (
             cd "$RUNNER_TEMP"
-            sha256sum "$FULL_NAME" "$OTA_NAME" > "slate-zectrix-note4-${RELEASE_TAG}-sha256.txt"
+            sha256sum "$FULL_NAME" "$OTA_NAME" > "slate-${BOARD_ID}-${RELEASE_TAG}-sha256.txt"
           )
 
           echo "full_name=$FULL_NAME" >> "$GITHUB_OUTPUT"
@@ -254,11 +261,11 @@ jobs:
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: slate-release-firmware
+          name: slate-release-firmware-${{ matrix.board_id }}
           path: |
             ${{ runner.temp }}/${{ steps.package.outputs.full_name }}
             ${{ runner.temp }}/${{ steps.package.outputs.ota_name }}
-            ${{ runner.temp }}/slate-zectrix-note4-${{ needs.prepare.outputs.tag }}-sha256.txt
+            ${{ runner.temp }}/slate-${{ matrix.board_id }}-${{ needs.prepare.outputs.tag }}-sha256.txt
           if-no-files-found: error
 
   github-release:
@@ -282,8 +289,9 @@ jobs:
       - name: Download firmware artifacts
         uses: actions/download-artifact@v7
         with:
-          name: slate-release-firmware
+          pattern: slate-release-firmware-*
           path: ${{ runner.temp }}/firmware
+          merge-multiple: true
 
       - name: Prepare deployment assets
         run: |
@@ -303,12 +311,22 @@ jobs:
           set -euo pipefail
 
           ASSETS=(
-            "$FIRMWARE_DIR/${{ needs.firmware.outputs.full_name }}"
-            "$FIRMWARE_DIR/${{ needs.firmware.outputs.ota_name }}"
-            "$FIRMWARE_DIR/slate-zectrix-note4-${RELEASE_TAG}-sha256.txt"
             "$DEPLOY_DIR/compose.yml"
             "$DEPLOY_DIR/slate.env.example"
           )
+
+          mapfile -t FIRMWARE_ASSETS < <(
+            find "$FIRMWARE_DIR" -maxdepth 1 -type f \
+              \( -name "slate-*-${RELEASE_TAG}-*.bin" -o -name "slate-*-${RELEASE_TAG}-sha256.txt" \) \
+              | sort
+          )
+
+          if [ "${#FIRMWARE_ASSETS[@]}" -eq 0 ]; then
+            echo "No firmware release artifacts found in $FIRMWARE_DIR." >&2
+            exit 1
+          fi
+
+          ASSETS=("${FIRMWARE_ASSETS[@]}" "${ASSETS[@]}")
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" \

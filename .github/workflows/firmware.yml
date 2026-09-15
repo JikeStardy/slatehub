@@ -10,8 +10,14 @@ on:
 
 jobs:
   build:
-    name: ESP-IDF build
+    name: ESP-IDF build (${{ matrix.board_id }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board_id: zectrix-note4
+            target: esp32s3
     steps:
       - uses: actions/checkout@v6
 
@@ -19,19 +25,21 @@ jobs:
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: 'v5.5.2'
-          target: esp32s3
+          target: ${{ matrix.target }}
           path: 'firmware'
           command: >-
-            idf.py build &&
-            idf.py merge-bin -o slate-full.bin &&
-            cp build/slate.bin build/slate-ota.bin
+            BOARD_SDKCONFIG_DEFAULTS="$RUNNER_TEMP/sdkconfig.${{ matrix.board_id }}.defaults" &&
+            printf "CONFIG_SLATE_BOARD_ID=\"${{ matrix.board_id }}\"\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
+            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
+            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-${{ matrix.board_id }}-full.bin" &&
+            cp build/slate.bin "build/slate-${{ matrix.board_id }}-ota.bin"
 
       - name: upload firmware
         uses: actions/upload-artifact@v7
         with:
-          name: firmware
+          name: firmware-${{ matrix.board_id }}
           path: |
-            firmware/build/slate-full.bin
-            firmware/build/slate-ota.bin
+            firmware/build/slate-${{ matrix.board_id }}-full.bin
+            firmware/build/slate-${{ matrix.board_id }}-ota.bin
           if-no-files-found: error
           retention-days: 14

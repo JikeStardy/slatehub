@@ -8,6 +8,7 @@
 - dashboard 模板 schema
 - 热榜源 catalog
 - 字体测试 catalog
+- 真实板型 BoardDefinition 与显示格式 DisplayProfile registry
 - 1bpp dither 与图像预处理纯函数
 
 前端和后端都直接 import `shared/src`，运行期不需要先构建 `dist`。
@@ -42,6 +43,8 @@ export * from './preprocess.js';
 ```text
 shared/src/
 ├── api.ts                       API_PREFIX、帧/音频常量、登录注册 schema、错误 envelope
+├── display-profiles.ts          BoardDefinition、DisplayProfile、descriptor helper
+├── display-profiles.json        真实板型与开发/测试 profile registry
 ├── dither.ts                    1bpp dither 算法
 ├── preprocess.ts                RGBA/RGB 灰度化、autoInvert、autoContrast
 ├── types/
@@ -64,17 +67,27 @@ shared/src/
 
 | 常量 | 值 | 说明 |
 | --- | --- | --- |
-| `API_VERSION` | `v1` | API 版本 |
-| `API_PREFIX` | `/api/v1` | 除 `/healthz` 外的 HTTP 前缀 |
-| `FRAME_WIDTH` | `400` | EPD 宽度 |
-| `FRAME_HEIGHT` | `300` | EPD 高度 |
-| `FRAME_BYTES` | `15000` | 400 x 300 packed 1bpp |
+| `API_VERSION` | `v2` | API 版本 |
+| `API_PREFIX` | `/api/v2` | 除 `/healthz` 外的 HTTP 前缀 |
+| `FRAME_WIDTH` | `400` | 默认生产 DisplayProfile 宽度 |
+| `FRAME_HEIGHT` | `300` | 默认生产 DisplayProfile 高度 |
+| `FRAME_BYTES` | `15000` | 默认生产 DisplayProfile packed 1bpp 字节数 |
 | `BW_THRESHOLD_DEFAULT` | `128` | 默认二值阈值 |
 | `AUDIO_SAMPLE_RATE` | `16000` | 设备 PCM 采样率 |
 | `AUDIO_BITS_PER_SAMPLE` | `16` | PCM 位深 |
 | `AUDIO_CHANNELS` | `1` | 单声道 |
 
 1bpp 字节序约定：MSB-first，bit=1 白，bit=0 黑，与固件 EPD 驱动一致。
+
+## BoardDefinition 与 DisplayProfile
+
+`display-profiles.json` 把真实硬件和显示格式分开维护：
+
+- `BoardDefinition` 是固件 / release 的真实板型行，当前只有 `zectrix-note4`。它引用一个 `display_profile_id`，并声明音频、局刷等硬件能力。
+- `DisplayProfile` 是渲染和协议 descriptor，包含 `width`、`height`、`pixel_format`、`frame_codec` 与 `availability`。
+- `virtual-mono-296x128` 只有 `development` / `test` 可用，用于后端测试、前端 HTML Canvas/PNG 模拟器和小尺寸渲染验证，不允许进入 firmware matrix 或 GitHub Release artifact。当前真实硬件验证仅覆盖 Note4；virtual 输出只证明渲染字节与像素，不证明物理面板刷新、波形、电源或功耗行为。
+
+新增真实 ESP 屏幕设备时，先新增 production-capable DisplayProfile，再新增 BoardDefinition 指向它；后端据此生成 per-profile content variant，前端据此预览，固件据此校验 manifest/frame descriptor。
 
 ## Schema 命名约定
 
@@ -162,7 +175,7 @@ export type PollRequestT = z.infer<typeof PollRequest>;
 
 模板坐标系：
 
-- 画布 400 x 300。
+- 画布使用目标 DisplayProfile 的像素坐标；Note4 为 400 x 300。
 - `DeviceRect.y` 最小为 24，保留固件状态栏区域。
 - rect 必须在屏幕范围内。
 - 最多 32 个 block。

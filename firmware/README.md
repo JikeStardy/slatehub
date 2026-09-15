@@ -1,6 +1,6 @@
 # Slate / Firmware
 
-ESP-IDF 5.5.x 固件，目标芯片 ESP32-S3。当前只支持 **ZecTrix_Note4_V1.0**（极趣实验室「Ai 便利贴」）：4.2 英寸黑白墨水屏、ES8311 音频、MEMS 麦、3 个按键（确认 / 上 / 下）、单节锂电池。
+ESP-IDF 5.5.x 固件，目标芯片 ESP32-S3。当前真实硬件只支持 board id **`zectrix-note4`** / **ZecTrix_Note4_V1.0**（极趣实验室「Ai 便利贴」）：4.2 英寸黑白墨水屏、ES8311 音频、MEMS 麦、3 个按键（确认 / 上 / 下）、单节锂电池。
 
 本目录是独立 ESP-IDF 工程，不属于 Bun workspace。
 
@@ -8,19 +8,35 @@ ESP-IDF 5.5.x 固件，目标芯片 ESP32-S3。当前只支持 **ZecTrix_Note4_V
 
 ```bash
 source $IDF_PATH/export.sh
-idf.py -C firmware build
+printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > /tmp/slate-zectrix-note4.defaults
+idf.py -C firmware -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;/tmp/slate-zectrix-note4.defaults" build
 idf.py -C firmware -p <serial> flash monitor
 ```
 
 CI 使用 ESP-IDF v5.5.2 构建：
 
 ```bash
-idf.py build
-idf.py merge-bin -o slate-full.bin
-cp build/slate.bin build/slate-ota.bin
+printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > "$RUNNER_TEMP/sdkconfig.zectrix-note4.defaults"
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$RUNNER_TEMP/sdkconfig.zectrix-note4.defaults" build
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$RUNNER_TEMP/sdkconfig.zectrix-note4.defaults" merge-bin -o slate-zectrix-note4-full.bin
+cp build/slate.bin build/slate-zectrix-note4-ota.bin
 ```
 
 target、Flash、PSRAM、分区表已在 `sdkconfig.defaults` 固化，无需手动 `idf.py set-target`。
+
+> 本地手动构建前需要先创建上例中的临时 defaults 文件；CI 会按 board matrix 自动生成。只设置环境变量不会改变 Kconfig，必须通过 `SDKCONFIG_DEFAULTS` 或等价 IDF 配置路径写入 `CONFIG_SLATE_BOARD_ID`。
+
+## 板型与 DisplayProfile
+
+固件只编译真实 `BoardDefinition` 对应的 board id。当前 Phase 1 matrix 只有 `zectrix-note4`，它对应 shared registry 里的 `zectrix-note4-400x300-mono` DisplayProfile。
+
+`virtual-mono-296x128` 是前后端开发 / 测试 profile，用 HTML Canvas 和 PNG 输出验证渲染字节与像素，不是 ESP-IDF BSP，不能进入 firmware matrix、binary 名称或 GitHub Release。当前真实硬件验证仅覆盖 Note4；virtual 输出不证明物理面板刷新、波形、电源或功耗行为。
+
+新增真实 ESP 屏幕设备时，需要：
+
+1. 在 `shared/src/display-profiles.json` 增加 production-capable DisplayProfile 和真实 BoardDefinition。
+2. 在 `firmware/main/bsp/` 增加对应 BoardPlatform、GPIO、电源、显示和能力定义，并让非支持 board id 在 CMake/Kconfig 阶段失败。
+3. 在 `.github/workflows/firmware.yml` 与 `release.yml` 的 matrix 增加 board row；产物命名保持 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin` 和对应 sha256。
 
 ## 工程结构
 
@@ -433,6 +449,7 @@ GPIO39 上键不是 RTC IO，不能作为 deep sleep ext1 唤醒源。
 
 | 项 | 默认 | 说明 |
 | --- | --- | --- |
+| `SLATE_BOARD_ID` | `zectrix-note4` | 编译期真实板型；CI/release 通过 matrix 写入临时 `SDKCONFIG_DEFAULTS` |
 | `SLATE_DEFAULT_SERVER_URL` | 空 | captive portal 服务端 URL 预填值 |
 | `SLATE_AP_SSID_PREFIX` | `Slate` | SoftAP SSID 前缀 |
 | `SLATE_DEFAULT_TIMEZONE` | `CST-8` | SNTP 后设置的 POSIX TZ |

@@ -304,8 +304,9 @@ export class DynamicContentRendererService {
       try {
         forwardSnapshot = await this.snapshotDynamicRenderState(snapshot.content);
       } catch (forwardSnapshotErr) {
-        await this.restoreDynamicRenderSnapshot(snapshot, forwardSnapshotErr);
-        throw forwardSnapshotErr;
+        await this.restoreDynamicRenderSnapshot(snapshot, err, undefined, forwardSnapshotErr);
+        await this.markErrorIfRendererOwned(content, renderFailureMessage(err), now);
+        throw new ForwardSnapshotCaptureError(err, forwardSnapshotErr);
       }
       await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
       await this.markErrorIfRendererOwned(content, renderFailureMessage(err), now);
@@ -347,9 +348,7 @@ export class DynamicContentRendererService {
         });
       } catch (err) {
         await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
-        if (forwardSnapshot) {
-          await this.markErrorIfRendererOwned(content, formatError(err), now);
-        }
+        await this.markErrorIfRendererOwned(content, formatError(err), now);
         throw err;
       }
       const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);
@@ -395,9 +394,7 @@ export class DynamicContentRendererService {
       });
     } catch (err) {
       await this.restoreDynamicRenderSnapshot(snapshot, err, forwardSnapshot);
-      if (forwardSnapshot) {
-        await this.markErrorIfRendererOwned(content, formatError(err), now);
-      }
+      await this.markErrorIfRendererOwned(content, formatError(err), now);
       throw err;
     }
     const audioSync = await this.syncDynamicAudioBestEffort(contentId, now);
@@ -470,7 +467,8 @@ export class DynamicContentRendererService {
   private async restoreDynamicRenderSnapshot(
     snapshot: DynamicRenderSnapshot,
     originalErr: unknown,
-    forwardSnapshot?: DynamicRenderSnapshot
+    forwardSnapshot?: DynamicRenderSnapshot,
+    forwardSnapshotErr?: unknown
   ): Promise<void> {
     try {
       await this.restoreDynamicRenderSnapshotOrThrow(snapshot);
@@ -478,7 +476,12 @@ export class DynamicContentRendererService {
       if (forwardSnapshot) {
         await this.rollForwardDynamicRenderSnapshot(originalErr, rollbackErr, forwardSnapshot);
       }
-      throw new InternalRenderRollbackError(originalErr, rollbackErr);
+      throw new InternalRenderRollbackError(
+        originalErr,
+        rollbackErr,
+        undefined,
+        forwardSnapshotErr
+      );
     }
   }
 
@@ -739,12 +742,28 @@ function note4ErrorMessage(err: unknown): string {
 }
 
 class InternalRenderRollbackError extends InternalError {
-  constructor(originalErr: unknown, rollbackErr: unknown, rollForwardErr?: unknown) {
+  constructor(
+    originalErr: unknown,
+    rollbackErr: unknown,
+    rollForwardErr?: unknown,
+    forwardSnapshotErr?: unknown
+  ) {
     super('动态渲染失败，且回滚未完成', {
       code: 'dynamic_render_rollback_failed',
       original_error: formatError(originalErr),
+      ...(forwardSnapshotErr ? { forward_snapshot_error: formatError(forwardSnapshotErr) } : {}),
       rollback_error: formatError(rollbackErr),
       ...(rollForwardErr ? { roll_forward_error: formatError(rollForwardErr) } : {}),
+    });
+  }
+}
+
+class ForwardSnapshotCaptureError extends InternalError {
+  constructor(originalErr: unknown, forwardSnapshotErr: unknown) {
+    super('动态渲染 forward snapshot 获取失败', {
+      code: 'dynamic_render_forward_snapshot_failed',
+      original_error: formatError(originalErr),
+      forward_snapshot_error: formatError(forwardSnapshotErr),
     });
   }
 }

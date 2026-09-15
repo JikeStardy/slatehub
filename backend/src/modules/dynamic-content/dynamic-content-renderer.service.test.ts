@@ -683,6 +683,7 @@ describe('DynamicContentRendererService variant integration', () => {
   });
 
   it('restores the old changed-render state when forward snapshot variant listing fails', async () => {
+    const now = new Date('2026-05-17T04:10:00.000Z');
     const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xa1);
     const oldVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0xa2);
     const oldNote4Etag = computeETag(oldNote4Bytes);
@@ -720,7 +721,7 @@ describe('DynamicContentRendererService variant integration', () => {
     harness.variants.failFindManyOnCall(3, 'forward snapshot variant list down');
 
     await expect(
-      harness.service.renderDynamicContent('content-1', { force: true })
+      harness.service.renderDynamicContent('content-1', { force: true, now })
     ).rejects.toThrow('forward snapshot variant list down');
 
     expect(await harness.blob.read('group-1', 'content-1', 'image')).toEqual(oldNote4Bytes);
@@ -737,12 +738,15 @@ describe('DynamicContentRendererService variant integration', () => {
     expect(harness.content).toMatchObject({
       imageEtag: oldNote4Etag,
       imageSize: NOTE4_RENDER_TARGET.byteLength,
-      dynamicRefreshAttempts: 0,
-      dynamicLastError: null,
+      dynamicRefreshAttempts: 1,
+      dynamicLastError: 'forward snapshot variant list down',
     });
+    expect(harness.content.dynamicRefreshDueAt).toEqual(harness.content.dynamicNextRunAt);
+    expect(harness.content.dynamicRefreshDueAt?.getTime()).toBeGreaterThan(now.getTime());
   });
 
   it('restores the old unchanged-render state when forward snapshot blob read fails', async () => {
+    const now = new Date('2026-05-17T04:10:00.000Z');
     const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xb1);
     const oldVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0xb2);
     const newVirtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0xb3);
@@ -781,7 +785,7 @@ describe('DynamicContentRendererService variant integration', () => {
     );
     harness.blob.failReadStorageKeyOnCall(6, 'forward snapshot blob read down');
 
-    await expect(harness.service.renderDynamicContent('content-1')).rejects.toThrow(
+    await expect(harness.service.renderDynamicContent('content-1', { now })).rejects.toThrow(
       'forward snapshot blob read down'
     );
 
@@ -799,8 +803,54 @@ describe('DynamicContentRendererService variant integration', () => {
     expect(harness.content).toMatchObject({
       imageEtag: oldNote4Etag,
       imageSize: NOTE4_RENDER_TARGET.byteLength,
-      dynamicRefreshAttempts: 0,
-      dynamicLastError: null,
+      dynamicRefreshAttempts: 1,
+      dynamicLastError: 'forward snapshot blob read down',
+    });
+    expect(harness.content.dynamicRefreshDueAt).toEqual(harness.content.dynamicNextRunAt);
+    expect(harness.content.dynamicRefreshDueAt?.getTime()).toBeGreaterThan(now.getTime());
+  });
+
+  it('leaves leased forward snapshot capture failures for scheduler retry marking', async () => {
+    const now = new Date('2026-05-17T04:10:00.000Z');
+    const leaseUntil = new Date('2026-05-17T04:13:00.000Z');
+    const oldNext = new Date('2026-05-17T04:00:00.000Z');
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xb4);
+    const oldNote4Etag = computeETag(oldNote4Bytes);
+    const harness = createIntegrationHarness({
+      dynamicRefreshAttempts: 2,
+      dynamicRefreshLeaseUntil: leaseUntil,
+      dynamicLastError: 'previous error',
+      dynamicNextRunAt: oldNext,
+      dynamicRefreshDueAt: oldNext,
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      renderFrame: async (_ctx, target) => Buffer.alloc(target.byteLength, 0xb5),
+    });
+    const oldNote4Key = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      NOTE4_RENDER_TARGET.profileId
+    );
+    await harness.blob.write('group-1', 'content-1', 'image', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldNote4Key, 'frame', oldNote4Bytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: oldNote4Etag,
+        storageKey: oldNote4Key,
+      })
+    );
+    harness.variants.failFindManyOnCall(3, 'forward snapshot variant list down');
+
+    await expect(harness.service.renderDynamicContent('content-1', { now })).rejects.toThrow(
+      'forward snapshot variant list down'
+    );
+
+    expect(harness.content).toMatchObject({
+      dynamicRefreshAttempts: 2,
+      dynamicLastError: 'previous error',
+      dynamicRefreshLeaseUntil: leaseUntil,
+      dynamicNextRunAt: oldNext,
+      dynamicRefreshDueAt: oldNext,
     });
   });
 
@@ -834,6 +884,43 @@ describe('DynamicContentRendererService variant integration', () => {
       message: '动态渲染失败，且回滚未完成',
       detail: {
         original_error: 'forward snapshot variant list down',
+        rollback_error: 'variant restore down',
+      },
+    });
+  });
+
+  it('surfaces initiating, forward snapshot, and rollback errors together', async () => {
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0xc3);
+    const oldNote4Etag = computeETag(oldNote4Bytes);
+    const harness = createIntegrationHarness({
+      imageEtag: oldNote4Etag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      renderFrame: async (_ctx, target) => Buffer.alloc(target.byteLength, 0xc4),
+    });
+    const oldNote4Key = harness.blob.frameKey(
+      'group-1',
+      'content-1',
+      NOTE4_RENDER_TARGET.profileId
+    );
+    await harness.blob.write('group-1', 'content-1', 'image', oldNote4Bytes);
+    await harness.blob.writeStorageKey(oldNote4Key, 'frame', oldNote4Bytes);
+    harness.variants.seed(
+      readyStoredVariant(NOTE4_RENDER_TARGET, {
+        frameEtag: oldNote4Etag,
+        storageKey: oldNote4Key,
+      })
+    );
+    harness.blob.failNextLegacyWrite('legacy mirror down');
+    harness.variants.failFindManyOnCall(3, 'forward snapshot variant list down');
+    harness.variants.failNextCreateMany('variant restore down');
+
+    await expect(
+      harness.service.renderDynamicContent('content-1', { force: true })
+    ).rejects.toMatchObject({
+      message: '动态渲染失败，且回滚未完成',
+      detail: {
+        original_error: 'legacy mirror down',
+        forward_snapshot_error: 'forward snapshot variant list down',
         rollback_error: 'variant restore down',
       },
     });

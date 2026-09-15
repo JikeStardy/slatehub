@@ -24,8 +24,13 @@ function assertContract(condition, message) {
   }
 }
 
-function matrixBoardIds(workflow) {
-  return [...workflow.matchAll(/board_id:\s*([a-z0-9-]+)/g)].map((match) => match[1]);
+function matrixBoardIds(workflow, jobName) {
+  const jobs = yamlMappingBlock(workflow, 'jobs');
+  const firmwareJob = yamlMappingBlock(jobs, jobName);
+  const strategy = yamlMappingBlock(firmwareJob, 'strategy');
+  const matrix = yamlMappingBlock(strategy, 'matrix');
+  const include = yamlMappingBlock(matrix, 'include');
+  return yamlSequenceRows(include).map((row) => yamlScalar(row, 'board_id'));
 }
 
 function compact(text) {
@@ -149,6 +154,32 @@ function yamlScalar(block, key) {
   return lines[keyIndexes[0]].trimStart().slice(prefix.length).trim();
 }
 
+function yamlSequenceRows(block) {
+  const lines = block.split('\n');
+  const structuralLines = lines.filter((line) => line.trim() && !line.trimStart().startsWith('#'));
+  if (structuralLines.length === 0) {
+    return [];
+  }
+
+  const directIndent = Math.min(
+    ...structuralLines.map((line) => line.length - line.trimStart().length)
+  );
+  const starts = lines
+    .map((line, index) => ({ index, line }))
+    .filter(
+      ({ line }) =>
+        line.length - line.trimStart().length === directIndent && /^-\s+/.test(line.trimStart())
+    )
+    .map(({ index }) => index);
+
+  return starts.map((start, rowIndex) => {
+    const end = starts[rowIndex + 1] ?? lines.length;
+    const firstValue = lines[start].trimStart().replace(/^-\s+/, '');
+    const normalizedFirstLine = `${' '.repeat(directIndent + 2)}${firstValue}`;
+    return [normalizedFirstLine, ...lines.slice(start + 1, end)].join('\n');
+  });
+}
+
 function shellFunctionBlocks(script, name) {
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const matches = script.matchAll(
@@ -221,8 +252,8 @@ const boardProfileErrors = displayRegistry.boards
 
 const realBoardIds = displayRegistry.boards.map((board) => board.id).sort();
 
-const firmwareBoardIds = matrixBoardIds(firmwareWorkflow).sort();
-const releaseBoardIds = matrixBoardIds(releaseWorkflow).sort();
+const firmwareBoardIds = matrixBoardIds(firmwareWorkflow, 'build').sort();
+const releaseBoardIds = matrixBoardIds(releaseWorkflow, 'firmware').sort();
 
 function sameList(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);

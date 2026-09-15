@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { FRAME_BYTES } from 'shared';
+import { computeETag } from '../../common/utils/etag';
 import type { PrismaService } from '../../infra/prisma/prisma.service';
 import type { BlobService } from '../../infra/blob/blob.service';
 import type { GroupsService } from '../groups/groups.service';
@@ -7,6 +8,14 @@ import type { DynamicFrameRendererService } from './rendering/dynamic-frame-rend
 import type { DynamicAudioService } from './audio/dynamic-audio.service';
 import type { DynamicContentRegistry } from './dynamic-content-registry';
 import { DynamicContentRendererService } from './dynamic-content-renderer.service';
+import type { VariantRenderService } from '../rendering/variant-render.service';
+import {
+  NOTE4_RENDER_TARGET,
+  renderTargetForProfile,
+  type RenderTarget,
+} from '../rendering/render-target';
+
+const VIRTUAL_RENDER_TARGET = renderTargetForProfile('virtual-mono-296x128');
 
 describe('DynamicContentRendererService queueing', () => {
   it('does not run a scheduled render queued behind a failed force render', async () => {
@@ -142,15 +151,242 @@ describe('DynamicContentRendererService queueing', () => {
   });
 });
 
+describe('DynamicContentRendererService variants', () => {
+  it('fetches once and renders the same normalized data for every enabled target', async () => {
+    const providerData = { tempC: 21 };
+    const renderCalls: Array<{
+      target: RenderTarget;
+      data: Record<string, unknown> | null;
+      renderedAt: Date;
+    }> = [];
+    const note4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x11);
+    const virtualBytes = Buffer.alloc(VIRTUAL_RENDER_TARGET.byteLength, 0x22);
+    const service = createService({
+      fetchData: async () => providerData,
+      renderFrame: async (ctx, target) => {
+        renderCalls.push({ target, data: ctx.data, renderedAt: ctx.renderedAt });
+        return target.profileId === NOTE4_RENDER_TARGET.profileId ? note4Bytes : virtualBytes;
+      },
+      variantResults: async (input) => {
+        const note4 = await input.render(NOTE4_RENDER_TARGET);
+        const virtual = await input.render(VIRTUAL_RENDER_TARGET);
+        return readyVariantResults(note4, virtual);
+      },
+      storageBytes: {
+        'note4-key': note4Bytes,
+      },
+    });
+
+    await expect(service.renderDynamicContent('content-1', { force: true })).resolves.toMatchObject(
+      {
+        contentId: 'content-1',
+        imageEtag: computeETag(note4Bytes),
+        groupEtag: 'group-etag',
+        unchanged: false,
+      }
+    );
+
+    expect(renderCalls.map((call) => call.target.profileId)).toEqual([
+      NOTE4_RENDER_TARGET.profileId,
+      VIRTUAL_RENDER_TARGET.profileId,
+    ]);
+    expect(renderCalls[0]?.data).toBe(providerData);
+    expect(renderCalls[1]?.data).toBe(providerData);
+    expect(renderCalls[0]?.renderedAt).toBe(renderCalls[1]?.renderedAt);
+    expect(service.harness.fetchCalls).toBe(1);
+    expect(service.harness.legacyWrites).toEqual([
+      {
+        groupId: 'group-1',
+        contentId: 'content-1',
+        kind: 'image',
+        bytes: note4Bytes,
+      },
+    ]);
+    expect(service.harness.contentUpdates.at(-1)?.data).toMatchObject({
+      imageEtag: computeETag(note4Bytes),
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      dynamicData: providerData,
+      dynamicRefreshAttempts: 0,
+      dynamicLastError: null,
+    });
+  });
+
+  it('keeps a ready Note4 refresh when the virtual render fails', async () => {
+    const note4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x33);
+    const service = createService({
+      fetchData: async () => ({ tempC: 22 }),
+      renderFrame: async (_ctx, target) => {
+        if (target.profileId === VIRTUAL_RENDER_TARGET.profileId) {
+          throw new Error('virtual renderer failed');
+        }
+        return note4Bytes;
+      },
+      variantResults: async (input) => {
+        const note4 = await input.render(NOTE4_RENDER_TARGET);
+        await expect(input.render(VIRTUAL_RENDER_TARGET)).rejects.toThrow(
+          'virtual renderer failed'
+        );
+        return {
+          contentId: 'content-1',
+          renderVersion: 1,
+          results: [
+            readyVariant(NOTE4_RENDER_TARGET.profileId, note4, 'note4-key'),
+            {
+              profileId: VIRTUAL_RENDER_TARGET.profileId,
+              status: 'failed',
+              changed: true,
+              error: 'virtual renderer failed',
+            },
+          ],
+        };
+      },
+      storageBytes: {
+        'note4-key': note4Bytes,
+      },
+    });
+
+    await expect(service.renderDynamicContent('content-1', { force: true })).resolves.toMatchObject(
+      {
+        imageEtag: computeETag(note4Bytes),
+        unchanged: false,
+      }
+    );
+    expect(service.harness.legacyWrites.at(-1)?.bytes).toBe(note4Bytes);
+  });
+
+  it('preserves the old legacy frame when Note4 fails but a previous ready Note4 variant exists', async () => {
+    const oldNote4Bytes = Buffer.alloc(NOTE4_RENDER_TARGET.byteLength, 0x44);
+    const oldEtag = computeETag(oldNote4Bytes);
+    const service = createService({
+      fetchData: async () => ({ tempC: 23 }),
+      imageEtag: oldEtag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      variantResults: async () => ({
+        contentId: 'content-1',
+        renderVersion: 2,
+        results: [
+          {
+            profileId: NOTE4_RENDER_TARGET.profileId,
+            status: 'ready',
+            changed: false,
+            frameEtag: oldEtag,
+            frameSize: NOTE4_RENDER_TARGET.byteLength,
+            storageKey: 'old-note4-key',
+            renderVersion: 1,
+            error: 'note4 renderer failed',
+          },
+          {
+            profileId: VIRTUAL_RENDER_TARGET.profileId,
+            status: 'ready',
+            changed: true,
+            frameEtag: 'virtual-etag',
+            frameSize: VIRTUAL_RENDER_TARGET.byteLength,
+            storageKey: 'virtual-key',
+            renderVersion: 2,
+          },
+        ],
+      }),
+      storageBytes: {
+        'old-note4-key': oldNote4Bytes,
+      },
+    });
+
+    await expect(service.renderDynamicContent('content-1', { force: true })).resolves.toMatchObject(
+      {
+        imageEtag: oldEtag,
+        unchanged: false,
+      }
+    );
+    expect(service.harness.legacyWrites.at(-1)?.bytes).toBe(oldNote4Bytes);
+    expect(service.harness.contentUpdates.at(-1)?.data).toMatchObject({
+      imageEtag: oldEtag,
+      imageSize: NOTE4_RENDER_TARGET.byteLength,
+      dynamicRefreshAttempts: 0,
+    });
+  });
+
+  it('rejects when Note4 rendering fails without an existing ready Note4 variant', async () => {
+    const service = createService({
+      fetchData: async () => ({ tempC: 24 }),
+      variantResults: async () => ({
+        contentId: 'content-1',
+        renderVersion: 1,
+        results: [
+          {
+            profileId: NOTE4_RENDER_TARGET.profileId,
+            status: 'failed',
+            changed: true,
+            error: 'note4 renderer failed',
+          },
+          {
+            profileId: VIRTUAL_RENDER_TARGET.profileId,
+            status: 'ready',
+            changed: true,
+            frameEtag: 'virtual-etag',
+            frameSize: VIRTUAL_RENDER_TARGET.byteLength,
+            storageKey: 'virtual-key',
+            renderVersion: 1,
+          },
+        ],
+      }),
+    });
+
+    await expect(service.renderDynamicContent('content-1', { force: true })).rejects.toThrow(
+      'Note4 动态变体渲染失败'
+    );
+    expect(service.harness.legacyWrites).toEqual([]);
+    expect(service.harness.contentUpdates).toEqual([]);
+  });
+
+  it('renders direct preview with the requested virtual display profile', async () => {
+    const service = createService({
+      fetchData: async () => ({ tempC: 21 }),
+      renderFrame: async (_ctx, target) => Buffer.alloc(target.byteLength, 0x55),
+    });
+
+    const preview = await service.renderPreviewDirect(
+      'weather',
+      {},
+      null,
+      { tempC: 21 },
+      VIRTUAL_RENDER_TARGET.profileId
+    );
+
+    expect(preview).toHaveLength(VIRTUAL_RENDER_TARGET.byteLength);
+    expect(service.harness.renderTargets.at(-1)?.profileId).toBe(VIRTUAL_RENDER_TARGET.profileId);
+  });
+
+  it('rejects unsupported preview display profiles', async () => {
+    const service = createService({
+      fetchData: async () => ({ tempC: 21 }),
+    });
+
+    await expect(
+      service.renderPreviewDirect('weather', {}, null, { tempC: 21 }, 'missing-profile')
+    ).rejects.toThrow();
+  });
+});
+
 function createService(opts: {
   fetchData: () => Promise<unknown>;
+  renderFrame?: DynamicFrameRendererService['render'];
+  variantResults?: VariantRenderService['renderContentVariants'];
+  storageBytes?: Record<string, Buffer>;
   syncAudio?: () => Promise<boolean>;
   audioEtag?: string | null;
   currentAudioEtag?: string | null;
   dynamicData?: unknown;
   dynamicLastRunAt?: Date | null;
   imageSize?: number;
-}): DynamicContentRendererService {
+  imageEtag?: string;
+}): DynamicContentRendererService & { harness: DynamicRendererHarness } {
+  const harness: DynamicRendererHarness = {
+    fetchCalls: 0,
+    legacyWrites: [],
+    contentUpdates: [],
+    renderTargets: [],
+  };
+  const storageBytes = { ...(opts.storageBytes ?? {}) };
   const content = {
     id: 'content-1',
     groupId: 'group-1',
@@ -162,8 +398,9 @@ function createService(opts: {
     dynamicLastRunAt: opts.dynamicLastRunAt ?? null,
     dynamicNextRunAt: null,
     audioEtag: opts.audioEtag ?? null,
-    imageEtag: 'old-image-etag',
+    imageEtag: opts.imageEtag ?? 'old-image-etag',
     imageSize: opts.imageSize ?? 0,
+    dynamicRefreshAttempts: 0,
   };
   const prisma = {
     content: {
@@ -178,13 +415,20 @@ function createService(opts: {
         }
         return content;
       },
-      update: async () => content,
+      update: async (args: { data: Record<string, unknown> }) => {
+        harness.contentUpdates.push(args);
+        Object.assign(content, args.data);
+        return content;
+      },
     },
   };
   const blob = {
     read: async () => null,
-    write: async () => undefined,
+    write: async (groupId: string, contentId: string, kind: 'image', bytes: Buffer) => {
+      harness.legacyWrites.push({ groupId, contentId, kind, bytes });
+    },
     delete: async () => undefined,
+    readStorageKey: async (key: string) => storageBytes[key] ?? null,
   };
   const registry = {
     get: () => ({
@@ -193,13 +437,33 @@ function createService(opts: {
       provider: {
         type: 'weather',
         validateConfig: () => ({}),
-        fetchData: opts.fetchData,
+        fetchData: () => {
+          harness.fetchCalls++;
+          return opts.fetchData();
+        },
       },
     }),
     defaultTtlSec: () => 300,
   };
   const frameRenderer = {
-    render: async () => Buffer.alloc(FRAME_BYTES, 0xff),
+    render: async (...args: Parameters<DynamicFrameRendererService['render']>) => {
+      harness.renderTargets.push(args[1]);
+      if (opts.renderFrame) return opts.renderFrame(...args);
+      return Buffer.alloc(args[1].byteLength, 0xff);
+    },
+  };
+  const variantRenderer = {
+    renderContentVariants:
+      opts.variantResults ??
+      (async (input) => {
+        const note4 = await input.render(NOTE4_RENDER_TARGET);
+        storageBytes['note4-key'] = note4;
+        return {
+          contentId: input.contentId,
+          renderVersion: 1,
+          results: [readyVariant(NOTE4_RENDER_TARGET.profileId, note4, 'note4-key')],
+        };
+      }),
   };
   const groups = {
     recomputeGroupEtags: async () => ({
@@ -211,14 +475,47 @@ function createService(opts: {
   const dynamicAudio = {
     sync: opts.syncAudio ?? (async () => false),
   };
-  return new DynamicContentRendererService(
+  const service = new DynamicContentRendererService(
     prisma as unknown as PrismaService,
     blob as unknown as BlobService,
     registry as unknown as DynamicContentRegistry,
     frameRenderer as unknown as DynamicFrameRendererService,
+    variantRenderer as unknown as VariantRenderService,
     groups as unknown as GroupsService,
     dynamicAudio as unknown as DynamicAudioService
-  );
+  ) as DynamicContentRendererService & { harness: DynamicRendererHarness };
+  service.harness = harness;
+  return service;
+}
+
+interface DynamicRendererHarness {
+  fetchCalls: number;
+  legacyWrites: Array<{ groupId: string; contentId: string; kind: 'image'; bytes: Buffer }>;
+  contentUpdates: Array<{ data: Record<string, unknown> }>;
+  renderTargets: RenderTarget[];
+}
+
+function readyVariantResults(note4: Buffer, virtual: Buffer) {
+  return {
+    contentId: 'content-1',
+    renderVersion: 1,
+    results: [
+      readyVariant(NOTE4_RENDER_TARGET.profileId, note4, 'note4-key'),
+      readyVariant(VIRTUAL_RENDER_TARGET.profileId, virtual, 'virtual-key'),
+    ],
+  };
+}
+
+function readyVariant(profileId: string, frame: Buffer, storageKey: string) {
+  return {
+    profileId,
+    status: 'ready' as const,
+    changed: true,
+    frameEtag: computeETag(frame),
+    frameSize: frame.byteLength,
+    storageKey,
+    renderVersion: 1,
+  };
 }
 
 function deferred<T>(): {

@@ -3,6 +3,7 @@ import { BlobModule } from '../../infra/blob/blob.module';
 import { GroupsModule } from '../groups/groups.module';
 import { AiModule } from '../ai/ai.module';
 import { HotListModule } from '../hot-list/hot-list.module';
+import { RenderingModule } from '../rendering/rendering.module';
 import { DynamicRenderingModule } from './rendering/dynamic-rendering.module';
 import { DynamicAudioModule } from './audio/dynamic-audio.module';
 import { DynamicContentRegistry } from './dynamic-content-registry';
@@ -39,6 +40,7 @@ import { DynamicPreviewController } from './dynamic-preview.controller';
     GroupsModule,
     AiModule,
     HotListModule,
+    RenderingModule,
     DynamicRenderingModule,
     DynamicAudioModule,
   ],

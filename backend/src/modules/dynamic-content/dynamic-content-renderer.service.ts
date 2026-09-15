@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { FRAME_BYTES } from 'shared';
+import { DEFAULT_DISPLAY_PROFILE_ID } from 'shared';
 import { BlobService } from '../../infra/blob/blob.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { toPrismaInputJson } from '../../common/db/prisma-json';
@@ -10,7 +10,15 @@ import { formatError } from '../../common/utils/error-format';
 import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
 import { GroupsService } from '../groups/groups.service';
 import { DynamicFrameRendererService } from './rendering/dynamic-frame-renderer.service';
-import { NOTE4_RENDER_TARGET } from '../rendering/render-target';
+import {
+  NOTE4_RENDER_TARGET,
+  renderTargetForProfile,
+  type RenderTarget,
+} from '../rendering/render-target';
+import {
+  VariantRenderService,
+  type VariantRenderResult,
+} from '../rendering/variant-render.service';
 import { DynamicContentRegistry } from './dynamic-content-registry';
 import { DynamicAudioService } from './audio/dynamic-audio.service';
 import { canReuseDynamicData } from './dynamic-data-reuse-policy';
@@ -68,6 +76,7 @@ export class DynamicContentRendererService {
     private readonly blob: BlobService,
     private readonly registry: DynamicContentRegistry,
     private readonly renderer: DynamicFrameRendererService,
+    private readonly variantRenderer: VariantRenderService,
     private readonly groups: GroupsService,
     private readonly dynamicAudio: DynamicAudioService
   ) {}
@@ -104,7 +113,8 @@ export class DynamicContentRendererService {
     dynamicType: string,
     configOverride: unknown,
     frameName?: string | null,
-    dataOverride?: unknown
+    dataOverride?: unknown,
+    displayProfileId = DEFAULT_DISPLAY_PROFILE_ID
   ): Promise<Buffer> {
     const entry = this.registry.get(dynamicType);
     if (!entry) throw new ValidationError(`未知动态类型: ${dynamicType}`);
@@ -120,6 +130,7 @@ export class DynamicContentRendererService {
       config: (config ?? {}) as Record<string, unknown>,
       data: normalizeRenderData(data),
       renderedAt: now,
+      target: renderTargetForProfile(displayProfileId),
     });
   }
 
@@ -127,7 +138,8 @@ export class DynamicContentRendererService {
     contentId: string,
     ownerUserId: string,
     configOverride: unknown,
-    frameNameOverride?: string | null
+    frameNameOverride?: string | null,
+    displayProfileId = DEFAULT_DISPLAY_PROFILE_ID
   ): Promise<Buffer> {
     const content = await this.prisma.content.findUnique({
       where: { id: contentId },
@@ -181,6 +193,7 @@ export class DynamicContentRendererService {
       config: (config ?? {}) as Record<string, unknown>,
       data: normalizeRenderData(data),
       renderedAt: now,
+      target: renderTargetForProfile(displayProfileId),
     });
   }
 
@@ -242,14 +255,21 @@ export class DynamicContentRendererService {
       data = content.dynamicData;
     }
 
-    const rendered = await this.renderAndValidate({
+    const renderContext = {
       type: content.dynamicType,
       frameName: content.frameName,
       config: (config ?? {}) as Record<string, unknown>,
       data: normalizeRenderData(data),
       renderedAt: now,
+    };
+    const variants = await this.variantRenderer.renderContentVariants({
+      groupId: content.groupId,
+      contentId,
+      render: (target) => this.renderAndValidate({ ...renderContext, target }),
     });
-    const imageEtag = computeETag(rendered);
+    const note4 = this.requireReadyNote4(variants.results);
+    const mirrored = await this.mirrorNote4ToLegacy(content.groupId, contentId, note4);
+    const imageEtag = mirrored.etag;
     const schedule = computeDynamicRefreshSchedule({
       dynamicType: content.dynamicType,
       config,
@@ -283,14 +303,12 @@ export class DynamicContentRendererService {
       };
     }
 
-    const previousImage = await this.blob.read(content.groupId, content.id, 'image');
-    await this.blob.write(content.groupId, content.id, 'image', rendered);
     try {
       await this.prisma.content.update({
         where: { id: contentId },
         data: {
           imageEtag,
-          imageSize: rendered.byteLength,
+          imageSize: mirrored.size,
           dynamicData: data == null ? Prisma.JsonNull : toPrismaInputJson(data),
           dynamicLastRunAt: now,
           dynamicNextRunAt: schedule.nextRunAt,
@@ -301,7 +319,8 @@ export class DynamicContentRendererService {
         },
       });
     } catch (err) {
-      if (previousImage) await this.blob.write(content.groupId, content.id, 'image', previousImage);
+      if (mirrored.previousImage)
+        await this.blob.write(content.groupId, content.id, 'image', mirrored.previousImage);
       else {
         await this.blob.delete(content.groupId, content.id, 'image').catch((deleteErr: unknown) => {
           this.logger.warn(
@@ -325,13 +344,55 @@ export class DynamicContentRendererService {
   }
 
   private async renderAndValidate(
-    input: Parameters<DynamicFrameRendererService['render']>[0]
+    input: Parameters<DynamicFrameRendererService['render']>[0] & { target?: RenderTarget }
   ): Promise<Buffer> {
-    const rendered = await this.renderer.render(input, NOTE4_RENDER_TARGET);
-    if (rendered.byteLength !== FRAME_BYTES) {
+    const target = input.target ?? NOTE4_RENDER_TARGET;
+    const rendered = await this.renderer.render(input, target);
+    if (rendered.byteLength !== target.byteLength) {
       throw new Error(`动态帧大小不匹配: ${rendered.byteLength}`);
     }
     return rendered;
+  }
+
+  private requireReadyNote4(results: VariantRenderResult[]): VariantRenderResult {
+    const note4 = results.find((variant) => variant.profileId === NOTE4_RENDER_TARGET.profileId);
+    if (
+      note4?.status === 'ready' &&
+      note4.storageKey &&
+      note4.frameEtag &&
+      note4.frameSize !== undefined
+    ) {
+      return note4;
+    }
+    throw new ValidationError('Note4 动态变体渲染失败，内容未保存', {
+      code: 'note4_dynamic_variant_required',
+      error: note4?.error,
+    });
+  }
+
+  private async mirrorNote4ToLegacy(
+    groupId: string,
+    contentId: string,
+    note4: VariantRenderResult
+  ): Promise<{ etag: string; size: number; previousImage: Buffer | null }> {
+    if (!note4.storageKey) {
+      throw new ValidationError('Note4 动态变体缺少存储位置', {
+        code: 'note4_dynamic_variant_missing_blob',
+      });
+    }
+    const frame = await this.blob.readStorageKey(note4.storageKey);
+    if (!frame) {
+      throw new ValidationError('Note4 动态变体文件不存在', {
+        code: 'note4_dynamic_variant_missing_blob',
+      });
+    }
+    const previousImage = await this.blob.read(groupId, contentId, 'image');
+    await this.blob.write(groupId, contentId, 'image', frame);
+    return {
+      etag: note4.frameEtag ?? computeETag(frame),
+      size: note4.frameSize ?? frame.byteLength,
+      previousImage,
+    };
   }
 
   private async syncDynamicAudioBestEffort(

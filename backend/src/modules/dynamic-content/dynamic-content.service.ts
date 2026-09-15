@@ -2,7 +2,6 @@ import { createId } from '@paralleldrive/cuid2';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
-  DEFAULT_DISPLAY_PROFILE_ID,
   DashboardDataPayload,
   DynamicConfig,
   isAudioDynamicConfig,
@@ -58,14 +57,14 @@ export class DynamicContentService {
     frame_name?: string | null;
     data?: unknown;
   }): Promise<Buffer> {
-    assertPreviewDisplayProfile(raw.display_profile_id);
     const config = DynamicConfig.parse(raw.config);
     const previewData = this.parseDashboardPreviewData(config.type, raw.data);
     return this.renderer.renderPreviewDirect(
       config.type,
       config,
       raw.frame_name ?? defaultDynamicFrameName(config.type, config),
-      previewData
+      previewData,
+      raw.display_profile_id
     );
   }
 
@@ -79,9 +78,14 @@ export class DynamicContentService {
       data?: unknown;
     }
   ): Promise<Buffer> {
-    assertPreviewDisplayProfile(body.display_profile_id);
     if (body.data === undefined) {
-      return this.renderer.renderPreview(contentId, ownerUserId, body.config, body.frame_name);
+      return this.renderer.renderPreview(
+        contentId,
+        ownerUserId,
+        body.config,
+        body.frame_name,
+        body.display_profile_id
+      );
     }
 
     const content = await this.prisma.content.findUnique({
@@ -108,7 +112,13 @@ export class DynamicContentService {
     }
     const frameName = body.frame_name === undefined ? content.frameName : body.frame_name;
     const previewData = this.parseDashboardData(body.data, 'dashboard 预览数据不能为空');
-    return this.renderer.renderPreviewDirect(config.type, config, frameName, previewData);
+    return this.renderer.renderPreviewDirect(
+      config.type,
+      config,
+      frameName,
+      previewData,
+      body.display_profile_id
+    );
   }
 
   async append(
@@ -405,11 +415,5 @@ export class DynamicContentService {
         `Blob cleanup failed after dynamic content creation failed for content ${contentId}: ${failed} operation(s) failed.`
       );
     }
-  }
-}
-
-function assertPreviewDisplayProfile(displayProfileId: string): void {
-  if (displayProfileId !== DEFAULT_DISPLAY_PROFILE_ID) {
-    throw new ValidationError(`尚未实现 display profile: ${displayProfileId}`);
   }
 }

@@ -19,6 +19,7 @@ import {
   type DynamicRenderContext,
 } from '../../src/modules/dynamic-content/rendering/dynamic-frame-renderer.service';
 import { DynamicFrameFontService } from '../../src/modules/dynamic-content/rendering/fonts/dynamic-frame-font.service';
+import { NOTE4_RENDER_TARGET } from '../../src/modules/dynamic-content/rendering/render-target';
 import { CalendarDataService } from '../../src/modules/dynamic-content/calendar-data.service';
 import { DailyCalendarProvider } from '../../src/modules/dynamic-content/providers/daily-calendar.provider';
 
@@ -267,7 +268,7 @@ const contexts: DynamicRenderContext[] = [
 ];
 
 for (const ctx of contexts) {
-  const frame = await renderer.render(ctx);
+  const frame = await renderer.render(ctx, NOTE4_RENDER_TARGET);
   const gray = unpack1bpp(frame);
   const png = await sharp(gray, {
     raw: { width: FRAME_WIDTH, height: FRAME_HEIGHT, channels: 1 },

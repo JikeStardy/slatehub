@@ -3,9 +3,14 @@ import sharp from 'sharp';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { FRAME_BYTES, FRAME_HEIGHT, FRAME_WIDTH } from 'shared';
 import { ImageRendererService } from './image-renderer.service';
 import { ImageRenderCacheService } from './image-render-cache.service';
+import {
+  NOTE4_RENDER_TARGET,
+  renderTargetForProfile,
+} from '../dynamic-content/rendering/render-target';
+
+const VIRTUAL_RENDER_TARGET = renderTargetForProfile('virtual-mono-296x128');
 
 let tmp = '';
 let cache: ImageRenderCacheService;
@@ -36,43 +41,72 @@ async function makePng(
 describe('ImageRendererService', () => {
   it('白图渲染后全白(全 0xff)', async () => {
     const input = await makePng(800, 600, { r: 255, g: 255, b: 255 });
-    const { data, width, height } = await renderer.renderTo1bpp(input);
-    expect(width).toBe(FRAME_WIDTH);
-    expect(height).toBe(FRAME_HEIGHT);
-    expect(data.length).toBe(FRAME_BYTES);
+    const { data, width, height } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET);
+    expect(width).toBe(NOTE4_RENDER_TARGET.width);
+    expect(height).toBe(NOTE4_RENDER_TARGET.height);
+    expect(data.length).toBe(NOTE4_RENDER_TARGET.byteLength);
     expect(data.every((b) => b === 0xff)).toBe(true);
+  });
+
+  it('按显式 target 渲染静态图', async () => {
+    const input = await makePng(800, 600, { r: 180, g: 180, b: 180 });
+    const note4 = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, { autoInvert: false });
+    const virtual = await renderer.renderTo1bpp(input, VIRTUAL_RENDER_TARGET, {
+      autoInvert: false,
+    });
+
+    expect(note4.width).toBe(400);
+    expect(note4.height).toBe(300);
+    expect(note4.data.length).toBe(15000);
+    expect(virtual.width).toBe(296);
+    expect(virtual.height).toBe(128);
+    expect(virtual.data.length).toBe(4736);
   });
 
   it('黑图(autoInvert 触发) 仍是白', async () => {
     const input = await makePng(800, 600, { r: 0, g: 0, b: 0 });
-    const { data } = await renderer.renderTo1bpp(input);
+    const { data } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET);
     expect(data.every((b) => b === 0xff)).toBe(true);
   });
 
   it('autoInvert=false 时全黑图保持全黑(全 0x00)', async () => {
     const input = await makePng(800, 600, { r: 0, g: 0, b: 0 });
-    const { data } = await renderer.renderTo1bpp(input, { autoInvert: false });
+    const { data } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, {
+      autoInvert: false,
+    });
     expect(data.every((b) => b === 0x00)).toBe(true);
   });
 
   it('size 验证', async () => {
     const input = await makePng(100, 100, { r: 128, g: 128, b: 128 });
-    const { data } = await renderer.renderTo1bpp(input);
-    expect(() => renderer.validateFrameSize(data)).not.toThrow();
-    expect(() => renderer.validateFrameSize(Buffer.alloc(100))).toThrow();
+    const { data } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET);
+    expect(() => renderer.validateFrameSize(data, NOTE4_RENDER_TARGET)).not.toThrow();
+    expect(() => renderer.validateFrameSize(Buffer.alloc(100), NOTE4_RENDER_TARGET)).toThrow();
   });
 
   it('width 不是 8 的倍数时报错', async () => {
     const input = await makePng(100, 100, { r: 0, g: 0, b: 0 });
-    await expect(renderer.renderTo1bpp(input, { width: 401, height: 300 })).rejects.toThrow(
-      /8 的倍数/
-    );
+    const invalidTarget = {
+      ...NOTE4_RENDER_TARGET,
+      width: 401,
+    };
+    await expect(renderer.renderTo1bpp(input, invalidTarget)).rejects.toThrow(/8 的倍数/);
+  });
+
+  it('不支持的静态图编码会失败', async () => {
+    const input = await makePng(100, 100, { r: 0, g: 0, b: 0 });
+    await expect(
+      renderer.renderTo1bpp(input, {
+        ...NOTE4_RENDER_TARGET,
+        frameCodec: 'reserved_codec' as never,
+      })
+    ).rejects.toThrow(/不支持的帧编码/);
   });
 
   it('mode 默认为 threshold(向后兼容)', async () => {
     const input = await makePng(400, 300, { r: 255, g: 255, b: 255 });
-    const { data: defaultData } = await renderer.renderTo1bpp(input);
-    const { data: explicitData } = await renderer.renderTo1bpp(input, {
+    const { data: defaultData } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET);
+    const { data: explicitData } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, {
       mode: 'threshold',
     });
     expect(Buffer.compare(defaultData, explicitData)).toBe(0);
@@ -80,7 +114,7 @@ describe('ImageRendererService', () => {
 
   it('atkinson 全黑图(autoInvert off) 输出全黑', async () => {
     const input = await makePng(400, 300, { r: 0, g: 0, b: 0 });
-    const { data } = await renderer.renderTo1bpp(input, {
+    const { data } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, {
       mode: 'atkinson',
       autoInvert: false,
     });
@@ -89,15 +123,15 @@ describe('ImageRendererService', () => {
 
   it('bayer8 全白图输出全白', async () => {
     const input = await makePng(400, 300, { r: 255, g: 255, b: 255 });
-    const { data } = await renderer.renderTo1bpp(input, { mode: 'bayer8' });
+    const { data } = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, { mode: 'bayer8' });
     expect(data.every((b) => b === 0xff)).toBe(true);
   });
 
   it('同图二次渲染应命中缓存（fromCache=true）', async () => {
     const input = await makePng(400, 300, { r: 32, g: 64, b: 128 });
-    const r1 = await renderer.renderTo1bpp(input, { mode: 'floyd' });
+    const r1 = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, { mode: 'floyd' });
     expect(r1.fromCache).toBe(false);
-    const r2 = await renderer.renderTo1bpp(input, { mode: 'floyd' });
+    const r2 = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, { mode: 'floyd' });
     expect(r2.fromCache).toBe(true);
     expect(Buffer.compare(r1.data, r2.data)).toBe(0);
   });
@@ -156,8 +190,14 @@ describe('ImageRendererService', () => {
 
   it('opts 不同 → key 不同 → fromCache=false', async () => {
     const input = await makePng(400, 300, { r: 100, g: 100, b: 100 });
-    const r1 = await renderer.renderTo1bpp(input, { mode: 'threshold', threshold: 100 });
-    const r2 = await renderer.renderTo1bpp(input, { mode: 'threshold', threshold: 200 });
+    const r1 = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, {
+      mode: 'threshold',
+      threshold: 100,
+    });
+    const r2 = await renderer.renderTo1bpp(input, NOTE4_RENDER_TARGET, {
+      mode: 'threshold',
+      threshold: 200,
+    });
     expect(r1.fromCache).toBe(false);
     expect(r2.fromCache).toBe(false);
   });

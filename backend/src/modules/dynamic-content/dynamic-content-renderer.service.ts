@@ -10,6 +10,7 @@ import { formatError } from '../../common/utils/error-format';
 import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
 import { GroupsService } from '../groups/groups.service';
 import { DynamicFrameRendererService } from './rendering/dynamic-frame-renderer.service';
+import { NOTE4_RENDER_TARGET } from './rendering/render-target';
 import { DynamicContentRegistry } from './dynamic-content-registry';
 import { DynamicAudioService } from './audio/dynamic-audio.service';
 import { canReuseDynamicData } from './dynamic-data-reuse-policy';
@@ -326,7 +327,7 @@ export class DynamicContentRendererService {
   private async renderAndValidate(
     input: Parameters<DynamicFrameRendererService['render']>[0]
   ): Promise<Buffer> {
-    const rendered = await this.renderer.render(input);
+    const rendered = await this.renderer.render(input, NOTE4_RENDER_TARGET);
     if (rendered.byteLength !== FRAME_BYTES) {
       throw new Error(`动态帧大小不匹配: ${rendered.byteLength}`);
     }

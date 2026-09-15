@@ -3,9 +3,6 @@ import sharp from 'sharp';
 import {
   API_DEFAULT_DITHER_MODE,
   BW_THRESHOLD_DEFAULT,
-  FRAME_BYTES,
-  FRAME_HEIGHT,
-  FRAME_WIDTH,
   autoContrast,
   autoInvert,
   ditherTo1bpp,
@@ -13,11 +10,10 @@ import {
 } from 'shared';
 import { ValidationError } from '../../common/errors';
 import { computeETag } from '../../common/utils/etag';
+import { type RenderTarget } from '../dynamic-content/rendering/render-target';
 import { ImageRenderCacheService } from './image-render-cache.service';
 
 export interface RenderOptions {
-  width?: number;
-  height?: number;
   threshold?: number;
   mode?: DitherMode;
   autoInvert?: boolean;
@@ -48,9 +44,18 @@ export interface RenderResult {
 export class ImageRendererService {
   constructor(private readonly cache: ImageRenderCacheService) {}
 
-  async renderTo1bpp(input: Buffer, options: RenderOptions = {}): Promise<RenderResult> {
-    const W = options.width ?? FRAME_WIDTH;
-    const H = options.height ?? FRAME_HEIGHT;
+  async renderTo1bpp(
+    input: Buffer,
+    target: RenderTarget,
+    options: RenderOptions = {}
+  ): Promise<RenderResult> {
+    if (target.pixelFormat !== 'mono1' || target.frameCodec !== 'raw_mono1_msb') {
+      throw new ValidationError(`不支持的帧编码: ${target.pixelFormat}/${target.frameCodec}`, {
+        code: 'unsupported_frame_encoding',
+      });
+    }
+    const W = target.width;
+    const H = target.height;
     const threshold = options.threshold ?? BW_THRESHOLD_DEFAULT;
     const mode = options.mode ?? API_DEFAULT_DITHER_MODE;
     const doAutoInvert = options.autoInvert ?? true;
@@ -80,9 +85,11 @@ export class ImageRendererService {
     return { data, width: W, height: H, fromCache };
   }
 
-  validateFrameSize(buf: Buffer): void {
-    if (buf.length !== FRAME_BYTES) {
-      throw new ValidationError(`帧大小不匹配：当前 ${buf.length} 字节，期望 ${FRAME_BYTES} 字节`);
+  validateFrameSize(buf: Buffer, target: RenderTarget): void {
+    if (buf.length !== target.byteLength) {
+      throw new ValidationError(
+        `帧大小不匹配：当前 ${buf.length} 字节，期望 ${target.byteLength} 字节`
+      );
     }
   }
 }

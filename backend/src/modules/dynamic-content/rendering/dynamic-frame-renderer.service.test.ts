@@ -19,10 +19,13 @@ import {
 } from './dynamic-frame-renderer.service';
 import { DynamicFrameFontService } from './fonts/dynamic-frame-font.service';
 import { BITMAP_1BPP_FONT_DIR } from '../../../infra/assets/asset-paths';
+import { encodeMonoFrame, NOTE4_RENDER_TARGET, renderTargetForProfile } from './render-target';
+import { BitmapCanvas, PIXEL_WHITE } from './bitmap-canvas';
 
 const renderer = new DynamicFrameRendererService(new DynamicFrameFontService());
 const renderedAt = new Date('2026-05-17T04:00:00.000Z');
 const STATUS_BAR_H = 24;
+const VIRTUAL_RENDER_TARGET = renderTargetForProfile('virtual-mono-296x128');
 
 describe('DynamicFrameRendererService', () => {
   it('renders dynamic frames as nonblank 400x300 1bpp images', async () => {
@@ -231,29 +234,56 @@ describe('DynamicFrameRendererService', () => {
     ];
 
     for (const ctx of contexts) {
-      const frame = await renderer.render(ctx);
+      const frame = await renderer.render(ctx, NOTE4_RENDER_TARGET);
       expect(frame.byteLength).toBe(FRAME_BYTES);
-      const stats = countPixels(frame);
+      const stats = countPixels(frame, NOTE4_RENDER_TARGET.width, NOTE4_RENDER_TARGET.height);
       expect(stats.black).toBeGreaterThan(120);
       expect(stats.white).toBeGreaterThan(120);
     }
   });
 
+  it('renders every built-in dynamic type through the compact virtual layout', async () => {
+    for (const ctx of compactDynamicContexts()) {
+      const frame = await renderer.render(ctx, VIRTUAL_RENDER_TARGET);
+      expect(VIRTUAL_RENDER_TARGET.width).toBe(296);
+      expect(VIRTUAL_RENDER_TARGET.height).toBe(128);
+      expect(frame.byteLength).toBe(4736);
+      const stats = countPixels(frame, VIRTUAL_RENDER_TARGET.width, VIRTUAL_RENDER_TARGET.height);
+      expect(stats.black).toBeGreaterThan(40);
+      expect(stats.white).toBeGreaterThan(40);
+    }
+  });
+
+  it('rejects unsupported reserved frame encodings at the boundary', () => {
+    const canvas = new BitmapCanvas(NOTE4_RENDER_TARGET.width, NOTE4_RENDER_TARGET.height);
+    canvas.clear(PIXEL_WHITE);
+
+    expect(() =>
+      encodeMonoFrame(canvas, {
+        ...NOTE4_RENDER_TARGET,
+        pixelFormat: 'reserved_pixel_format' as never,
+      })
+    ).toThrow(/不支持的帧编码/);
+  });
+
   it('renders every font-test catalog entry', async () => {
     for (const font of FONT_TEST_FONTS) {
-      const frame = await renderer.render({
-        type: 'font_test',
-        frameName: font.label,
-        config: {
+      const frame = await renderer.render(
+        {
           type: 'font_test',
-          font_id: font.id,
-          invert: false,
+          frameName: font.label,
+          config: {
+            type: 'font_test',
+            font_id: font.id,
+            invert: false,
+          },
+          data: null,
+          renderedAt,
         },
-        data: null,
-        renderedAt,
-      });
+        NOTE4_RENDER_TARGET
+      );
       expect(frame.byteLength).toBe(FRAME_BYTES);
-      const stats = countPixels(frame);
+      const stats = countPixels(frame, NOTE4_RENDER_TARGET.width, NOTE4_RENDER_TARGET.height);
       expect(stats.black).toBeGreaterThan(80);
       expect(stats.white).toBeGreaterThan(80);
     }
@@ -278,7 +308,7 @@ describe('DynamicFrameRendererService', () => {
     ];
 
     for (const ctx of contexts) {
-      const frame = await renderer.render(ctx);
+      const frame = await renderer.render(ctx, NOTE4_RENDER_TARGET);
       const bounds = blackBounds(frame, 0, STATUS_BAR_H, FRAME_WIDTH, FRAME_HEIGHT - STATUS_BAR_H);
 
       expect(bounds).not.toBeNull();
@@ -289,31 +319,34 @@ describe('DynamicFrameRendererService', () => {
   });
 
   it('centers hot-list rank boxes and title glyphs between row rules', async () => {
-    const frame = await renderer.render({
-      type: 'hot_list',
-      frameName: '热榜',
-      config: {
+    const frame = await renderer.render(
+      {
         type: 'hot_list',
-        source: 'weibo',
-        refresh_interval_sec: 600,
+        frameName: '热榜',
+        config: {
+          type: 'hot_list',
+          source: 'weibo',
+          refresh_interval_sec: 600,
+        },
+        data: {
+          source: 'weibo',
+          sourceLabel: '微博',
+          updatedAt: '2026-05-17T04:00:00.000Z',
+          items: [
+            { rank: 1, title: '中俄关系迈上新起点' },
+            { rank: 2, title: '全球唯一白色野生大熊猫影像公开' },
+            { rank: 3, title: '斯凯奇被清仓' },
+            { rank: 4, title: '外国博主扎堆中国乡村' },
+            { rank: 5, title: '寒潮预警手机只会越来越贵' },
+            { rank: 6, title: '歌手首场排名齐豫第一陈楚庆淘汰' },
+            { rank: 7, title: '女子捡到金项链发现异常立马报掉' },
+            { rank: 8, title: '黑龙江坚决拥护党中央决定' },
+          ],
+        },
+        renderedAt,
       },
-      data: {
-        source: 'weibo',
-        sourceLabel: '微博',
-        updatedAt: '2026-05-17T04:00:00.000Z',
-        items: [
-          { rank: 1, title: '中俄关系迈上新起点' },
-          { rank: 2, title: '全球唯一白色野生大熊猫影像公开' },
-          { rank: 3, title: '斯凯奇被清仓' },
-          { rank: 4, title: '外国博主扎堆中国乡村' },
-          { rank: 5, title: '寒潮预警手机只会越来越贵' },
-          { rank: 6, title: '歌手首场排名齐豫第一陈楚庆淘汰' },
-          { rank: 7, title: '女子捡到金项链发现异常立马报掉' },
-          { rank: 8, title: '黑龙江坚决拥护党中央决定' },
-        ],
-      },
-      renderedAt,
-    });
+      NOTE4_RENDER_TARGET
+    );
 
     const listTop = 34;
     const rowH = 33;
@@ -341,28 +374,31 @@ describe('DynamicFrameRendererService', () => {
   });
 
   it('renders weather-alert rows with alert kind badge and source text', async () => {
-    const frame = await renderer.render({
-      type: 'weather_alert',
-      frameName: '气象预警',
-      config: {
+    const frame = await renderer.render(
+      {
         type: 'weather_alert',
-        province: '',
-        refresh_interval_sec: 600,
+        frameName: '气象预警',
+        config: {
+          type: 'weather_alert',
+          province: '',
+          refresh_interval_sec: 600,
+        },
+        data: {
+          title: '全国气象预警',
+          province: '',
+          updatedAt: '2026-05-17T04:00:00.000Z',
+          items: [
+            {
+              id: 'a1',
+              title: '中央气象台发布暴雨黄色预警',
+              issuedAt: '2026-05-17T03:30:00.000Z',
+            },
+          ],
+        },
+        renderedAt,
       },
-      data: {
-        title: '全国气象预警',
-        province: '',
-        updatedAt: '2026-05-17T04:00:00.000Z',
-        items: [
-          {
-            id: 'a1',
-            title: '中央气象台发布暴雨黄色预警',
-            issuedAt: '2026-05-17T03:30:00.000Z',
-          },
-        ],
-      },
-      renderedAt,
-    });
+      NOTE4_RENDER_TARGET
+    );
     const font = await loadTestFont('source-han-sans-16-slim.json');
     const badgeFont = await loadTestFont('fusion-pixel-10.json');
 
@@ -372,40 +408,47 @@ describe('DynamicFrameRendererService', () => {
   });
 
   it('does not hard truncate weather-alert local source names before fitting', async () => {
-    const frame = await renderer.render({
-      type: 'weather_alert',
-      frameName: '气象预警',
-      config: {
+    const frame = await renderer.render(
+      {
         type: 'weather_alert',
-        province: '',
-        refresh_interval_sec: 600,
+        frameName: '气象预警',
+        config: {
+          type: 'weather_alert',
+          province: '',
+          refresh_interval_sec: 600,
+        },
+        data: {
+          title: '全国气象预警',
+          province: '',
+          updatedAt: '2026-05-17T04:00:00.000Z',
+          items: [
+            {
+              id: 'a1',
+              title: '贵州省黔西南布依族苗族自治州发布暴雨黄色预警信号',
+              issuedAt: '2026-05-17T03:30:00.000Z',
+            },
+          ],
+        },
+        renderedAt,
       },
-      data: {
-        title: '全国气象预警',
-        province: '',
-        updatedAt: '2026-05-17T04:00:00.000Z',
-        items: [
-          {
-            id: 'a1',
-            title: '贵州省黔西南布依族苗族自治州发布暴雨黄色预警信号',
-            issuedAt: '2026-05-17T03:30:00.000Z',
-          },
-        ],
-      },
-      renderedAt,
-    });
+      NOTE4_RENDER_TARGET
+    );
     const font = await loadTestFont('source-han-sans-16-slim.json');
 
     expect(hasTextPixels(frame, font, '黔西南', 114, 33, 130, 22)).toBe(true);
   });
 });
 
-function countPixels(frame: Buffer): { black: number; white: number } {
+function countPixels(
+  frame: Buffer,
+  width: number,
+  height: number
+): { black: number; white: number } {
   let black = 0;
   let white = 0;
-  const bpr = FRAME_WIDTH >> 3;
-  for (let y = 0; y < FRAME_HEIGHT; y++) {
-    for (let x = 0; x < FRAME_WIDTH; x++) {
+  const bpr = width >> 3;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
       const byte = frame[y * bpr + (x >> 3)]!;
       const bit = (byte >> (7 - (x & 7))) & 1;
       if (bit) white++;
@@ -413,6 +456,89 @@ function countPixels(frame: Buffer): { black: number; white: number } {
     }
   }
   return { black, white };
+}
+
+function compactDynamicContexts(): DynamicRenderContext[] {
+  return [
+    {
+      type: 'daily_calendar',
+      frameName: '日历',
+      config: { tz: 'Asia/Shanghai' },
+      data: {
+        year: '2026',
+        month: '5',
+        day: '17',
+        weekdayCN: '星期日',
+        lunarDate: '农历四月初一',
+        ganzhiYear: '丙午年',
+        yi: ['祭祀', '祈福'],
+        ji: ['入宅', '修造'],
+      },
+      renderedAt,
+    },
+    {
+      type: 'month_calendar',
+      frameName: '月历',
+      config: { tz: 'Asia/Shanghai' },
+      data: { calendar: { months: {} } },
+      renderedAt,
+    },
+    {
+      type: 'weather',
+      frameName: '天气',
+      config: { location_label: '北京' },
+      data: {
+        tempC: 24,
+        feelsLikeC: 26,
+        humidity: 61,
+        windDisplay: '东南风2级',
+        summary: '多云',
+      },
+      renderedAt,
+    },
+    {
+      type: 'history_today',
+      frameName: '历史',
+      config: { tz: 'Asia/Shanghai' },
+      data: { dateLabel: '5 月 17 日', items: [{ year: '1792', display: '纽交所成立' }] },
+      renderedAt,
+    },
+    {
+      type: 'weather_alert',
+      frameName: '气象预警',
+      config: { type: 'weather_alert', province: '', refresh_interval_sec: 600 },
+      data: { title: '全国气象预警', items: [{ title: '暴雨黄色预警' }] },
+      renderedAt,
+    },
+    {
+      type: 'earthquake_report',
+      frameName: '地震速报',
+      config: { type: 'earthquake_report', refresh_interval_sec: 600 },
+      data: { title: '中国地震台网速报', items: [{ location: '山西大同市云冈区' }] },
+      renderedAt,
+    },
+    {
+      type: 'dashboard',
+      frameName: '外部数据',
+      config: { type: 'dashboard', template: { kind: 'system', id: 'ai_usage_stats' } },
+      data: DASHBOARD_AI_USAGE_STATS_TEST_DATA,
+      renderedAt,
+    },
+    {
+      type: 'font_test',
+      frameName: '字体测试',
+      config: { type: 'font_test', font_id: 'unifont_16', invert: false },
+      data: null,
+      renderedAt,
+    },
+    {
+      type: 'hot_list',
+      frameName: '微博热榜',
+      config: { type: 'hot_list', source: 'weibo', refresh_interval_sec: 600 },
+      data: { sourceLabel: '微博', items: [{ rank: 1, title: '墨水屏设备发布' }] },
+      renderedAt,
+    },
+  ];
 }
 
 function blackBounds(

@@ -17,6 +17,7 @@ import { audioBlobContentId } from '../../infra/blob/content-audio-blobs';
 import { MAX_TTS_TEXT_CHARS, TtsService } from '../tts/tts.service';
 import { GroupsService } from '../groups/groups.service';
 import { ImageRendererService } from '../image-renderer/image-renderer.service';
+import { NOTE4_RENDER_TARGET } from '../dynamic-content/rendering/render-target';
 import { ContentAudioBlobService } from './content-audio-blob.service';
 import { BlobRollbackPlan } from './blob-rollback';
 import {
@@ -376,12 +377,12 @@ export class ContentsService {
     let image: RenderedImageUpload | null = null;
     if (parsed.hasImage && parsed.imageBuf) {
       const sourceEtag = computeETag(parsed.imageBuf);
-      const rendered = await this.imageRenderer.renderTo1bpp(parsed.imageBuf, {
+      const rendered = await this.imageRenderer.renderTo1bpp(parsed.imageBuf, NOTE4_RENDER_TARGET, {
         threshold: parsed.threshold,
         mode: parsed.mode,
         sourceEtag,
       });
-      this.imageRenderer.validateFrameSize(rendered.data);
+      this.imageRenderer.validateFrameSize(rendered.data, NOTE4_RENDER_TARGET);
       image = {
         bytes: rendered.data,
         etag: computeETag(rendered.data),

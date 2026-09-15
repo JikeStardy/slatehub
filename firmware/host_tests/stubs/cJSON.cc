@@ -179,11 +179,18 @@ class Parser {
             item->type = cJSON::kNull;
             return item;
         }
-        char* end = nullptr;
-        double value = std::strtod(text_ + pos_, &end);
-        if (end == text_ + pos_)
+        std::size_t token_end = pos_;
+        if (!ParseNumberToken(token_end))
             return nullptr;
-        pos_ = static_cast<std::size_t>(end - text_);
+        std::string token(text_ + pos_, token_end - pos_);
+        char* end = nullptr;
+        double value = std::strtod(token.c_str(), &end);
+        if (end != token.c_str() + token.size())
+            return nullptr;
+        pos_ = token_end;
+        SkipWs();
+        if (pos_ >= len_ || (text_[pos_] != ',' && text_[pos_] != '}'))
+            return nullptr;
         cJSON* item = new cJSON();
         item->type = cJSON::kNumber;
         item->valuedouble = value;
@@ -191,6 +198,45 @@ class Parser {
                        : value < static_cast<double>(std::numeric_limits<int>::min()) ? std::numeric_limits<int>::min()
                                                                                       : static_cast<int>(value);
         return item;
+    }
+
+    bool ParseNumberToken(std::size_t& token_end) const {
+        std::size_t p = token_end;
+        if (p >= len_)
+            return false;
+        if (text_[p] == '-')
+            ++p;
+        if (p >= len_)
+            return false;
+        if (text_[p] == '0') {
+            ++p;
+        } else if (text_[p] >= '1' && text_[p] <= '9') {
+            do {
+                ++p;
+            } while (p < len_ && text_[p] >= '0' && text_[p] <= '9');
+        } else {
+            return false;
+        }
+        if (p < len_ && text_[p] == '.') {
+            ++p;
+            const std::size_t first_fraction_digit = p;
+            while (p < len_ && text_[p] >= '0' && text_[p] <= '9')
+                ++p;
+            if (p == first_fraction_digit)
+                return false;
+        }
+        if (p < len_ && (text_[p] == 'e' || text_[p] == 'E')) {
+            ++p;
+            if (p < len_ && (text_[p] == '+' || text_[p] == '-'))
+                ++p;
+            const std::size_t first_exponent_digit = p;
+            while (p < len_ && text_[p] >= '0' && text_[p] <= '9')
+                ++p;
+            if (p == first_exponent_digit)
+                return false;
+        }
+        token_end = p;
+        return true;
     }
 
     const char* text_ = nullptr;

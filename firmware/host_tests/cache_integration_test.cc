@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "cJSON.h"
 #include "storage/cache/cache.h"
 #include "storage/cache/cache_internal.h"
 #include "storage/cache/cache_io.h"
@@ -91,6 +92,37 @@ bool Exists(const std::string& path) {
 
 bool WriteText(const std::string& path, const std::string& text) {
     return cache::internal::WriteAll(path, text.data(), text.size());
+}
+
+void TestCjsonBoundedNumberParsing() {
+    const char truncated[] = {'{', '"', 'x', '"', ':', '1', '2', '3'};
+    char*      exact       = static_cast<char*>(std::malloc(sizeof(truncated)));
+    CHECK(exact != nullptr);
+    if (!exact)
+        return;
+    std::memcpy(exact, truncated, sizeof(truncated));
+    cJSON* bad = cJSON_ParseWithLength(exact, sizeof(truncated));
+    CHECK(bad == nullptr);
+    std::free(exact);
+
+    const char illegal[] = "{\"x\":123abc}";
+    CHECK(cJSON_ParseWithLength(illegal, sizeof(illegal) - 1) == nullptr);
+
+    const char valid[] = "{\"int\":-123,\"frac\":12.5,\"exp\":6.02e3}";
+    cJSON* root = cJSON_ParseWithLength(valid, sizeof(valid) - 1);
+    CHECK(root != nullptr);
+    if (!root)
+        return;
+    cJSON* int_value = cJSON_GetObjectItemCaseSensitive(root, "int");
+    cJSON* frac_value = cJSON_GetObjectItemCaseSensitive(root, "frac");
+    cJSON* exp_value = cJSON_GetObjectItemCaseSensitive(root, "exp");
+    CHECK(cJSON_IsNumber(int_value));
+    CHECK(cJSON_IsNumber(frac_value));
+    CHECK(cJSON_IsNumber(exp_value));
+    CHECK(int_value->valueint == -123);
+    CHECK(frac_value->valuedouble == 12.5);
+    CHECK(exp_value->valuedouble == 6020.0);
+    cJSON_Delete(root);
 }
 
 std::string ReadText(const std::string& path) {
@@ -271,6 +303,7 @@ void TestFrameManifestStateSuccessFinalizesBackups() {
 }  // namespace
 
 int main() {
+    TestCjsonBoundedNumberParsing();
     TestIdentitylessManifestAndFrameMetadataInvalidate();
     TestAudioOnlyCacheWriterPersistsIdentityAndCommits();
     TestFrameManifestStateFailureRollsBackInstalledSwaps();

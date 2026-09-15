@@ -18,12 +18,31 @@ add_executable(cache_staging_test
     ../main/storage/cache/cache_staging.cc
 )
 
+add_executable(cache_integration_test
+    cache_integration_test.cc
+    stubs/cJSON.cc
+    ../main/drivers/display/display_contract.cc
+    ../main/storage/cache/cache_frames.cc
+    ../main/storage/cache/cache_internal.cc
+    ../main/storage/cache/cache_io.cc
+    ../main/storage/cache/cache_json.cc
+    ../main/storage/cache/cache_manifest.cc
+    ../main/storage/cache/cache_paths.cc
+    ../main/storage/cache/cache_staging.cc
+    ../main/storage/cache/cache_state.cc
+    ../main/sync/manifest_contract.cc
+)
+
 target_include_directories(display_contract_test PRIVATE ../main)
 target_include_directories(cache_staging_test PRIVATE stubs ../main)
+target_include_directories(cache_integration_test PRIVATE stubs ../main)
 target_compile_definitions(display_contract_test PRIVATE "SLATE_BOARD_ID=\"zectrix-note4\"")
+target_compile_definitions(cache_integration_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_options(display_contract_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 target_compile_options(cache_staging_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
+target_compile_options(cache_integration_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 
 enable_testing()
 add_test(NAME display_contract_test COMMAND display_contract_test)
 add_test(NAME cache_staging_test COMMAND cache_staging_test)
+add_test(NAME cache_integration_test COMMAND cache_integration_test)

@@ -8,6 +8,8 @@
 namespace sync_contract {
 namespace {
 
+constexpr double kMaxExactJsonInteger = 9007199254740991.0;  // 2^53 - 1
+
 std::string EscapeJsonString(const std::string& value) {
     std::string out;
     out.reserve(value.size() + 8);
@@ -149,8 +151,13 @@ bool ReadIntField(NumericField field, int min_value, int max_value, int& out) {
 }
 
 bool ReadSizeField(NumericField field, std::size_t max_value, std::size_t& out) {
+    double bounded_max = static_cast<double>(max_value);
+    if constexpr (std::numeric_limits<std::size_t>::digits > 53) {
+        if (bounded_max > kMaxExactJsonInteger)
+            bounded_max = kMaxExactJsonInteger;
+    }
     if (!field.present || !std::isfinite(field.value) || std::floor(field.value) != field.value || field.value < 0.0 ||
-        field.value > static_cast<double>(max_value)) {
+        field.value > bounded_max) {
         return false;
     }
     out = static_cast<std::size_t>(field.value);
@@ -163,6 +170,32 @@ bool ReadUint32Field(NumericField field, uint32_t& out) {
         return false;
     out = static_cast<uint32_t>(value);
     return true;
+}
+
+bool ReadOptionalStringField(const OptionalStringField& field, std::string& out) {
+    if (!field.present || field.is_null) {
+        out.clear();
+        return true;
+    }
+    if (!field.is_string)
+        return false;
+    out = field.value;
+    return true;
+}
+
+bool ReadAudioSizeField(const OptionalStringField& audio_etag, const OptionalNumberField& audio_size, int& out) {
+    std::string etag;
+    if (!ReadOptionalStringField(audio_etag, etag))
+        return false;
+    if (!audio_size.present || audio_size.is_null) {
+        out = 0;
+        return etag.empty();
+    }
+    return ReadIntField(audio_size.number, 0, std::numeric_limits<int>::max(), out);
+}
+
+bool ValidateOptionalObjectField(bool present, bool is_null, bool is_object) {
+    return !present || is_null || is_object;
 }
 
 bool DescriptorMatchesDisplay(const std::string& profile_id, const display::FrameDescriptor& descriptor,
@@ -201,6 +234,12 @@ bool ValidateManifestContentSet(const ManifestIdentity& manifest) {
     return true;
 }
 
+bool ValidateManifestEnvelope(const std::string& requested_group_id, const std::string& response_group_id,
+                              const ManifestIdentity& manifest, const display::DisplayInfo& display_info) {
+    return !requested_group_id.empty() && !response_group_id.empty() && requested_group_id == response_group_id &&
+           ValidateManifestIdentity(manifest, display_info) && ValidateManifestContentSet(manifest);
+}
+
 bool ImagePayloadMatchesDescriptor(const std::vector<uint8_t>& bytes, const display::FrameDescriptor& descriptor) {
     return display::ValidateFrameDescriptor(descriptor) && bytes.size() == descriptor.byte_size;
 }
@@ -209,6 +248,10 @@ bool ContentIsDownloadable(const ContentIdentity& content) {
     return !content.id.empty() && !content.image_etag.empty() && content.variant_status == "ready" &&
            content.image_size >= 0 && static_cast<std::size_t>(content.image_size) == content.frame.byte_size &&
            !content.frame_profile_id.empty() && display::ValidateFrameDescriptor(content.frame);
+}
+
+bool AudioAllowedForDisplay(const std::string& audio_etag, const display::DisplayInfo& display_info) {
+    return !audio_etag.empty() && display_info.capabilities.audio;
 }
 
 CacheIdentity MakeCacheIdentity(const display::DisplayInfo& display_info) {
@@ -246,7 +289,7 @@ bool CachedManifestCanUseEtag(const CacheIdentity& identity, const display::Disp
 bool SanitizeAudioForDisplay(ContentIdentity& content, const display::DisplayInfo& display_info) {
     if (!DescriptorMatchesDisplay(content.frame_profile_id, content.frame, display_info))
         return false;
-    if (!display_info.capabilities.audio)
+    if (!AudioAllowedForDisplay(content.audio_etag, display_info))
         content.audio_etag.clear();
     return true;
 }

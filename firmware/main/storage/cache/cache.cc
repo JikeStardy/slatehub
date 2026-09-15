@@ -11,7 +11,7 @@ namespace cache {
 
 bool Init() {
     esp_vfs_littlefs_conf_t cfg = {};
-    cfg.base_path               = internal::kRoot;
+    cfg.base_path               = internal::RootPath();
     cfg.partition_label         = "storage";
     cfg.format_if_mount_failed  = true;
     cfg.dont_mount              = false;
@@ -23,7 +23,7 @@ bool Init() {
     }
     size_t total = 0, used = 0;
     esp_littlefs_info(cfg.partition_label, &total, &used);
-    internal::DirEnsure(std::string(internal::kRoot) + "/groups");
+    internal::DirEnsure(std::string(internal::RootPath()) + "/groups");
     return true;
 }
 
@@ -41,7 +41,7 @@ bool FormatAll() {
     }
 
     esp_vfs_littlefs_conf_t cfg = {};
-    cfg.base_path               = internal::kRoot;
+    cfg.base_path               = internal::RootPath();
     cfg.partition_label         = kLabel;
     cfg.format_if_mount_failed  = true;
     cfg.dont_mount              = false;
@@ -51,7 +51,7 @@ bool FormatAll() {
         return false;
     }
     internal::ResetStateCache();
-    internal::DirEnsure(std::string(internal::kRoot) + "/groups");
+    internal::DirEnsure(std::string(internal::RootPath()) + "/groups");
     return true;
 }
 

@@ -4,7 +4,7 @@
 
 namespace cache::internal {
 
-inline constexpr char kRoot[] = "/littlefs";
+const char* RootPath();
 
 std::string SafePathComponent(const std::string& raw);
 std::string GroupDir(const std::string& gid);

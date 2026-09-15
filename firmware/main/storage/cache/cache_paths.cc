@@ -1,8 +1,18 @@
 #include "storage/cache/cache_paths.h"
 
 #include <cctype>
+#include <cstdlib>
 
 namespace cache::internal {
+
+const char* RootPath() {
+#ifdef SLATE_HOST_TEST
+    const char* root = std::getenv("SLATE_CACHE_ROOT");
+    return root && root[0] != '\0' ? root : "/tmp/slate-cache-host";
+#else
+    return "/littlefs";
+#endif
+}
 
 std::string SafePathComponent(const std::string& raw) {
     static constexpr char kHex[] = "0123456789ABCDEF";
@@ -21,11 +31,11 @@ std::string SafePathComponent(const std::string& raw) {
 }
 
 std::string GroupDir(const std::string& gid) {
-    return std::string(kRoot) + "/groups/" + SafePathComponent(gid);
+    return std::string(RootPath()) + "/groups/" + SafePathComponent(gid);
 }
 
 std::string StatePath() {
-    return std::string(kRoot) + "/state.json";
+    return std::string(RootPath()) + "/state.json";
 }
 
 std::string FramesDir(const std::string& gid) {

@@ -12,6 +12,7 @@
 #include "scenes/settings/settings_scene.h"
 #include "scenes/splash/splash_scene.h"
 #include "storage/cache/cache.h"
+#include "sync/manifest_contract.h"
 #include "ui/frame_view.h"
 #include "ui/status_bar.h"
 #include "ui/theme.h"
@@ -390,7 +391,7 @@ bool FrameScene::LoadFrame(SceneContext& ctx, int idx, bool force_full, AudioBeh
             ESP_LOGW(kTag, "load frame failed idx=%d reason=meta_miss", candidate_idx);
             return false;
         }
-        candidate.audio_loaded = !candidate.meta.audio_etag.empty() &&
+        candidate.audio_loaded = sync_contract::AudioAllowedForDisplay(candidate.meta.audio_etag, ctx.epd->Info()) &&
                                  cache::ReadFrameAudio(gid_, candidate_idx, candidate.pcm) &&
                                  !candidate.pcm.empty();
         return true;

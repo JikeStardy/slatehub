@@ -861,6 +861,8 @@ void TestStrictNumericFieldsRejectFractionalAndOverflowValues() {
     CHECK(size_out == 15000);
     CHECK(!sync_contract::ReadSizeField({true, 15000.9}, display::kMaxFrameBytes, size_out));
     CHECK(!sync_contract::ReadSizeField({true, 1.0e300}, display::kMaxFrameBytes, size_out));
+    CHECK(!sync_contract::ReadSizeField({true, 18446744073709551616.0}, std::numeric_limits<std::size_t>::max(),
+                                        size_out));
 
     CHECK(sync_contract::ReadUint32Field({true, static_cast<double>(std::numeric_limits<uint32_t>::max())},
                                          u32_out));
@@ -868,6 +870,42 @@ void TestStrictNumericFieldsRejectFractionalAndOverflowValues() {
     CHECK(!sync_contract::ReadUint32Field({true, static_cast<double>(std::numeric_limits<uint32_t>::max()) + 1.0},
                                           u32_out));
     CHECK(!sync_contract::ReadUint32Field({true, 12.25}, u32_out));
+}
+
+void TestTypedNullableAudioFields() {
+    using sync_contract::OptionalNumberField;
+    using sync_contract::OptionalStringField;
+
+    std::string etag;
+    int         audio_size = -1;
+    CHECK(sync_contract::ReadOptionalStringField({false, false, false, ""}, etag));
+    CHECK(etag.empty());
+    CHECK(sync_contract::ReadOptionalStringField({true, true, false, ""}, etag));
+    CHECK(etag.empty());
+    CHECK(!sync_contract::ReadOptionalStringField({true, false, false, ""}, etag));
+    CHECK(sync_contract::ReadOptionalStringField({true, false, true, "audio-etag"}, etag));
+    CHECK(etag == "audio-etag");
+
+    CHECK(sync_contract::ReadAudioSizeField({false, false, false, ""},
+                                            OptionalNumberField{false, false, {false, 0.0}}, audio_size));
+    CHECK(audio_size == 0);
+    CHECK(sync_contract::ReadAudioSizeField({true, false, true, ""},
+                                            OptionalNumberField{true, true, {false, 0.0}}, audio_size));
+    CHECK(audio_size == 0);
+    CHECK(!sync_contract::ReadAudioSizeField({true, false, true, "audio-etag"},
+                                             OptionalNumberField{false, false, {false, 0.0}}, audio_size));
+    CHECK(!sync_contract::ReadAudioSizeField({true, false, true, "audio-etag"},
+                                             OptionalNumberField{true, true, {false, 0.0}}, audio_size));
+    CHECK(sync_contract::ReadAudioSizeField({true, false, true, "audio-etag"},
+                                            OptionalNumberField{true, false, {true, 128.0}}, audio_size));
+    CHECK(audio_size == 128);
+    CHECK(!sync_contract::ReadAudioSizeField({true, false, true, "audio-etag"},
+                                             OptionalNumberField{true, false, {true, 128.5}}, audio_size));
+
+    CHECK(sync_contract::ValidateOptionalObjectField(false, false, false));
+    CHECK(sync_contract::ValidateOptionalObjectField(true, true, false));
+    CHECK(sync_contract::ValidateOptionalObjectField(true, false, true));
+    CHECK(!sync_contract::ValidateOptionalObjectField(true, false, false));
 }
 
 void TestManifestDescriptorValidation() {
@@ -883,6 +921,9 @@ void TestManifestDescriptorValidation() {
 
     CHECK(sync_contract::ValidateManifestIdentity(valid, info));
     CHECK(sync_contract::ValidateManifestContentSet(valid));
+    CHECK(sync_contract::ValidateManifestEnvelope("group-a", "group-a", valid, info));
+    CHECK(!sync_contract::ValidateManifestEnvelope("group-a", "", valid, info));
+    CHECK(!sync_contract::ValidateManifestEnvelope("group-a", "group-b", valid, info));
 
     ManifestIdentity missing_profile = valid;
     missing_profile.display_profile_id.clear();
@@ -977,6 +1018,9 @@ void TestAudioCapabilityFiltering() {
                                      no_audio.frame};
     CHECK(sync_contract::SanitizeAudioForDisplay(no_audio_content, no_audio));
     CHECK(no_audio_content.audio_etag.empty());
+    CHECK(!sync_contract::AudioAllowedForDisplay("audio-etag", no_audio));
+    CHECK(sync_contract::AudioAllowedForDisplay("audio-etag", note4));
+    CHECK(!sync_contract::AudioAllowedForDisplay("", note4));
 }
 
 void TestDownloadableContentRequiresReadyImage() {
@@ -1033,6 +1077,7 @@ int main() {
     TestStatusBarSnapshotIdentityRejectsSameSizeLayoutChange();
     TestApiV2PrefixAndRegisterPayload();
     TestStrictNumericFieldsRejectFractionalAndOverflowValues();
+    TestTypedNullableAudioFields();
     TestManifestDescriptorValidation();
     TestImagePayloadAndCacheIdentityValidation();
     TestAudioCapabilityFiltering();

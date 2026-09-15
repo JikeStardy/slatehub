@@ -296,7 +296,15 @@ image_etag
 audio_etag
 has_ttl
 ttl_sec
+profile_id
+width
+height
+pixel_format
+frame_codec
+byte_length
 ```
+
+这些 identity 字段必须与当前 `DisplayInfo` 的 frame descriptor 一致；缺失或不匹配时固件把缓存视为 miss，避免跨设备或跨 profile 复用旧帧。
 
 完整 manifest 同步使用 per-group staging area：
 
@@ -304,10 +312,11 @@ ttl_sec
 2. 下载所有缺失 image/audio 到 stage
 3. 写 staged meta
 4. 全部成功后逐帧 `CommitStagedFrame`
-5. 写 manifest 与 state
-6. 清理旧帧与旧音频
+5. 安装 manifest swap
+6. 写 state
+7. state 成功后 finalize swap 备份，再清理旧帧与旧音频
 
-这样失败同步不会把已提交缓存写成半更新状态。同步后会按空闲空间和组数量清理旧组，当前配置为至少保留 1 MB，最多缓存 4 个组。
+这样普通 I/O 失败不会把已提交缓存写成半更新状态；state 写入前失败会回滚已安装的 frame/audio/meta/manifest swap。当前没有 durable journal，若设备在 rename 序列中掉电，可能留下 `.bak` 或 staged artifact，后续需要专门的恢复扫描任务处理。同步后会按空闲空间和组数量清理旧组，当前配置为至少保留 1 MB，最多缓存 4 个组。
 
 ## UI 与按键
 

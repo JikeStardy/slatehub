@@ -122,7 +122,7 @@ namespace cache {
 
 bool WriteManifest(const std::string& gid, const std::string& manifest_etag, int content_count,
                    const std::string& name, const display::DisplayInfo& display_info) {
-    internal::DirEnsure(std::string(internal::kRoot) + "/groups");
+    internal::DirEnsure(std::string(internal::RootPath()) + "/groups");
     internal::DirEnsure(internal::GroupDir(gid));
     internal::DirEnsure(internal::FramesDir(gid));
     ManifestMeta old;
@@ -190,7 +190,7 @@ bool TouchGroup(const std::string& gid) {
 
 bool PruneOldGroups(const std::string& current_gid, const std::string& target_gid, size_t min_free_bytes,
                     int max_groups) {
-    const std::string groups_dir  = std::string(internal::kRoot) + "/groups";
+    const std::string groups_dir  = std::string(internal::RootPath()) + "/groups";
     const std::string current_dir = current_gid.empty() ? "" : internal::GroupDir(current_gid);
     const std::string target_dir  = target_gid.empty() ? "" : internal::GroupDir(target_gid);
 

@@ -172,6 +172,21 @@ sync_contract::NumericField JsonNumberField(cJSON* item, const char* key) {
     return sync_contract::NumericField{cJSON_IsNumber(value), cJSON_IsNumber(value) ? value->valuedouble : 0.0};
 }
 
+sync_contract::OptionalStringField JsonOptionalStringField(cJSON* item, const char* key) {
+    cJSON* value = cJSON_GetObjectItemCaseSensitive(item, key);
+    return sync_contract::OptionalStringField{value != nullptr,
+                                              cJSON_IsNull(value),
+                                              cJSON_IsString(value) && value->valuestring,
+                                              cJSON_IsString(value) && value->valuestring ? value->valuestring : ""};
+}
+
+sync_contract::OptionalNumberField JsonOptionalNumberField(cJSON* item, const char* key) {
+    cJSON* value = cJSON_GetObjectItemCaseSensitive(item, key);
+    return sync_contract::OptionalNumberField{
+        value != nullptr, cJSON_IsNull(value),
+        sync_contract::NumericField{cJSON_IsNumber(value), cJSON_IsNumber(value) ? value->valuedouble : 0.0}};
+}
+
 std::string UrlEncodePathSegment(const std::string& value) {
     static constexpr char kHex[] = "0123456789ABCDEF";
     std::string           out;
@@ -255,14 +270,11 @@ bool ParseContentMeta(cJSON* item, const display::DisplayInfo& display_info, Con
     out.content_etag           = JsonString(item, proto::kContentEtag);
     out.device_status_bar_text = JsonString(item, proto::kDeviceStatusBarText);
     out.image_etag             = JsonString(item, proto::kImageEtag);
-    out.audio_etag             = JsonString(item, proto::kAudioEtag);
-    if (!out.audio_etag.empty()) {
-        if (!sync_contract::ReadIntField(JsonNumberField(item, proto::kAudioSize), 0,
-                                         std::numeric_limits<int>::max(), out.audio_size)) {
-            return false;
-        }
-    } else {
-        out.audio_size = 0;
+    const auto audio_etag_field = JsonOptionalStringField(item, proto::kAudioEtag);
+    if (!sync_contract::ReadOptionalStringField(audio_etag_field, out.audio_etag) ||
+        !sync_contract::ReadAudioSizeField(audio_etag_field, JsonOptionalNumberField(item, proto::kAudioSize),
+                                           out.audio_size)) {
+        return false;
     }
     out.variant_status         = JsonString(item, proto::kVariantStatus);
     out.kind                   = JsonString(item, proto::kKind);
@@ -555,6 +567,10 @@ bool ParseDeviceState(const std::string& json, DeviceState& out) {
     }
 
     cJSON* group = cJSON_GetObjectItemCaseSensitive(root, proto::kGroup);
+    if (!sync_contract::ValidateOptionalObjectField(group != nullptr, cJSON_IsNull(group), cJSON_IsObject(group))) {
+        cJSON_Delete(root);
+        return false;
+    }
     if (cJSON_IsObject(group)) {
         out.has_group      = true;
         out.group_id       = JsonString(group, proto::kId);
@@ -587,6 +603,11 @@ bool ParseDeviceState(const std::string& json, DeviceState& out) {
     }
 
     cJSON* current = cJSON_GetObjectItemCaseSensitive(root, proto::kCurrentContent);
+    if (!sync_contract::ValidateOptionalObjectField(current != nullptr, cJSON_IsNull(current),
+                                                    cJSON_IsObject(current))) {
+        cJSON_Delete(root);
+        return false;
+    }
     if (cJSON_IsObject(current)) {
         out.has_current_content = true;
         if (!ParseContentMeta(current, Board::Get().platform().Display(), out.current_content)) {
@@ -761,7 +782,7 @@ bool ApiClient::GetManifest(const std::string& group_id, const std::string& if_n
     out.group_id      = JsonString(group, proto::kId);
     out.group_name    = JsonString(group, proto::kName);
     out.manifest_etag = JsonString(group, proto::kManifestEtag);
-    if (out.manifest_etag.empty()) {
+    if (out.group_id.empty() || out.group_id != group_id || out.manifest_etag.empty()) {
         ESP_LOGW(kTag, "manifest response invalid reason=manifest_etag_missing");
         cJSON_Delete(root);
         return false;
@@ -802,8 +823,7 @@ bool ApiClient::GetManifest(const std::string& group_id, const std::string& if_n
                                                                    content.frame_profile_id,
                                                                    content.frame});
     }
-    if (!sync_contract::ValidateManifestIdentity(identity, Board::Get().platform().Display()) ||
-        !sync_contract::ValidateManifestContentSet(identity)) {
+    if (!sync_contract::ValidateManifestEnvelope(group_id, out.group_id, identity, Board::Get().platform().Display())) {
         ESP_LOGW(kTag, "manifest response invalid reason=descriptor_mismatch");
         cJSON_Delete(root);
         return false;

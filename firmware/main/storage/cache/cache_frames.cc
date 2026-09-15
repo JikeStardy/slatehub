@@ -17,6 +17,12 @@
 
 namespace {
 
+bool StatSizeEqualsDescriptor(const struct stat& st, const display::FrameDescriptor& descriptor) {
+    if (st.st_size < 0 || !display::ValidateFrameDescriptor(descriptor))
+        return false;
+    return static_cast<uint64_t>(st.st_size) == static_cast<uint64_t>(descriptor.byte_size);
+}
+
 bool WriteFrameMetaFile(const std::string& path, const cache::FrameMeta& meta) {
     cJSON* root = cJSON_CreateObject();
     if (!root)
@@ -164,7 +170,7 @@ bool FrameImageExists(const std::string& gid, int idx, const std::string& expect
     struct stat st;
     if (stat(internal::ImagePath(gid, idx).c_str(), &st) != 0)
         return false;
-    if (st.st_size != static_cast<off_t>(display_info.frame.byte_size))
+    if (!StatSizeEqualsDescriptor(st, display_info.frame))
         return false;
     FrameMeta meta;
     return ReadFrameMeta(gid, idx, meta) && meta.image_etag == expected_etag &&
@@ -253,7 +259,7 @@ bool BeginFrameStage(const std::string& gid) {
         return false;
     if (!internal::RemoveTree(internal::StageDir(gid)))
         return false;
-    internal::DirEnsure(std::string(internal::kRoot) + "/groups");
+    internal::DirEnsure(std::string(internal::RootPath()) + "/groups");
     internal::DirEnsure(internal::GroupDir(gid));
     return internal::DirEnsure(internal::StageDir(gid));
 }
@@ -269,7 +275,7 @@ bool StagedFrameImageExists(const std::string& gid, int idx, const std::string& 
         return false;
     struct stat st;
     if (stat(internal::StageImagePath(gid, idx).c_str(), &st) == 0 &&
-        st.st_size == static_cast<off_t>(display_info.frame.byte_size)) {
+        StatSizeEqualsDescriptor(st, display_info.frame)) {
         FrameMeta meta;
         if (ReadFrameMetaFile(internal::StageMetaPath(gid, idx), meta) && meta.image_etag == expected_etag &&
             FrameMetaIdentityMatches(meta, display_info))

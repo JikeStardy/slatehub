@@ -13,7 +13,7 @@ import { ingestRateLimit } from '../dynamic-rate-limits';
 export class DashboardIngestController {
   constructor(private readonly dynamicContent: DynamicContentService) {}
 
-  // POST /api/v1/contents/:contentId/data —— 外部数据推送（仅 dashboard 动态内容）。
+  // POST /api/v2/contents/:contentId/data —— 外部数据推送（仅 dashboard 动态内容）。
   //
   // 鉴权模型：contentId 是 cuid（22 字符 base32，~110 bit 熵），本身充当 capability URL。
   // 拿到 URL 即拿到推送权限，不再额外签发 ingest token。

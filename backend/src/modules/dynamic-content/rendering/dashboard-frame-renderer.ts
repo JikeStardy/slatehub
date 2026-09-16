@@ -35,7 +35,7 @@ export function renderDashboardFrame(
     draw.drawText(
       c,
       fonts.sans12,
-      'POST /api/v1/contents/:id/data',
+      'POST /api/v2/contents/:id/data',
       FRAME_WIDTH / 2,
       centerY + 12,
       {

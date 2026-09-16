@@ -18,7 +18,8 @@ import {
   type DynamicRenderContext,
 } from './dynamic-frame-renderer.service';
 import { buildCompactFrameModel } from './compact-frame-model';
-import { DynamicFrameFontService } from './fonts/dynamic-frame-font.service';
+import { renderDashboardFrame } from './dashboard-frame-renderer';
+import { DynamicFrameFontService, type FontSet } from './fonts/dynamic-frame-font.service';
 import { BITMAP_1BPP_FONT_DIR } from '../../../infra/assets/asset-paths';
 import {
   encodeMonoFrame,
@@ -26,6 +27,7 @@ import {
   renderTargetForProfile,
 } from '../../rendering/render-target';
 import { BitmapCanvas, PIXEL_WHITE } from './bitmap-canvas';
+import type { FrameDrawKit } from './frame-draw-kit';
 
 const renderer = new DynamicFrameRendererService(new DynamicFrameFontService());
 const renderedAt = new Date('2026-05-17T04:00:00.000Z');
@@ -364,6 +366,31 @@ describe('DynamicFrameRendererService', () => {
       const bottomGap = FRAME_HEIGHT - 1 - bounds!.bottom;
       expect(Math.abs(topGap - bottomGap)).toBeLessThanOrEqual(2);
     }
+  });
+
+  it('renders the dashboard empty-state ingest path with the public v2 API route', () => {
+    const texts: string[] = [];
+    const draw = {
+      drawText: (_canvas: BitmapCanvas, _font: unknown, text: string, _x: number, _y: number) => {
+        texts.push(text);
+        return 0;
+      },
+    } as unknown as FrameDrawKit;
+
+    renderDashboardFrame(
+      new BitmapCanvas(),
+      { sans16: {}, sans12: {} } as FontSet,
+      {
+        type: 'dashboard',
+        frameName: '外部数据',
+        config: { type: 'dashboard', template: { kind: 'system', id: 'ai_usage_stats' } },
+        data: null,
+        renderedAt,
+      },
+      draw
+    );
+
+    expect(texts).toEqual(['等待外部数据', 'POST /api/v2/contents/:id/data']);
   });
 
   it('centers hot-list rank boxes and title glyphs between row rules', async () => {

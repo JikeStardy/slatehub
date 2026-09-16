@@ -184,6 +184,7 @@ export class ContentsReadService {
     contentId: string,
     scope: ContentReadScope
   ): Promise<{ data: Buffer; etag: string }> {
+    const target = await this.resolveReadTarget(scope);
     const content = await this.requireReadableContent(contentId, scope, {
       id: true,
       groupId: true,
@@ -194,7 +195,9 @@ export class ContentsReadService {
       audioText: true,
       audioVoice: true,
     });
-    if (!content.audioEtag || !content.audioSize) throw new NotFoundError('该内容没有音频');
+    if (!target.audio || !content.audioEtag || !content.audioSize) {
+      throw new NotFoundError('该内容没有音频');
+    }
     const data = await this.audioBlobs.read(content.groupId, content.id, content.audioEtag);
     if (!data) {
       throw new NotFoundError('音频文件丢失');

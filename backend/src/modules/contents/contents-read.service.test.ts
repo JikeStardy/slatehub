@@ -622,4 +622,28 @@ describe('ContentsReadService profile-scoped resources', () => {
     );
     expect(calls.audioRepairs).toBe(0);
   });
+
+  it('reads audio for default Web and Note4 device targets', async () => {
+    const audioBlob = Buffer.from('audio bytes');
+    const service = createService({ audioBlob });
+
+    await expect(service.readAudio('content-1', { userId: 'user-1' })).resolves.toEqual({
+      data: audioBlob,
+      etag: 'audio-etag',
+    });
+    await expect(service.readAudio('content-1', { deviceId: 'device-1' })).resolves.toEqual({
+      data: audioBlob,
+      etag: 'audio-etag',
+    });
+  });
+
+  it('rejects audio reads for targets whose display profile has no audio capability', async () => {
+    const calls = { blobStorageReads: [] as string[], legacyBlobReads: 0, audioRepairs: 0 };
+    const service = createService({ calls, audioBlob: Buffer.from('audio bytes') });
+
+    await expect(
+      service.readAudio('content-1', { userId: 'user-1', displayProfileId: VIRTUAL_PROFILE })
+    ).rejects.toThrow(NotFoundError);
+    expect(calls.audioRepairs).toBe(0);
+  });
 });

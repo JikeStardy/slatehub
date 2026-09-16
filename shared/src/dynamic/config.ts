@@ -228,7 +228,7 @@ export function isAudioDynamicConfig(config: DynamicConfigT): config is Extract<
   );
 }
 
-// POST /api/v1/contents/:contentId/data —— 外部数据推送（仅 dashboard 动态内容）。
+// POST /api/v2/contents/:contentId/data —— 外部数据推送（仅 dashboard 动态内容）。
 //   capability URL: contentId(cuid，~110 bit 熵) 本身充当访问能力，不需要额外 token。
 //   防滥用靠 bodyLimit 64KB + rate-limit 30/min/contentId。
 export const IngestPayload = z

@@ -15,7 +15,8 @@ describe('ContentsService current content refresh', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never
+      {} as never,
+      { nodeEnv: 'test' } as never
     );
     const runMutation = (
       service as unknown as {
@@ -151,7 +152,8 @@ describe('ContentsService current content refresh', () => {
           renderedAt: new Date(),
           unchanged: false,
         }),
-      } as never
+      } as never,
+      { nodeEnv: 'test' } as never
     );
 
     await service.patch('content-1', 'user-1', {
@@ -215,7 +217,8 @@ describe('ContentsService current content refresh', () => {
           renderedAt: new Date(),
           unchanged: false,
         }),
-      } as never
+      } as never,
+      { nodeEnv: 'test' } as never
     );
 
     await Promise.all([
@@ -609,7 +612,8 @@ describe('ContentsService current content refresh', () => {
         renderDynamicContent: async () => {
           throw new Error('render network timeout');
         },
-      } as never
+      } as never,
+      { nodeEnv: 'test' } as never
     );
 
     try {
@@ -727,6 +731,7 @@ describe('ContentsService current content refresh', () => {
         get: () => ({ provider: {} }),
       } as never,
       renderer as never,
+      { nodeEnv: 'test' } as never,
       coordinator
     );
 

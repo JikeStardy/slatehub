@@ -39,8 +39,8 @@ export class DynamicContentService {
     private readonly groups: GroupsService,
     private readonly registry: DynamicContentRegistry,
     private readonly renderer: DynamicContentRendererService,
-    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default(),
-    private readonly config: AppConfig = { nodeEnv: 'test' } as AppConfig
+    private readonly config: AppConfig,
+    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default()
   ) {}
 
   async previewDirect(raw: {

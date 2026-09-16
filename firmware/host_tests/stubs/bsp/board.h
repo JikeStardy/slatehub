@@ -36,4 +36,3 @@ class Board {
    private:
     board::HostBoardPlatform platform_;
 };
-

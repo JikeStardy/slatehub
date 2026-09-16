@@ -26,4 +26,3 @@ inline bool PostSyncProgress(uint8_t, uint8_t, TickType_t = 0) {
 }
 
 }  // namespace evt
-

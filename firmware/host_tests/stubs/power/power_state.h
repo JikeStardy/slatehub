@@ -15,4 +15,3 @@ inline void SetCurrentFrameFromMeta(int, const cache::FrameMeta&) {
 }
 
 }  // namespace power_state
-

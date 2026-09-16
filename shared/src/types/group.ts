@@ -22,7 +22,7 @@ export const UpdateGroupRequest = z.object({
 });
 export type UpdateGroupRequestT = z.infer<typeof UpdateGroupRequest>;
 
-// PUT /api/v1/groups/order —— 批量改 sort_order,order = 新 group_id 顺序。
+// PUT /api/v2/groups/order —— 批量改 sort_order,order = 新 group_id 顺序。
 export const ReorderGroupsRequest = z.object({
   order: z.array(z.string()).min(1),
 });

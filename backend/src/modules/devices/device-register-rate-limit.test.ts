@@ -9,7 +9,7 @@ function context(ip = '127.0.0.1'): ExecutionContext {
     getHandler: () => context,
     getClass: () => Object,
     switchToHttp: () => ({
-      getRequest: () => ({ ip, headers: {}, method: 'POST', url: '/api/v1/devices' }),
+      getRequest: () => ({ ip, headers: {}, method: 'POST', url: '/api/v2/devices' }),
     }),
   } as unknown as ExecutionContext;
 }

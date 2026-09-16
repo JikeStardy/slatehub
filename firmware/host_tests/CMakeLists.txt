@@ -51,21 +51,31 @@ add_executable(sync_current_content_transaction_test
     ../main/sync/sync_manifest.cc
 )
 
+add_executable(firmware_update_contract_test
+    firmware_update_contract_test.cc
+    stubs/cJSON.cc
+    ../main/update/firmware_offer.cc
+)
+
 target_include_directories(display_contract_test PRIVATE ../main)
 target_include_directories(cache_staging_test PRIVATE stubs ../main)
 target_include_directories(cache_integration_test PRIVATE stubs ../main)
 target_include_directories(sync_current_content_transaction_test PRIVATE stubs ../main)
+target_include_directories(firmware_update_contract_test PRIVATE stubs ../main)
 target_compile_definitions(display_contract_test PRIVATE "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_definitions(cache_staging_test PRIVATE SLATE_HOST_TEST)
 target_compile_definitions(cache_integration_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_definitions(sync_current_content_transaction_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
+target_compile_definitions(firmware_update_contract_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_options(display_contract_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 target_compile_options(cache_staging_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 target_compile_options(cache_integration_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 target_compile_options(sync_current_content_transaction_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
+target_compile_options(firmware_update_contract_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 
 enable_testing()
 add_test(NAME display_contract_test COMMAND display_contract_test)
 add_test(NAME cache_staging_test COMMAND cache_staging_test)
 add_test(NAME cache_integration_test COMMAND cache_integration_test)
 add_test(NAME sync_current_content_transaction_test COMMAND sync_current_content_transaction_test)
+add_test(NAME firmware_update_contract_test COMMAND firmware_update_contract_test)

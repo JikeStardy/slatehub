@@ -162,11 +162,15 @@ jobs:
         with:
           prisma: 'true'
       - run: bun run check:release-contract
+      - run: bun run test:release-metadata
       - run: bun run format:check
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run --cwd backend test
       - run: bun run --cwd frontend build
+      - run: cmake -S firmware/host_tests -B "$RUNNER_TEMP/firmware-host-tests"
+      - run: cmake --build "$RUNNER_TEMP/firmware-host-tests"
+      - run: ctest --test-dir "$RUNNER_TEMP/firmware-host-tests" --output-on-failure
 
   docker:
     name: build + push release image
@@ -246,6 +250,7 @@ jobs:
 
           FULL_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-full.bin"
           OTA_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-ota.bin"
+          OTA_METADATA_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-ota.json"
 
           cp "firmware/build/slate-${BOARD_ID}-full.bin" "$RUNNER_TEMP/$FULL_NAME"
           cp "firmware/build/slate-${BOARD_ID}-ota.bin" "$RUNNER_TEMP/$OTA_NAME"
@@ -255,8 +260,20 @@ jobs:
             sha256sum "$FULL_NAME" "$OTA_NAME" > "slate-${BOARD_ID}-${RELEASE_TAG}-sha256.txt"
           )
 
+          node tools/firmware-release-metadata.mjs create \
+            --board-id "$BOARD_ID" \
+            --version "${RELEASE_TAG#v}" \
+            --release-tag "$RELEASE_TAG" \
+            --artifact "$RUNNER_TEMP/$OTA_NAME" \
+            --download-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${OTA_NAME}" \
+            --output "$RUNNER_TEMP/$OTA_METADATA_NAME"
+          node tools/firmware-release-metadata.mjs verify \
+            --metadata "$RUNNER_TEMP/$OTA_METADATA_NAME" \
+            --artifact "$RUNNER_TEMP/$OTA_NAME"
+
           echo "full_name=$FULL_NAME" >> "$GITHUB_OUTPUT"
           echo "ota_name=$OTA_NAME" >> "$GITHUB_OUTPUT"
+          echo "ota_metadata_name=$OTA_METADATA_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v7
@@ -265,6 +282,7 @@ jobs:
           path: |
             ${{ runner.temp }}/${{ steps.package.outputs.full_name }}
             ${{ runner.temp }}/${{ steps.package.outputs.ota_name }}
+            ${{ runner.temp }}/${{ steps.package.outputs.ota_metadata_name }}
             ${{ runner.temp }}/slate-${{ matrix.board_id }}-${{ needs.prepare.outputs.tag }}-sha256.txt
           if-no-files-found: error
 
@@ -317,7 +335,7 @@ jobs:
 
           mapfile -t FIRMWARE_ASSETS < <(
             find "$FIRMWARE_DIR" -maxdepth 1 -type f \
-              \( -name "slate-*-${RELEASE_TAG}-*.bin" -o -name "slate-*-${RELEASE_TAG}-sha256.txt" \) \
+              \( -name "slate-*-${RELEASE_TAG}-*.bin" -o -name "slate-*-${RELEASE_TAG}-ota.json" -o -name "slate-*-${RELEASE_TAG}-sha256.txt" \) \
               | sort
           )
 

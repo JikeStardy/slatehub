@@ -37,7 +37,7 @@ target、Flash、PSRAM、分区表已在 `sdkconfig.defaults` 固化，无需手
 
 1. 在 `shared/src/display-profiles.json` 增加 production-capable DisplayProfile 和真实 BoardDefinition。
 2. 在 `firmware/main/bsp/` 增加对应 BoardPlatform、GPIO、电源、显示和能力定义，并让非支持 board id 在 CMake/Kconfig 阶段失败。
-3. 在 `.github/workflows/firmware.yml` 与 `release.yml` 的 matrix 增加 board row；产物命名保持 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin` 和对应 sha256。
+3. 在 `.github/workflows/firmware.yml` 与 `release.yml` 的 matrix 增加 board row；产物命名保持 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin`、`slate-{board_id}-vX.Y.Z-ota.json` 和对应 sha256。
 
 ## 工程结构
 
@@ -415,6 +415,23 @@ ES8311 使用 lazy open：
 - `service/`：`xiaozhi_service`、`xiaozhi_phase`、`audio_service`、`message_handler`，对话状态机、麦克风、播放、语音处理。
 
 进入方式：ENTER 双击打开 `XiaozhiScene`。如果尚无协议配置，会先走配置/激活流程；配置完成后进入待机。语音活动、配置任务或播放中会阻止 deep sleep。
+
+### 固件更新元数据 gate
+
+`update/firmware_offer` 定义 release sidecar 的固件端解析 gate，但当前没有把它接入下载或安装路径，不调用 `esp_ota_*`，也不修改 partition / NVS。通过 gate 的元数据必须满足：
+
+- `schema_version: 1`、`product: "slate"`、`artifact.kind: "ota"`。
+- 顶层 `board_id` 等于当前编译板型，例如 `zectrix-note4`。
+- 顶层 `release_tag` 必须等于 `v` + `version`。
+- `artifact.filename` 必须精确等于 `slate-{board_id}-{release_tag}-ota.bin`。
+- `artifact.download_url` 只能是 HTTPS，且 URL basename 必须等于 `artifact.filename`。
+- `artifact.size_bytes` 必须是有限正整数，并能安全转换为 `size_t`。
+- `artifact.sha256` 必须是 64 字符小写 hex。
+- 顶层和 `artifact` 都拒绝额外字段，与 release sidecar schema 的 `additionalProperties: false` 保持一致。
+
+跨板、重复键、缺字段或格式错误的元数据只会产生 reject reason，不会返回 URL 或 sha256。成功结果使用私有构造的 `AcceptedFirmwareOffer`，调用方不能绕过 board/schema gate 自行构造。
+
+这里的 sha256 目前只是 Release 资产一致性字段，不是发布者身份或防回滚证明。真正实现 OTA downloader / installer 前，必须另外完成签名或 Secure Boot 校验、可信下载源与重定向限制、版本防回滚、OTA partition 容量与 ESP image descriptor 校验，并对实际写入 OTA partition 的字节做摘要校验；不能把当前 sidecar 或路径校验当作安装授权。
 
 ## 休眠与唤醒
 

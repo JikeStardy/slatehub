@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://slate.local/schemas/firmware-release-metadata.schema.json",
+  "title": "SlateFirmwareReleaseMetadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "product", "board_id", "version", "release_tag", "artifact"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "product": {
+      "const": "slate"
+    },
+    "board_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 63,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "release_tag": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "filename", "size_bytes", "sha256", "download_url"],
+      "properties": {
+        "kind": {
+          "const": "ota"
+        },
+        "filename": {
+          "type": "string",
+          "pattern": "^slate-[a-z0-9-]+-v[0-9]+\\.[0-9]+\\.[0-9]+-ota\\.bin$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "download_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        }
+      }
+    }
+  }
+}

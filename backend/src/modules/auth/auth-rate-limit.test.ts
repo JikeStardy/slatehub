@@ -24,11 +24,11 @@ describe('authRateLimit', () => {
     const guard = createRateLimitGuard(authRateLimit);
 
     for (let i = 0; i < 10; i++) {
-      expect(guard.canActivate(context('/api/v1/sessions'))).toBe(true);
+      expect(guard.canActivate(context('/api/v2/sessions'))).toBe(true);
     }
 
     try {
-      guard.canActivate(context('/api/v1/sessions'));
+      guard.canActivate(context('/api/v2/sessions'));
       throw new Error('expected throw');
     } catch (err) {
       expect(err).toBeInstanceOf(RateLimitedError);
@@ -43,9 +43,9 @@ describe('authRateLimit', () => {
     const guard = createRateLimitGuard(authRateLimit);
 
     for (let i = 0; i < 5; i++) {
-      expect(guard.canActivate(context('/api/v1/users', '127.0.0.2', '/api/v1/users'))).toBe(true);
+      expect(guard.canActivate(context('/api/v2/users', '127.0.0.2', '/api/v2/users'))).toBe(true);
     }
-    expect(() => guard.canActivate(context('/api/v1/users', '127.0.0.2', '/api/v1/users'))).toThrow(
+    expect(() => guard.canActivate(context('/api/v2/users', '127.0.0.2', '/api/v2/users'))).toThrow(
       RateLimitedError
     );
 
@@ -53,7 +53,7 @@ describe('authRateLimit', () => {
     for (let i = 0; i < 6; i++) {
       expect(
         nested.canActivate(
-          context('/api/v1/devices/device-1/users', '127.0.0.3', '/api/v1/devices/:id/users')
+          context('/api/v2/devices/device-1/users', '127.0.0.3', '/api/v2/devices/:id/users')
         )
       ).toBe(true);
     }

@@ -14,7 +14,7 @@ function context(userId = 'user-1', ip = '127.0.0.1'): ExecutionContext {
         ip,
         headers: {},
         method: 'POST',
-        url: '/api/v1/devices/claims',
+        url: '/api/v2/devices/claims',
         [CURRENT_USER_KEY]: { userId, email: `${userId}@example.com`, username: userId },
       }),
     }),

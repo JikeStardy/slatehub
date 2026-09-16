@@ -21,6 +21,8 @@ build/
 .vscode/
 .claude/
 .gemini/
+.omo/
+.omx/
 *.swp
 *.swo
 *~

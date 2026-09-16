@@ -93,7 +93,7 @@ function createHttpHost(
     id: '018f6ea2-7b34-7cc8-9a1b-2f1d7b9a0001',
     headers: {},
     method: 'GET',
-    url: '/api/v1/probe',
+    url: '/api/v2/probe',
     ...opts.req,
   };
   const host = {

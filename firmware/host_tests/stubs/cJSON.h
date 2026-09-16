@@ -17,6 +17,8 @@ struct cJSON {
     cJSON* next = nullptr;
 };
 
+using cJSON_bool = int;
+
 cJSON* cJSON_CreateObject();
 void   cJSON_Delete(cJSON* item);
 void   cJSON_AddStringToObject(cJSON* object, const char* key, const char* value);
@@ -25,6 +27,7 @@ void   cJSON_AddNullToObject(cJSON* object, const char* key);
 char*  cJSON_PrintUnformatted(cJSON* item);
 void   cJSON_free(void* ptr);
 cJSON* cJSON_ParseWithLength(const char* text, std::size_t len);
+cJSON* cJSON_ParseWithOpts(const char* text, const char** return_parse_end, cJSON_bool require_null_terminated);
 cJSON* cJSON_Parse(const char* text);
 cJSON* cJSON_GetObjectItemCaseSensitive(const cJSON* object, const char* key);
 

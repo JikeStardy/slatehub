@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -215,6 +217,8 @@ function hasBoardSdkconfigCommand(workflow) {
 const releaseTagOrderingBlock = stepBlock(releaseWorkflow, 'Validate release tag ordering');
 const repositoryVersionsBlock = stepBlock(releaseWorkflow, 'Validate repository versions');
 const tagChangelogBlock = stepBlock(releaseWorkflow, 'Read tag changelog');
+const prepareFirmwareAssetsBlock = stepBlock(releaseWorkflow, 'Prepare firmware assets');
+const uploadFirmwareArtifactsBlock = stepBlock(releaseWorkflow, 'Upload firmware artifacts');
 const publishReleaseBlock = stepBlock(releaseWorkflow, 'Publish GitHub Release');
 const packageVersionFunctions = shellFunctionBlocks(
   repositoryVersionsBlock,
@@ -259,6 +263,93 @@ function sameList(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function runNodeScript(script, args) {
+  return spawnSync(process.execPath, [join(root, script), ...args], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+}
+
+function runFirmwareMetadataFixture() {
+  const boardId = realBoardIds[0];
+  const tag = 'v9.8.7';
+  const version = '9.8.7';
+  const dir = mkdtempSync(join(tmpdir(), 'slate-release-contract-'));
+  const artifactName = `slate-${boardId}-${tag}-ota.bin`;
+  const artifact = join(dir, artifactName);
+  const metadata = join(dir, `slate-${boardId}-${tag}-ota.json`);
+  const downloadUrl = `https://github.com/example/slate/releases/download/${tag}/${artifactName}`;
+
+  try {
+    writeFileSync(artifact, 'contract ota fixture');
+    const create = runNodeScript('tools/firmware-release-metadata.mjs', [
+      'create',
+      '--board-id',
+      boardId,
+      '--version',
+      version,
+      '--release-tag',
+      tag,
+      '--artifact',
+      artifact,
+      '--download-url',
+      downloadUrl,
+      '--output',
+      metadata,
+    ]);
+    if (create.status !== 0) {
+      return `create failed: ${create.stderr || create.stdout}`;
+    }
+
+    const sidecar = JSON.parse(readFileSync(metadata, 'utf8'));
+    if (
+      sidecar.board_id !== boardId ||
+      sidecar.artifact?.filename !== basename(artifact) ||
+      sidecar.artifact?.download_url !== downloadUrl
+    ) {
+      return 'create wrote an unexpected sidecar payload.';
+    }
+
+    const verify = runNodeScript('tools/firmware-release-metadata.mjs', [
+      'verify',
+      '--metadata',
+      metadata,
+      '--artifact',
+      artifact,
+    ]);
+    if (verify.status !== 0) {
+      return `verify failed: ${verify.stderr || verify.stdout}`;
+    }
+
+    const virtualArtifact = join(dir, 'slate-virtual-mono-296x128-v9.8.7-ota.bin');
+    writeFileSync(virtualArtifact, 'virtual ota fixture');
+    const virtualCreate = runNodeScript('tools/firmware-release-metadata.mjs', [
+      'create',
+      '--board-id',
+      'virtual-mono-296x128',
+      '--version',
+      version,
+      '--release-tag',
+      tag,
+      '--artifact',
+      virtualArtifact,
+      '--download-url',
+      `https://github.com/example/slate/releases/download/${tag}/${basename(virtualArtifact)}`,
+      '--output',
+      join(dir, 'virtual.json'),
+    ]);
+    if (virtualCreate.status === 0) {
+      return 'virtual-mono-296x128 unexpectedly produced release metadata.';
+    }
+
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const firmwareMetadataFixtureError = runFirmwareMetadataFixture();
+
 assertContract(
   /check:release-contract/.test(ciWorkflow) && /check:release-contract/.test(releaseWorkflow),
   'CI and release quality gates must run bun run check:release-contract.'
@@ -267,6 +358,30 @@ assertContract(
 assertContract(
   packageJson.scripts?.['check:release-contract'] === 'node tools/check-release-contract.mjs',
   'package.json must expose check:release-contract without adding runtime dependencies.'
+);
+
+assertContract(
+  packageJson.scripts?.['test:release-metadata'] ===
+    'node --test tools/firmware-release-metadata.test.mjs',
+  'package.json must expose the complete firmware release metadata regression suite.'
+);
+
+assertContract(
+  /bun run test:release-metadata/.test(ciWorkflow) &&
+    /bun run test:release-metadata/.test(releaseWorkflow),
+  'CI and release quality gates must run the complete firmware release metadata regression suite.'
+);
+
+const firmwareHostTestCommands = [
+  /cmake -S firmware\/host_tests -B "\$RUNNER_TEMP\/firmware-host-tests"/,
+  /cmake --build "\$RUNNER_TEMP\/firmware-host-tests"/,
+  /ctest --test-dir "\$RUNNER_TEMP\/firmware-host-tests" --output-on-failure/,
+];
+assertContract(
+  firmwareHostTestCommands.every(
+    (pattern) => pattern.test(ciWorkflow) && pattern.test(releaseWorkflow)
+  ),
+  'CI and release quality gates must compile and run every firmware host contract test.'
 );
 
 assertContract(
@@ -312,8 +427,9 @@ assertContract(
 assertContract(
   /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-full\.bin/.test(releaseWorkflow) &&
     /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.bin/.test(releaseWorkflow) &&
+    /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.json/.test(releaseWorkflow) &&
     /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-sha256\.txt/.test(releaseWorkflow),
-  'Release firmware asset names must include board id and release tag.'
+  'Release firmware asset names must include board id and release tag, including the OTA metadata sidecar.'
 );
 
 assertContract(
@@ -321,9 +437,36 @@ assertContract(
     /merge-multiple:\s*true/.test(releaseWorkflow) &&
     /find "\$FIRMWARE_DIR"/.test(publishReleaseBlock) &&
     /slate-\*-\$\{RELEASE_TAG\}-\*\.bin/.test(publishReleaseBlock) &&
+    /slate-\*-\$\{RELEASE_TAG\}-ota\.json/.test(publishReleaseBlock) &&
     /slate-\*-\$\{RELEASE_TAG\}-sha256\.txt/.test(publishReleaseBlock) &&
     /ASSETS=\("\$\{FIRMWARE_ASSETS\[@\]\}" "\$\{ASSETS\[@\]\}"\)/.test(publishReleaseBlock),
-  'GitHub Release publish step must download all board artifacts and collect board-named .bin and sha256 assets dynamically.'
+  'GitHub Release publish step must download all board artifacts and collect board-named .bin, OTA metadata, and sha256 assets dynamically.'
+);
+
+assertContract(
+  [
+    /OTA_METADATA_NAME="slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.json"/,
+    /node tools\/firmware-release-metadata\.mjs create/,
+    /--board-id "\$BOARD_ID"/,
+    /--version "\$\{RELEASE_TAG#v\}"/,
+    /--release-tag "\$RELEASE_TAG"/,
+    /--artifact "\$RUNNER_TEMP\/\$OTA_NAME"/,
+    /--download-url "https:\/\/github\.com\/\$\{GITHUB_REPOSITORY\}\/releases\/download\/\$\{RELEASE_TAG\}\/\$\{OTA_NAME\}"/,
+    /--output "\$RUNNER_TEMP\/\$OTA_METADATA_NAME"/,
+    /node tools\/firmware-release-metadata\.mjs verify/,
+    /--metadata "\$RUNNER_TEMP\/\$OTA_METADATA_NAME"/,
+  ].every((pattern) => pattern.test(prepareFirmwareAssetsBlock)),
+  'Release firmware preparation must create and verify OTA metadata with the checked-in tool.'
+);
+
+assertContract(
+  /steps\.package\.outputs\.ota_metadata_name/.test(uploadFirmwareArtifactsBlock),
+  'Release firmware artifact upload must include the OTA metadata sidecar.'
+);
+
+assertContract(
+  firmwareMetadataFixtureError === null,
+  `Firmware release metadata tool must create and verify controlled fixtures and reject virtual boards: ${firmwareMetadataFixtureError}.`
 );
 
 assertContract(

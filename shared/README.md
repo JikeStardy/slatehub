@@ -61,6 +61,8 @@ shared/src/
     └── index.ts                 dynamic barrel
 ```
 
+`shared/schemas/` 存放非 TypeScript 消费方使用的 JSON Schema。当前包含 `firmware-release-metadata.schema.json`，用于 GitHub Release 中每个真实板型 OTA 包同名 sidecar。
+
 ## 常量
 
 [src/api.ts](src/api.ts)：
@@ -88,6 +90,15 @@ shared/src/
 - `virtual-mono-296x128` 只有 `development` / `test` 可用，用于后端测试、前端 HTML Canvas/PNG 模拟器和小尺寸渲染验证，不允许进入 firmware matrix 或 GitHub Release artifact。当前真实硬件验证仅覆盖 Note4；virtual 输出只证明渲染字节与像素，不证明物理面板刷新、波形、电源或功耗行为。
 
 新增真实 ESP 屏幕设备时，先新增 production-capable DisplayProfile，再新增 BoardDefinition 指向它；后端据此生成 per-profile content variant，前端据此预览，固件据此校验 manifest/frame descriptor。
+
+## 固件 Release Metadata
+
+每个真实板型的 OTA 附件都会附带 `slate-{board_id}-vX.Y.Z-ota.json`。该 sidecar 由 `tools/firmware-release-metadata.mjs` 根据实际 OTA bin 生成并立即 verify，字段固定为：
+
+- 顶层：`schema_version`、`product`、`board_id`、`version`、`release_tag`、`artifact`
+- `artifact`：`kind`、`filename`、`size_bytes`、`sha256`、`download_url`
+
+`board_id` 必须来自 `display-profiles.json` 的真实 `BoardDefinition`，且对应 DisplayProfile 必须包含 `production`；`virtual-mono-296x128` 不能生成 release metadata。工具会校验 tag/version/文件名/download URL basename 一致，并按实际文件重算大小与 sha256。
 
 ## Schema 命名约定
 

@@ -243,7 +243,7 @@ docker compose up -d
 
 ## 版本与发布
 
-稳定版本见 GitHub Releases。Slate 使用单一产品版本号：一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和所有真实板型固件产物。固件附件命名为 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin` 和对应 sha256 文件；虚拟测试 profile 不发布固件。
+稳定版本见 GitHub Releases。Slate 使用单一产品版本号：一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和所有真实板型固件产物。固件附件命名为 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin`、`slate-{board_id}-vX.Y.Z-ota.json` 和对应 sha256 文件；虚拟测试 profile 不发布固件。
 
 正式发布由 annotated tag 触发：
 

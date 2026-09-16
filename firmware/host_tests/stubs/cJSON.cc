@@ -173,6 +173,8 @@ class Parser {
             item->valuestring = Dup(value);
             return item;
         }
+        if (text_[pos_] == '{')
+            return ParseObject();
         if (text_[pos_] == 'n' && pos_ + 4 <= len_ && std::strncmp(text_ + pos_, "null", 4) == 0) {
             pos_ += 4;
             cJSON* item = new cJSON();
@@ -302,6 +304,20 @@ void cJSON_free(void* ptr) {
 cJSON* cJSON_ParseWithLength(const char* text, std::size_t len) {
     Parser parser(text, len);
     return parser.Parse();
+}
+
+cJSON* cJSON_ParseWithOpts(const char* text, const char** return_parse_end, cJSON_bool require_null_terminated) {
+    if (!text) {
+        if (return_parse_end)
+            *return_parse_end = nullptr;
+        return nullptr;
+    }
+    const std::size_t len  = std::strlen(text);
+    cJSON*           value = cJSON_ParseWithLength(text, len);
+    if (return_parse_end)
+        *return_parse_end = value ? text + len : text;
+    (void)require_null_terminated;
+    return value;
 }
 
 cJSON* cJSON_Parse(const char* text) {

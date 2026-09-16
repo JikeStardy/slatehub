@@ -18,7 +18,7 @@ bool SettingsPageBase::EnterSettingsScaffold(SceneContext& ctx, const char* capt
 void SettingsPageBase::FinishSettingsScaffoldEnter(SceneContext& ctx) {
     lv_refr_now(NULL);
     ctx.epd->Unlock();
-    ctx.epd->RequestUrgentPartialRefresh();
+    display::RequestRefreshWithFallback(*ctx.epd, display::PresentMode::kPartial);
 }
 
 void SettingsPageBase::ExitSettingsScaffold(SceneContext& ctx, std::function<void()> cleanup) {

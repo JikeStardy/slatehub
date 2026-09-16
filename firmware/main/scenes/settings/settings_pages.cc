@@ -279,7 +279,7 @@ void DeviceInfoPage::OnEnter(SceneContext& ctx) {
 
     lv_refr_now(NULL);
     ctx.epd->Unlock();
-    ctx.epd->RequestUrgentPartialRefresh();
+    display::RequestRefreshWithFallback(*ctx.epd, display::PresentMode::kPartial);
 }
 
 void DeviceInfoPage::OnExit(SceneContext& ctx) {

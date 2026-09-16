@@ -47,14 +47,16 @@ bool ReadManifestMetaFile(const std::string& path, cache::ManifestMeta& out) {
     cJSON* width           = cJSON_GetObjectItemCaseSensitive(root, "width");
     cJSON* height          = cJSON_GetObjectItemCaseSensitive(root, "height");
     if (!sync_contract::ReadIntField(
-            {cJSON_IsNumber(content_count), cJSON_IsNumber(content_count) ? content_count->valuedouble : 0.0}, 0,
+            {cJSON_IsNumber(content_count) != 0, cJSON_IsNumber(content_count) ? content_count->valuedouble : 0.0}, 0,
             INT32_MAX, out.content_count) ||
         !sync_contract::ReadUint32Field(
-            {cJSON_IsNumber(last_access_seq), cJSON_IsNumber(last_access_seq) ? last_access_seq->valuedouble : 0.0},
+            {cJSON_IsNumber(last_access_seq) != 0,
+             cJSON_IsNumber(last_access_seq) ? last_access_seq->valuedouble : 0.0},
             out.last_access_seq) ||
-        !sync_contract::ReadIntField({cJSON_IsNumber(width), cJSON_IsNumber(width) ? width->valuedouble : 0.0}, 1,
+        !sync_contract::ReadIntField({cJSON_IsNumber(width) != 0, cJSON_IsNumber(width) ? width->valuedouble : 0.0}, 1,
                                      INT32_MAX, out.width) ||
-        !sync_contract::ReadIntField({cJSON_IsNumber(height), cJSON_IsNumber(height) ? height->valuedouble : 0.0},
+        !sync_contract::ReadIntField({cJSON_IsNumber(height) != 0,
+                                     cJSON_IsNumber(height) ? height->valuedouble : 0.0},
                                      1, INT32_MAX, out.height)) {
         cJSON_Delete(root);
         out = {};
@@ -64,7 +66,7 @@ bool ReadManifestMetaFile(const std::string& path, cache::ManifestMeta& out) {
     cJSON* byte_length = cJSON_GetObjectItemCaseSensitive(root, "byte_length");
     std::size_t parsed_byte_length = 0;
     if (!sync_contract::ReadSizeField(
-            {cJSON_IsNumber(byte_length), cJSON_IsNumber(byte_length) ? byte_length->valuedouble : 0.0},
+            {cJSON_IsNumber(byte_length) != 0, cJSON_IsNumber(byte_length) ? byte_length->valuedouble : 0.0},
             display::kMaxFrameBytes, parsed_byte_length)) {
         cJSON_Delete(root);
         out = {};

@@ -173,7 +173,7 @@ void XiaozhiScene::OnEnter(SceneContext& ctx) {
 
     lv_refr_now(NULL);
     ctx.epd->Unlock();
-    ctx.epd->RequestUrgentFullRefresh();
+    display::RequestRefreshWithFallback(*ctx.epd, display::PresentMode::kFull);
     ESP_LOGD(kTag, "enter done root=%p service_entered=%d", root_, service_entered_ ? 1 : 0);
 }
 

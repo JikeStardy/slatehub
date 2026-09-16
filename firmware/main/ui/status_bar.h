@@ -2,7 +2,7 @@
 
 // 顶部 24px 小状态栏：左 WiFi 图标 / 中标题 / 右电量图标。
 // 不持有刷屏策略，只 set_text；调用方（FrameScene）决定何时调
-// epd->RequestUrgentPartialRefresh()。
+// display::RequestRefreshWithFallback()。
 
 #include <lvgl.h>
 

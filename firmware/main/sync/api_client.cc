@@ -169,13 +169,14 @@ void LogErrorEnvelope(const std::string& path, int status, const std::vector<uin
 
 sync_contract::NumericField JsonNumberField(cJSON* item, const char* key) {
     cJSON* value = cJSON_GetObjectItemCaseSensitive(item, key);
-    return sync_contract::NumericField{cJSON_IsNumber(value), cJSON_IsNumber(value) ? value->valuedouble : 0.0};
+    return sync_contract::NumericField{cJSON_IsNumber(value) != 0,
+                                       cJSON_IsNumber(value) ? value->valuedouble : 0.0};
 }
 
 sync_contract::OptionalStringField JsonOptionalStringField(cJSON* item, const char* key) {
     cJSON* value = cJSON_GetObjectItemCaseSensitive(item, key);
     return sync_contract::OptionalStringField{value != nullptr,
-                                              cJSON_IsNull(value),
+                                              cJSON_IsNull(value) != 0,
                                               cJSON_IsString(value) && value->valuestring,
                                               cJSON_IsString(value) && value->valuestring ? value->valuestring : ""};
 }
@@ -183,8 +184,9 @@ sync_contract::OptionalStringField JsonOptionalStringField(cJSON* item, const ch
 sync_contract::OptionalNumberField JsonOptionalNumberField(cJSON* item, const char* key) {
     cJSON* value = cJSON_GetObjectItemCaseSensitive(item, key);
     return sync_contract::OptionalNumberField{
-        value != nullptr, cJSON_IsNull(value),
-        sync_contract::NumericField{cJSON_IsNumber(value), cJSON_IsNumber(value) ? value->valuedouble : 0.0}};
+        value != nullptr, cJSON_IsNull(value) != 0,
+        sync_contract::NumericField{cJSON_IsNumber(value) != 0,
+                                    cJSON_IsNumber(value) ? value->valuedouble : 0.0}};
 }
 
 std::string UrlEncodePathSegment(const std::string& value) {

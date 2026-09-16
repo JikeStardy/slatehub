@@ -81,9 +81,10 @@ bool ReadFrameMetaFile(const std::string& path, cache::FrameMeta& out) {
         out.audio_etag = audio_etag->valuestring;
     if (cJSON_IsString(profile_id) && profile_id->valuestring)
         out.profile_id = profile_id->valuestring;
-    if (!sync_contract::ReadIntField({cJSON_IsNumber(width), cJSON_IsNumber(width) ? width->valuedouble : 0.0}, 1,
+    if (!sync_contract::ReadIntField({cJSON_IsNumber(width) != 0, cJSON_IsNumber(width) ? width->valuedouble : 0.0}, 1,
                                      INT32_MAX, out.width) ||
-        !sync_contract::ReadIntField({cJSON_IsNumber(height), cJSON_IsNumber(height) ? height->valuedouble : 0.0},
+        !sync_contract::ReadIntField({cJSON_IsNumber(height) != 0,
+                                     cJSON_IsNumber(height) ? height->valuedouble : 0.0},
                                      1, INT32_MAX, out.height)) {
         cJSON_Delete(root);
         out = {};
@@ -102,7 +103,8 @@ bool ReadFrameMetaFile(const std::string& path, cache::FrameMeta& out) {
         return false;
     }
     std::size_t parsed_byte_len = 0;
-    if (!sync_contract::ReadSizeField({cJSON_IsNumber(byte_len), cJSON_IsNumber(byte_len) ? byte_len->valuedouble : 0.0},
+    if (!sync_contract::ReadSizeField({cJSON_IsNumber(byte_len) != 0,
+                                       cJSON_IsNumber(byte_len) ? byte_len->valuedouble : 0.0},
                                       display::kMaxFrameBytes, parsed_byte_len)) {
         cJSON_Delete(root);
         out = {};

@@ -71,7 +71,7 @@ void SplashScene::OnEnter(SceneContext& ctx) {
 
     lv_refr_now(NULL);
     ctx.epd->Unlock();
-    ctx.epd->RequestUrgentFullRefresh();
+    display::RequestRefreshWithFallback(*ctx.epd, display::PresentMode::kFull);
     ESP_LOGD(kTag, "enter done state=%d root=%p", static_cast<int>(state_), root_);
 }
 

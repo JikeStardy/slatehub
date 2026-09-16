@@ -49,7 +49,7 @@ void SettingsScene::OnEnter(SceneContext& ctx) {
     ctx.epd->Unlock();
     // 子页 OnEnter 走 partial:UI ↔ UI 切换 diff 小,EPD 自己看 diff>=30% 兜底升 full。
     // 从 frame 进来 diff 必然 >30% 自动 full;settings ↔ 子页之间 partial 即可。
-    ctx.epd->RequestUrgentPartialRefresh();
+    display::RequestRefreshWithFallback(*ctx.epd, display::PresentMode::kPartial);
     ESP_LOGD(kTag, "enter done root=%p", root_);
 }
 

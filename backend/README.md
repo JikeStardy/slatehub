@@ -119,6 +119,17 @@ Content
 - `Group.structure_etag` 反映组结构变化，`manifest_etag` 反映完整 manifest 变化。
 - `Content.content_etag` 是设备当前帧快速刷新用摘要；图片、音频、标题、动态类型和动态数据变化都会影响相关 etag。
 
+### 动态刷新 lease token 部署顺序
+
+引入 `Content.dynamic_refresh_lease_token` 后，token-aware worker 不允许和旧 worker 混跑。部署该版本时按以下顺序切换：
+
+1. 先执行数据库 migration，确保 `contents.dynamic_refresh_lease_token` 已存在。
+2. 停止或排空所有旧版本 backend worker / 实例。
+3. 至少等待“旧动态刷新 lease 时长 + 最长动态 render 窗口”，让旧 worker 持有的 lease 和 in-flight render 自然结束。
+4. 再启动新版本 backend worker / 实例。
+
+不要在同一数据库上同时运行 token-aware 新 worker 与旧 worker；旧 worker 不会写 lease token，可能绕过新版本的 fencing。
+
 ## API
 
 除 `/healthz` 外，所有端点都在 `/api/v2` 下。

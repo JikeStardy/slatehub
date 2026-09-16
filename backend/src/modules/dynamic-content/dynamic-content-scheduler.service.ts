@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { AppConfig } from '../../infra/config/app.config';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { formatError } from '../../common/utils/error-format';
@@ -18,6 +19,7 @@ interface RefreshJob {
   dynamicType: string;
   attempts: number;
   leaseUntil: Date;
+  leaseToken: string;
 }
 
 @Injectable()
@@ -58,7 +60,7 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
     const jobs = await this.claimDueJobs(WORKER_BATCH_SIZE);
     await Promise.all(
       jobs.map((job) =>
-        this.renderDue(job.id, job.dynamicType).catch(async (err: unknown) => {
+        this.renderDue(job).catch(async (err: unknown) => {
           this.logger.warn(
             `Dynamic refresh job failed for content ${job.id} of type ${job.dynamicType}: ${
               err instanceof Error ? err.message : String(err)
@@ -72,6 +74,9 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
         })
       )
     );
+    await this.renderer.cleanupStaleDynamicRenderCandidates().catch((err: unknown) => {
+      this.logger.warn(`Dynamic render candidate GC failed: ${formatError(err)}`);
+    });
     return jobs.length >= WORKER_BATCH_SIZE ? 0 : this.nextDelayMs(jobs.length > 0);
   }
 
@@ -91,16 +96,19 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
     const leaseUntil = new Date(now.getTime() + LEASE_MS);
     return claimLeaseJobs(
       rows,
-      (row) =>
-        row.dynamicType
+      (row) => {
+        const leaseToken = randomUUID();
+        return row.dynamicType
           ? {
               id: row.id,
               dynamicType: row.dynamicType,
               attempts: row.dynamicRefreshAttempts + 1,
               leaseUntil,
+              leaseToken,
             }
-          : null,
-      async (row) => {
+          : null;
+      },
+      async (row, job) => {
         const claimed = await this.prisma.content.updateMany({
           where: {
             id: row.id,
@@ -110,6 +118,7 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
           },
           data: {
             dynamicRefreshLeaseUntil: leaseUntil,
+            dynamicRefreshLeaseToken: job.leaseToken,
             dynamicRefreshAttempts: { increment: 1 },
           },
         });
@@ -118,10 +127,13 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
     );
   }
 
-  private async renderDue(contentId: string, dynamicType: string): Promise<void> {
-    const result = await this.renderer.renderDynamicContent(contentId);
+  private async renderDue(job: RefreshJob): Promise<void> {
+    const result = await this.renderer.renderDynamicContent(job.id, {
+      schedulerLeaseUntil: job.leaseUntil,
+      schedulerLeaseToken: job.leaseToken,
+    });
     this.logger.log(
-      `Dynamic content ${contentId} of type ${dynamicType} was refreshed and ${
+      `Dynamic content ${job.id} of type ${job.dynamicType} was refreshed and ${
         result.unchanged ? 'did not change' : 'changed'
       }.`
     );
@@ -157,13 +169,14 @@ export class DynamicContentSchedulerService implements OnModuleInit, OnModuleDes
       where: {
         id: job.id,
         kind: 'dynamic',
-        dynamicRefreshLeaseUntil: job.leaseUntil,
+        dynamicRefreshLeaseToken: job.leaseToken,
       },
       data: {
         dynamicLastError: formatError(err).slice(0, 512),
         dynamicNextRunAt: retryAt,
         dynamicRefreshDueAt: retryAt,
         dynamicRefreshLeaseUntil: null,
+        dynamicRefreshLeaseToken: null,
       },
     });
   }

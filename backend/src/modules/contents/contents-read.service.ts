@@ -24,6 +24,8 @@ import {
 import { ContentReadTargetResolver, type ContentReadScope } from './content-read-target-resolver';
 import { CONTENT_SELECT, contentSelect } from './content-select';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class ContentsReadService {
   constructor(
@@ -243,8 +245,26 @@ export class ContentsReadService {
     const canonical = this.blob.frameKey(groupId, contentId, profileId);
     const migratedNote4Legacy =
       profileId === DEFAULT_DISPLAY_PROFILE_ID && storageKey === `${groupId}/${contentId}.img`;
-    if (storageKey !== canonical && !migratedNote4Legacy) {
+    const dynamicCandidate = isDynamicCandidateStorageKey(
+      storageKey,
+      groupId,
+      contentId,
+      profileId
+    );
+    if (storageKey !== canonical && !migratedNote4Legacy && !dynamicCandidate) {
       throw new InternalError('内容帧存储键与请求目标不一致');
     }
   }
+}
+
+function isDynamicCandidateStorageKey(
+  storageKey: string,
+  groupId: string,
+  contentId: string,
+  profileId: string
+): boolean {
+  const prefix = `frames/${profileId}/${groupId}/${contentId}.`;
+  if (!storageKey.startsWith(prefix) || !storageKey.endsWith('.img')) return false;
+  const token = storageKey.slice(prefix.length, -'.img'.length);
+  return UUID_RE.test(token);
 }

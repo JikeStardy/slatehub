@@ -1,6 +1,16 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  mkdir,
+  readFile,
+  opendir,
+  readdir,
+  rename,
+  stat,
+  unlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
+import { realpathSync, type Dir } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getDisplayProfile } from 'shared';
@@ -13,6 +23,21 @@ import { KeyedPromiseQueue } from '../../common/worker/keyed-promise-queue';
 export type BlobKind = 'image' | 'audio';
 export type StorageBlobKind = 'source' | 'frame';
 
+export interface StaleFrameCandidateKey {
+  storageKey: string;
+  mtimeMs: number;
+}
+
+export interface StaleFrameCandidateScan {
+  candidates: StaleFrameCandidateKey[];
+  scannedEntries: number;
+  done: boolean;
+}
+
+interface StaleFrameScanEntry {
+  candidate?: StaleFrameCandidateKey;
+}
+
 const ext = (kind: BlobKind) => (kind === 'image' ? 'img' : 'pcm');
 const TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_BLOB_BYTES: Record<BlobKind, number> = {
@@ -23,11 +48,16 @@ const MAX_STORAGE_BLOB_BYTES: Record<StorageBlobKind, number> = {
   source: 10 * 1024 * 1024,
   frame: MAX_BLOB_BYTES.image,
 };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const STALE_FRAME_SCAN_QUEUE_KEY = 'stale-frame-candidates';
 
 @Injectable()
-export class BlobService implements OnModuleInit {
+export class BlobService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BlobService.name);
   private readonly writeQueue = new KeyedPromiseQueue();
+  private readonly staleFrameScanQueue = new KeyedPromiseQueue();
+  private staleFrameCandidateIterator: AsyncGenerator<StaleFrameScanEntry> | null = null;
+  private staleFrameScanDestroyed = false;
   private blobRoot: string | null = null;
 
   constructor(private readonly config: AppConfig) {}
@@ -38,6 +68,15 @@ export class BlobService implements OnModuleInit {
     await this.cleanupStaleTmpFiles().catch((err: unknown) => {
       this.logger.warn(`Failed to clean stale blob temporary files: ${formatError(err)}`);
     });
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.staleFrameScanDestroyed = true;
+    await this.staleFrameScanQueue.run(
+      STALE_FRAME_SCAN_QUEUE_KEY,
+      () => this.closeStaleFrameCandidateIterator(),
+      { continueAfterFailure: true }
+    );
   }
 
   sourceKey(groupId: string, contentId: string): string {
@@ -51,6 +90,19 @@ export class BlobService implements OnModuleInit {
     assertBlobSegment('contentId', contentId);
     const profile = getDisplayProfile(profileId);
     return `frames/${profile.id}/${groupId}/${contentId}.img`;
+  }
+
+  frameCandidateKey(
+    groupId: string,
+    contentId: string,
+    profileId: string,
+    attemptToken: string
+  ): string {
+    assertBlobSegment('groupId', groupId);
+    assertBlobSegment('contentId', contentId);
+    assertUuid('attemptToken', attemptToken);
+    const profile = getDisplayProfile(profileId);
+    return `frames/${profile.id}/${groupId}/${contentId}.${attemptToken}.img`;
   }
 
   storagePath(storageKey: string): string {
@@ -88,6 +140,178 @@ export class BlobService implements OnModuleInit {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       }
     });
+  }
+
+  async deleteStorageKeyIfOlderThan(
+    storageKey: string,
+    kind: StorageBlobKind,
+    olderThan: Date
+  ): Promise<boolean> {
+    assertStorageKeyForKind(storageKey, kind);
+    return this.runExclusive(storageKey, async () => {
+      try {
+        const fileStat = await stat(this.storagePath(storageKey));
+        if (fileStat.mtimeMs >= olderThan.getTime()) return false;
+        await unlink(this.storagePath(storageKey));
+        return true;
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw err;
+      }
+    });
+  }
+
+  async touchStorageKey(
+    storageKey: string,
+    kind: StorageBlobKind,
+    touchedAt = new Date()
+  ): Promise<void> {
+    assertStorageKeyForKind(storageKey, kind);
+    return this.runExclusive(storageKey, async () => {
+      try {
+        await utimes(this.storagePath(storageKey), touchedAt, touchedAt);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw err;
+      }
+    });
+  }
+
+  async listStaleFrameCandidateKeys(opts: {
+    olderThan: Date;
+    limit: number;
+    maxEntries?: number;
+  }): Promise<StaleFrameCandidateScan> {
+    return this.staleFrameScanQueue.run(
+      STALE_FRAME_SCAN_QUEUE_KEY,
+      () =>
+        this.staleFrameScanDestroyed
+          ? Promise.resolve({ candidates: [], scannedEntries: 0, done: true })
+          : this.listStaleFrameCandidateKeysExclusive(opts),
+      { continueAfterFailure: true }
+    );
+  }
+
+  private async listStaleFrameCandidateKeysExclusive(opts: {
+    olderThan: Date;
+    limit: number;
+    maxEntries?: number;
+  }): Promise<StaleFrameCandidateScan> {
+    const limit = Math.max(0, Math.floor(opts.limit));
+    const maxEntries = Math.max(0, Math.floor(opts.maxEntries ?? limit));
+    if (limit === 0 || maxEntries === 0) {
+      return { candidates: [], scannedEntries: 0, done: false };
+    }
+
+    this.staleFrameCandidateIterator ??= this.walkStaleFrameCandidates(opts.olderThan);
+    const iterator = this.staleFrameCandidateIterator;
+    const candidates: StaleFrameCandidateKey[] = [];
+    let scannedEntries = 0;
+    let done = false;
+    while (scannedEntries < maxEntries && candidates.length < limit) {
+      const next = await iterator.next();
+      if (next.done) {
+        done = true;
+        if (this.staleFrameCandidateIterator === iterator) {
+          this.staleFrameCandidateIterator = null;
+        }
+        break;
+      }
+      scannedEntries++;
+      if (next.value.candidate) candidates.push(next.value.candidate);
+    }
+    return { candidates, scannedEntries, done };
+  }
+
+  private async *walkStaleFrameCandidates(olderThan: Date): AsyncGenerator<StaleFrameScanEntry> {
+    const root = this.blobRoot ?? resolve(this.config.blobDir);
+    const framesRoot = join(root, 'frames');
+    const cutoff = olderThan.getTime();
+    let profiles: Dir;
+    try {
+      profiles = await opendir(framesRoot);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    try {
+      for await (const profile of profiles) {
+        yield {};
+        if (!profile.isDirectory()) continue;
+        try {
+          getDisplayProfile(profile.name);
+        } catch {
+          continue;
+        }
+        yield* this.walkStaleFrameCandidateGroups(framesRoot, profile.name, cutoff);
+      }
+    } finally {
+      await closeDirQuietly(profiles);
+    }
+  }
+
+  private async *walkStaleFrameCandidateGroups(
+    framesRoot: string,
+    profileName: string,
+    cutoff: number
+  ): AsyncGenerator<StaleFrameScanEntry> {
+    let groups: Dir;
+    try {
+      groups = await opendir(join(framesRoot, profileName));
+    } catch {
+      return;
+    }
+    try {
+      for await (const group of groups) {
+        yield {};
+        if (!group.isDirectory() || !isBlobSegment(group.name)) continue;
+        yield* this.walkStaleFrameCandidateFiles(framesRoot, profileName, group.name, cutoff);
+      }
+    } finally {
+      await closeDirQuietly(groups);
+    }
+  }
+
+  private async *walkStaleFrameCandidateFiles(
+    framesRoot: string,
+    profileName: string,
+    groupName: string,
+    cutoff: number
+  ): AsyncGenerator<StaleFrameScanEntry> {
+    let files: Dir;
+    try {
+      files = await opendir(join(framesRoot, profileName, groupName));
+    } catch {
+      return;
+    }
+    try {
+      for await (const file of files) {
+        const entry: StaleFrameScanEntry = {};
+        if (file.isFile()) {
+          const storageKey = `frames/${profileName}/${groupName}/${file.name}`;
+          const match = parseFrameGcFileName(file.name);
+          if (match && isBlobSegment(match.contentId)) {
+            try {
+              const fileStat = await stat(join(framesRoot, profileName, groupName, file.name));
+              if (fileStat.mtimeMs < cutoff) {
+                entry.candidate = { storageKey, mtimeMs: fileStat.mtimeMs };
+              }
+            } catch {
+              // File disappeared between directory read and stat; leave it out of this pass.
+            }
+          }
+        }
+        yield entry;
+      }
+    } finally {
+      await closeDirQuietly(files);
+    }
+  }
+
+  private async closeStaleFrameCandidateIterator(): Promise<void> {
+    const iterator = this.staleFrameCandidateIterator;
+    this.staleFrameCandidateIterator = null;
+    await iterator?.return(undefined);
   }
 
   path(groupId: string, contentId: string, kind: BlobKind): string {
@@ -177,7 +401,25 @@ export class BlobService implements OnModuleInit {
 }
 
 function assertBlobSegment(name: string, value: string): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(value) || value === '.' || value === '..') {
+  if (!isBlobSegment(value)) {
+    throw new Error(`非法 blob ${name}`);
+  }
+}
+
+function isBlobSegment(value: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(value) && value !== '.' && value !== '..';
+}
+
+async function closeDirQuietly(dir: Dir): Promise<void> {
+  try {
+    await Promise.resolve(dir.close());
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ERR_DIR_CLOSED') throw err;
+  }
+}
+
+function assertUuid(name: string, value: string): void {
+  if (!UUID_RE.test(value)) {
     throw new Error(`非法 blob ${name}`);
   }
 }
@@ -204,6 +446,17 @@ function assertStorageKeyForKind(storageKey: string, kind: StorageBlobKind): voi
     throw new Error('非法 frame storage key');
   }
   getDisplayProfile(segments[1]!);
+}
+
+function parseFrameGcFileName(fileName: string): { contentId: string } | null {
+  const candidateMatch =
+    /^(?<contentId>.+)\.(?<token>[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.img$/i.exec(
+      fileName
+    );
+  if (candidateMatch?.groups) return { contentId: candidateMatch.groups.contentId! };
+  const canonicalMatch = /^(?<contentId>.+)\.img$/i.exec(fileName);
+  if (!canonicalMatch?.groups) return null;
+  return { contentId: canonicalMatch.groups.contentId! };
 }
 
 function assertPathUnderRoot(root: string, path: string): void {

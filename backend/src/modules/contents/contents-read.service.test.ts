@@ -489,6 +489,20 @@ describe('ContentsReadService profile-scoped resources', () => {
     });
   });
 
+  it('rejects dynamic candidate frame keys whose attempt token is not a UUID', async () => {
+    const note4 = variant(NOTE4_PROFILE, {
+      storageKey: `frames/${NOTE4_PROFILE}/group-1/content-1.not-a-uuid.img`,
+    });
+    const service = createService({
+      content: content({ variants: [note4] }),
+      blobs: { [note4.storageKey!]: Buffer.alloc(note4.frameSize!, 0x11) },
+    });
+
+    await expect(
+      service.readImage('content-1', { userId: 'user-1', displayProfileId: NOTE4_PROFILE })
+    ).rejects.toThrow(InternalError);
+  });
+
   it('rejects same-size frame bytes whose digest does not match variant metadata', async () => {
     const note4 = variant(NOTE4_PROFILE, {
       frameEtag: computeETag(Buffer.alloc(15_000, 0x11)),

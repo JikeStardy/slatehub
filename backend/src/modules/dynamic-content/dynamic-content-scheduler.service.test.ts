@@ -22,7 +22,7 @@ describe('DynamicContentSchedulerService', () => {
     const service = new DynamicContentSchedulerService(
       { backgroundWorkers: true } as AppConfig,
       prisma as unknown as PrismaService,
-      {} as DynamicContentRendererService
+      { cleanupStaleDynamicRenderCandidates: async () => 0 } as DynamicContentRendererService
     );
 
     await service.tick();
@@ -70,6 +70,7 @@ describe('DynamicContentSchedulerService', () => {
         renderDynamicContent: async () => {
           throw new Error('render failed');
         },
+        cleanupStaleDynamicRenderCandidates: async () => 0,
       } as unknown as DynamicContentRendererService
     );
     (
@@ -89,7 +90,7 @@ describe('DynamicContentSchedulerService', () => {
   });
 
   it('marks scheduler-owned retry due and next run at the same timestamp without incrementing attempts again', async () => {
-    const updates: Array<{ data: Record<string, unknown> }> = [];
+    const updates: Array<{ where: Record<string, unknown>; data: Record<string, unknown> }> = [];
     const service = new DynamicContentSchedulerService(
       { backgroundWorkers: true } as AppConfig,
       {
@@ -97,7 +98,10 @@ describe('DynamicContentSchedulerService', () => {
           findMany: async () => [
             { id: 'content-1', dynamicType: 'weather', dynamicRefreshAttempts: 1 },
           ],
-          updateMany: async (args: { data: Record<string, unknown> }) => {
+          updateMany: async (args: {
+            where: Record<string, unknown>;
+            data: Record<string, unknown>;
+          }) => {
             updates.push(args);
             if ('dynamicRefreshAttempts' in args.data) return { count: 1 };
             return { count: 1 };
@@ -109,6 +113,7 @@ describe('DynamicContentSchedulerService', () => {
         renderDynamicContent: async () => {
           throw new Error('render failed');
         },
+        cleanupStaleDynamicRenderCandidates: async () => 0,
       } as unknown as DynamicContentRendererService
     );
 
@@ -118,13 +123,65 @@ describe('DynamicContentSchedulerService', () => {
     const claim = updates.find((update) => 'dynamicRefreshAttempts' in update.data);
     const retry = updates.find((update) => 'dynamicLastError' in update.data);
     expect(claim?.data.dynamicRefreshAttempts).toEqual({ increment: 1 });
+    expect(typeof claim?.data.dynamicRefreshLeaseToken).toBe('string');
+    expect(retry?.where.dynamicRefreshLeaseToken).toBe(claim?.data.dynamicRefreshLeaseToken);
     expect(retry?.data.dynamicRefreshAttempts).toBeUndefined();
     expect(retry?.data.dynamicRefreshLeaseUntil).toBeNull();
+    expect(retry?.data.dynamicRefreshLeaseToken).toBeNull();
     expect(retry?.data.dynamicRefreshDueAt).toBeInstanceOf(Date);
     expect(retry?.data.dynamicNextRunAt).toBeInstanceOf(Date);
     expect(retry?.data.dynamicRefreshDueAt).toBe(retry?.data.dynamicNextRunAt);
     expect((retry?.data.dynamicRefreshDueAt as Date).getTime()).toBe(
       (retry?.data.dynamicNextRunAt as Date).getTime()
+    );
+  });
+
+  it('passes its claimed lease to the dynamic renderer for fencing', async () => {
+    const renderCalls: Array<{
+      contentId: string;
+      schedulerLeaseUntil?: Date;
+      schedulerLeaseToken?: string;
+    }> = [];
+    const service = new DynamicContentSchedulerService(
+      { backgroundWorkers: true } as AppConfig,
+      {
+        content: {
+          findMany: async () => [
+            { id: 'content-1', dynamicType: 'weather', dynamicRefreshAttempts: 0 },
+          ],
+          updateMany: async () => ({ count: 1 }),
+          findFirst: async () => null,
+        },
+      } as unknown as PrismaService,
+      {
+        renderDynamicContent: async (contentId, opts) => {
+          renderCalls.push({
+            contentId,
+            schedulerLeaseUntil: opts?.schedulerLeaseUntil,
+            schedulerLeaseToken: opts?.schedulerLeaseToken,
+          });
+          return {
+            contentId,
+            imageEtag: 'image-etag',
+            contentEtag: 'content-etag',
+            audioEtag: null,
+            groupEtag: 'group-etag',
+            renderedAt: new Date(),
+            unchanged: false,
+          };
+        },
+        cleanupStaleDynamicRenderCandidates: async () => 0,
+      } as unknown as DynamicContentRendererService
+    );
+
+    await service.tick();
+    service.onModuleDestroy();
+
+    expect(renderCalls).toHaveLength(1);
+    expect(renderCalls[0]?.contentId).toBe('content-1');
+    expect(renderCalls[0]?.schedulerLeaseUntil).toBeInstanceOf(Date);
+    expect(renderCalls[0]?.schedulerLeaseToken).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
     );
   });
 });

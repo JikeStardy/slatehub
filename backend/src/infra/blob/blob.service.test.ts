@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BlobService } from './blob.service';
@@ -20,6 +20,30 @@ function service(): BlobService {
   return new BlobService({ blobDir } as AppConfig);
 }
 
+async function scanUntilCandidate(blob: BlobService, olderThan: Date, maxEntries: number) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const scan = await blob.listStaleFrameCandidateKeys({
+      olderThan,
+      limit: 10,
+      maxEntries,
+    });
+    if (scan.candidates.length > 0 || scan.done) return scan;
+  }
+  throw new Error('stale frame scan did not make progress to a candidate');
+}
+
+async function drainStaleFrameScan(blob: BlobService, olderThan: Date): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const scan = await blob.listStaleFrameCandidateKeys({
+      olderThan,
+      limit: 10,
+      maxEntries: 100,
+    });
+    if (scan.done) return;
+  }
+  throw new Error('stale frame scan did not finish a cycle');
+}
+
 describe('BlobService storage keys', () => {
   it('isolates sources and profile-specific frames in separate directories', () => {
     const blob = service();
@@ -37,6 +61,116 @@ describe('BlobService storage keys', () => {
     expect(() => service().frameKey('group-1', 'content-1', 'unknown-profile')).toThrow(
       /unknown display profile/
     );
+  });
+
+  it('requires candidate frame attempt tokens to be UUIDs', () => {
+    const blob = service();
+
+    expect(() =>
+      blob.frameCandidateKey('group-1', 'content-1', 'zectrix-note4-400x300-mono', 'not-a-uuid')
+    ).toThrow(/非法 blob attemptToken/);
+  });
+
+  it('streams stale frame candidates with bounded per-dirent progress across calls', async () => {
+    const blob = service();
+    const oldDate = new Date('2026-05-15T04:10:00.000Z');
+    const now = new Date('2026-05-17T04:10:00.000Z');
+    const key = blob.frameCandidateKey(
+      'group-1',
+      'content-001',
+      'zectrix-note4-400x300-mono',
+      '11111111-1111-4111-8111-111111111111'
+    );
+    for (let index = 0; index < 25; index++) {
+      await mkdir(
+        join(
+          blobDir,
+          'frames/zectrix-note4-400x300-mono',
+          `empty-${String(index).padStart(2, '0')}`
+        ),
+        { recursive: true }
+      );
+    }
+    await blob.writeStorageKey(key, 'frame', Buffer.from(key));
+    await utimes(blob.storagePath(key), oldDate, oldDate);
+
+    const first = await blob.listStaleFrameCandidateKeys({
+      olderThan: now,
+      limit: 10,
+      maxEntries: 1,
+    });
+
+    expect(first.scannedEntries).toBe(1);
+    expect(first.candidates).toEqual([]);
+    expect(first.done).toBe(false);
+
+    const reached = await scanUntilCandidate(blob, now, 5);
+
+    expect(reached.candidates.map((candidate) => candidate.storageKey)).toContain(key);
+
+    await drainStaleFrameScan(blob, now);
+    const restarted = await scanUntilCandidate(blob, now, 100);
+    expect(restarted.candidates.map((candidate) => candidate.storageKey)).toContain(key);
+  });
+
+  it('does not start a queued stale-frame scan after module destruction begins', async () => {
+    const blob = service();
+    const scan = blob.listStaleFrameCandidateKeys({
+      olderThan: new Date('2026-05-17T04:10:00.000Z'),
+      limit: 10,
+      maxEntries: 10,
+    });
+    const destroy = blob.onModuleDestroy();
+
+    await expect(scan).resolves.toEqual({ candidates: [], scannedEntries: 0, done: true });
+    await expect(destroy).resolves.toBeUndefined();
+    await expect(
+      blob.listStaleFrameCandidateKeys({
+        olderThan: new Date('2026-05-17T04:10:00.000Z'),
+        limit: 10,
+        maxEntries: 10,
+      })
+    ).resolves.toEqual({ candidates: [], scannedEntries: 0, done: true });
+  });
+
+  it('serializes iterator shutdown behind an active stale-frame scan', async () => {
+    const blob = service();
+    let releaseNext!: () => void;
+    let markNextStarted!: () => void;
+    let closed = false;
+    const nextStarted = new Promise<void>((resolve) => {
+      markNextStarted = resolve;
+    });
+    const mayReturnEntry = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    async function* delayedIterator(): AsyncGenerator<Record<string, never>> {
+      try {
+        markNextStarted();
+        await mayReturnEntry;
+        yield {};
+      } finally {
+        closed = true;
+      }
+    }
+    (
+      blob as unknown as {
+        staleFrameCandidateIterator: AsyncGenerator<Record<string, never>> | null;
+      }
+    ).staleFrameCandidateIterator = delayedIterator();
+
+    const scan = blob.listStaleFrameCandidateKeys({
+      olderThan: new Date('2026-05-17T04:10:00.000Z'),
+      limit: 10,
+      maxEntries: 1,
+    });
+    await nextStarted;
+    const destroy = blob.onModuleDestroy();
+    releaseNext();
+
+    await expect(scan).resolves.toEqual({ candidates: [], scannedEntries: 1, done: false });
+    await expect(destroy).resolves.toBeUndefined();
+    expect(closed).toBe(true);
   });
 });
 
@@ -69,6 +203,35 @@ describe('BlobService storage-key I/O', () => {
     expect(await blob.readStorageKey(key)).toEqual(Buffer.from('original image'));
 
     await blob.deleteStorageKey(key);
+    expect(await blob.readStorageKey(key)).toBeNull();
+  });
+
+  it('re-stats under the storage-key queue before conditional stale deletion', async () => {
+    const blob = service();
+    const key = blob.frameCandidateKey(
+      'group-1',
+      'content-1',
+      'zectrix-note4-400x300-mono',
+      '11111111-1111-4111-8111-111111111111'
+    );
+    const oldDate = new Date('2026-05-15T04:10:00.000Z');
+    const touchedAt = new Date('2026-05-17T04:10:00.000Z');
+    const cutoff = new Date('2026-05-16T04:10:00.000Z');
+    await blob.writeStorageKey(key, 'frame', Buffer.from('frame'));
+    await utimes(blob.storagePath(key), oldDate, oldDate);
+
+    const scanned = await blob.listStaleFrameCandidateKeys({
+      olderThan: cutoff,
+      limit: 10,
+    });
+    expect(scanned.candidates.map((candidate) => candidate.storageKey)).toEqual([key]);
+
+    await blob.touchStorageKey(key, 'frame', touchedAt);
+    await expect(blob.deleteStorageKeyIfOlderThan(key, 'frame', cutoff)).resolves.toBe(false);
+    expect(await blob.readStorageKey(key)).toEqual(Buffer.from('frame'));
+
+    await utimes(blob.storagePath(key), oldDate, oldDate);
+    await expect(blob.deleteStorageKeyIfOlderThan(key, 'frame', cutoff)).resolves.toBe(true);
     expect(await blob.readStorageKey(key)).toBeNull();
   });
 

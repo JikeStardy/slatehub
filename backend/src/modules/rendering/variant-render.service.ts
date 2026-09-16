@@ -23,6 +23,10 @@ export interface RenderContentVariantsInput {
   render: (target: RenderTarget) => Buffer | Promise<Buffer>;
 }
 
+export interface RenderContentVariantCandidatesInput extends RenderContentVariantsInput {
+  attemptToken: string;
+}
+
 export interface VariantRenderResult {
   profileId: string;
   status: 'ready' | 'failed';
@@ -59,6 +63,39 @@ export class VariantRenderService {
         continueAfterFailure: true,
       }
     );
+  }
+
+  async renderContentVariantCandidates(
+    input: RenderContentVariantCandidatesInput
+  ): Promise<RenderContentVariantsResult> {
+    return this.contentMutations.run(
+      input.contentId,
+      () => this.renderContentVariantCandidatesExclusive(input),
+      {
+        continueAfterFailure: true,
+      }
+    );
+  }
+
+  private async renderContentVariantCandidatesExclusive(
+    input: RenderContentVariantCandidatesInput
+  ): Promise<RenderContentVariantsResult> {
+    const profiles = displayProfilesForEnvironment(this.config.nodeEnv);
+    const results: VariantRenderResult[] = [];
+
+    for (const profile of profiles) {
+      let target: RenderTarget;
+      try {
+        target = this.resolveRenderTarget(profile);
+      } catch (err: unknown) {
+        results.push(profileBoundaryFailure(profile.id, err));
+        continue;
+      }
+
+      results.push(await this.renderCandidate(input, target));
+    }
+
+    return { contentId: input.contentId, renderVersion: 0, results };
   }
 
   private async renderContentVariantsExclusive(
@@ -110,6 +147,40 @@ export class VariantRenderService {
       return await this.commitReadyVariant(input, target, previous, frame, renderVersion);
     } catch (err: unknown) {
       return this.commitFailedVariant(input.contentId, target, previous, err, renderVersion);
+    }
+  }
+
+  private async renderCandidate(
+    input: RenderContentVariantCandidatesInput,
+    target: RenderTarget
+  ): Promise<VariantRenderResult> {
+    try {
+      assertSupportedMonoEncoding(target);
+      const frame = await input.render(target);
+      assertFrameSize(frame, target);
+      const storageKey = this.blob.frameCandidateKey(
+        input.groupId,
+        input.contentId,
+        target.profileId,
+        input.attemptToken
+      );
+      const frameEtag = computeETag(frame);
+      await this.blob.writeStorageKey(storageKey, 'frame', frame);
+      return {
+        profileId: target.profileId,
+        status: 'ready',
+        changed: true,
+        frameEtag,
+        frameSize: frame.length,
+        storageKey,
+      };
+    } catch (err: unknown) {
+      return {
+        profileId: target.profileId,
+        status: 'failed',
+        changed: true,
+        error: boundedError(err),
+      };
     }
   }
 

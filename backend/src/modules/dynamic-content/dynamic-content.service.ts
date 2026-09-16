@@ -1,6 +1,7 @@
 import { createId } from '@paralleldrive/cuid2';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import {
   DashboardDataPayload,
   displayProfilesForEnvironment,
@@ -28,6 +29,8 @@ import { DynamicContentRegistry } from './dynamic-content-registry';
 import { DynamicContentRendererService } from './dynamic-content-renderer.service';
 import { defaultDynamicFrameName } from './status-text/dynamic-content-status-text';
 import { toContentMutationResponse } from '../contents/content-mutation-response';
+
+const DYNAMIC_RENDER_LEASE_MS = 180_000;
 
 @Injectable()
 export class DynamicContentService {
@@ -159,6 +162,8 @@ export class DynamicContentService {
     const placeholderEtag = computeETag(`dynamic-init:${contentId}`);
     const audioEnabled = isAudioDynamicConfig(validatedConfig) && validatedConfig.audio_enabled;
     const audioVoice = isAudioDynamicConfig(validatedConfig) ? validatedConfig.audio_voice : null;
+    const initialLeaseToken = randomUUID();
+    const initialLeaseUntil = new Date(Date.now() + DYNAMIC_RENDER_LEASE_MS);
     let created: { seq: number; didCreate: boolean } = { seq: -1, didCreate: false };
     try {
       const seq = await this.prisma.$transaction(async (tx) => {
@@ -183,12 +188,19 @@ export class DynamicContentService {
             audioVoice: audioEnabled ? audioVoice : null,
             dynamicNextRunAt: new Date(0),
             dynamicRefreshDueAt: new Date(0),
+            dynamicRefreshLeaseUntil: initialLeaseUntil,
+            dynamicRefreshLeaseToken: initialLeaseToken,
           },
         });
         return nextSeq;
       });
       created = { seq, didCreate: true };
-      const rendered = await this.renderDynamicAndReadEtag(contentId);
+      const rendered = await this.renderDynamicAndReadEtag(contentId, {
+        force: true,
+        schedulerLeaseUntil: initialLeaseUntil,
+        schedulerLeaseToken: initialLeaseToken,
+        claimedLeaseOwner: 'foreground',
+      });
       return toContentMutationResponse(
         contentId,
         seq,
@@ -231,8 +243,12 @@ export class DynamicContentService {
         throw new ValidationError('该内容不是动态类型');
       await this.groups.assertOwned(content.groupId, ownerUserId);
 
+      const leaseToken = randomUUID();
+      const leaseUntil = new Date(Date.now() + DYNAMIC_RENDER_LEASE_MS);
       const data: Prisma.ContentUpdateInput = {};
-      if (body.frame_name !== undefined) data.frameName = body.frame_name;
+      if (body.frame_name !== undefined) {
+        data.frameName = body.frame_name;
+      }
       if (body.config !== undefined) {
         const validated = DynamicConfig.parse(body.config);
         const currentType = content.dynamicType;
@@ -243,13 +259,19 @@ export class DynamicContentService {
         }
         data.dynamicConfig = toPrismaInputJson(validated);
         data.dynamicRefreshDueAt = new Date();
-        data.dynamicRefreshLeaseUntil = null;
         if (body.frame_name === undefined && currentType !== 'dashboard') {
           data.frameName = defaultDynamicFrameName(currentType, validated);
         }
       }
+      data.dynamicRefreshLeaseUntil = leaseUntil;
+      data.dynamicRefreshLeaseToken = leaseToken;
       await this.prisma.content.update({ where: { id: contentId }, data });
-      const rendered = await this.renderDynamicAndReadEtag(contentId);
+      const rendered = await this.renderDynamicAndReadEtag(contentId, {
+        force: true,
+        schedulerLeaseUntil: leaseUntil,
+        schedulerLeaseToken: leaseToken,
+        claimedLeaseOwner: 'foreground',
+      });
       return toContentMutationResponse(
         contentId,
         content.sortOrder,
@@ -282,8 +304,22 @@ export class DynamicContentService {
     if (!content.dynamicType) throw new ValidationError('该内容不是动态类型');
 
     const rendered = await this.runMutation(contentId, async () => {
-      await this.prisma.content.update({ where: { id: contentId }, data: { frameName } });
-      return this.renderDynamicAndReadEtag(contentId);
+      const leaseToken = randomUUID();
+      const leaseUntil = new Date(Date.now() + DYNAMIC_RENDER_LEASE_MS);
+      await this.prisma.content.update({
+        where: { id: contentId },
+        data: {
+          frameName,
+          dynamicRefreshLeaseUntil: leaseUntil,
+          dynamicRefreshLeaseToken: leaseToken,
+        },
+      });
+      return this.renderDynamicAndReadEtag(contentId, {
+        force: true,
+        schedulerLeaseUntil: leaseUntil,
+        schedulerLeaseToken: leaseToken,
+        claimedLeaseOwner: 'foreground',
+      });
     });
     return toContentMutationResponse(
       contentId,
@@ -299,32 +335,47 @@ export class DynamicContentService {
     contentId: string,
     payload: IngestPayloadT
   ): Promise<ContentMutationResponseT & { updatedAt: Date }> {
-    const content = await this.prisma.content.findUnique({
-      where: { id: contentId },
-      select: {
-        sortOrder: true,
-        kind: true,
-        dynamicType: true,
-      },
+    return this.runMutation(contentId, async () => {
+      const content = await this.prisma.content.findUnique({
+        where: { id: contentId },
+        select: {
+          sortOrder: true,
+          kind: true,
+          dynamicType: true,
+        },
+      });
+      if (!content || content.kind !== 'dynamic' || content.dynamicType !== 'dashboard') {
+        throw new NotFoundError('dashboard 内容不存在');
+      }
+      const leaseToken = randomUUID();
+      const leaseUntil = new Date(Date.now() + DYNAMIC_RENDER_LEASE_MS);
+      const claimed = await this.prisma.content.updateMany({
+        where: { id: contentId, kind: 'dynamic', dynamicType: 'dashboard' },
+        data: {
+          dynamicRefreshLeaseUntil: leaseUntil,
+          dynamicRefreshLeaseToken: leaseToken,
+        },
+      });
+      if (claimed.count !== 1) throw new NotFoundError('dashboard 内容不存在');
+      const rendered = await this.renderDynamicAndReadEtag(contentId, {
+        force: true,
+        dataOverride: payload.data,
+        schedulerLeaseUntil: leaseUntil,
+        schedulerLeaseToken: leaseToken,
+        claimedLeaseOwner: 'foreground',
+      });
+      return {
+        ...toContentMutationResponse(
+          contentId,
+          content.sortOrder,
+          rendered.imageEtag,
+          rendered.audioEtag,
+          rendered.groupEtag,
+          rendered.contentEtag
+        ),
+        updatedAt: rendered.renderedAt,
+      };
     });
-    if (!content || content.kind !== 'dynamic' || content.dynamicType !== 'dashboard') {
-      throw new NotFoundError('dashboard 内容不存在');
-    }
-    const rendered = await this.renderDynamicAndReadEtag(contentId, {
-      force: true,
-      dataOverride: payload.data,
-    });
-    return {
-      ...toContentMutationResponse(
-        contentId,
-        content.sortOrder,
-        rendered.imageEtag,
-        rendered.audioEtag,
-        rendered.groupEtag,
-        rendered.contentEtag
-      ),
-      updatedAt: rendered.renderedAt,
-    };
   }
 
   async refresh(

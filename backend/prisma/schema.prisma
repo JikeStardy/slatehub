@@ -141,6 +141,7 @@ model Content {
   dynamicNextRunAt         DateTime?           @map("dynamic_next_run_at")
   dynamicRefreshDueAt      DateTime?           @map("dynamic_refresh_due_at")
   dynamicRefreshLeaseUntil DateTime?           @map("dynamic_refresh_lease_until")
+  dynamicRefreshLeaseToken String?             @map("dynamic_refresh_lease_token") @db.VarChar(36)
   dynamicRefreshAttempts   Int                 @default(0) @map("dynamic_refresh_attempts")
   dynamicLastError         String?             @map("dynamic_last_error") @db.VarChar(512)
   createdAt                DateTime            @default(now()) @map("created_at")
@@ -195,6 +196,7 @@ model ContentVariant {
   content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
   @@unique([contentId, profileId])
+  @@index([storageKey])
   @@index([status, leaseUntil], map: "content_variants_worker_idx")
   @@map("content_variants")
 }

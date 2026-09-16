@@ -323,6 +323,15 @@ bool WriteStagedFrameAudio(const std::string& gid, int idx, const std::vector<ui
     return UpdateStagedFrameEtag(gid, idx, "", etag, profile_id, &descriptor);
 }
 
+bool DeleteStagedFrameAudio(const std::string& gid, int idx) {
+    internal::DirEnsure(internal::StageDir(gid));
+    internal::RemoveIfExists(internal::StageAudioPath(gid, idx));
+    FrameMeta meta;
+    ReadFrameMetaFile(internal::StageMetaPath(gid, idx), meta);
+    meta.audio_etag.clear();
+    return WriteFrameMetaFile(internal::StageMetaPath(gid, idx), meta);
+}
+
 bool WriteStagedFrameMeta(const std::string& gid, int idx, const FrameMeta& meta) {
     internal::DirEnsure(internal::StageDir(gid));
     return WriteFrameMetaFile(internal::StageMetaPath(gid, idx), meta);
@@ -362,6 +371,9 @@ bool CommitStagedFrame(const std::string& gid, int idx, const std::string& image
             ESP_LOGW(internal::kTag, "frame audio missing idx=%d", idx);
             return false;
         }
+    } else if (!staged_frame_meta.audio_etag.empty()) {
+        ESP_LOGW(internal::kTag, "staged audio etag mismatch idx=%d", idx);
+        return false;
     }
 
     const std::size_t first_new_swap = swaps.size();
@@ -370,6 +382,9 @@ bool CommitStagedFrame(const std::string& gid, int idx, const std::string& image
     }
     if (!audio_etag.empty() && internal::PathExists(staged_audio)) {
         swaps.push_back({staged_audio, internal::AudioPath(gid, idx), internal::AudioPath(gid, idx) + ".bak"});
+    } else if (audio_etag.empty() && internal::PathExists(internal::AudioPath(gid, idx))) {
+        swaps.push_back(
+            {"", internal::AudioPath(gid, idx), internal::AudioPath(gid, idx) + ".bak", false, false, true});
     }
     swaps.push_back({staged_meta, internal::MetaPath(gid, idx), internal::MetaPath(gid, idx) + ".bak"});
 
@@ -416,6 +431,10 @@ bool CacheWriter::FrameAudioExists(int idx, const std::string& expected_etag,
 bool CacheWriter::WriteFrameAudio(int idx, const std::vector<uint8_t>& bytes, const std::string& etag,
                                   const std::string& profile_id, const display::FrameDescriptor& descriptor) {
     return begun_ && WriteStagedFrameAudio(gid_, idx, bytes, etag, profile_id, descriptor);
+}
+
+bool CacheWriter::DeleteFrameAudio(int idx) {
+    return begun_ && DeleteStagedFrameAudio(gid_, idx);
 }
 
 bool CacheWriter::WriteFrameMeta(int idx, const FrameMeta& meta) {

@@ -33,16 +33,37 @@ add_executable(cache_integration_test
     ../main/sync/manifest_contract.cc
 )
 
+add_executable(sync_current_content_transaction_test
+    sync_current_content_transaction_test.cc
+    stubs/cJSON.cc
+    ../main/drivers/display/display_contract.cc
+    ../main/storage/cache/cache_frames.cc
+    ../main/storage/cache/cache_internal.cc
+    ../main/storage/cache/cache_io.cc
+    ../main/storage/cache/cache_json.cc
+    ../main/storage/cache/cache_manifest.cc
+    ../main/storage/cache/cache_paths.cc
+    ../main/storage/cache/cache_staging.cc
+    ../main/storage/cache/cache_state.cc
+    ../main/sync/manifest_contract.cc
+    ../main/sync/sync_internal.cc
+    ../main/sync/sync_manifest.cc
+)
+
 target_include_directories(display_contract_test PRIVATE ../main)
 target_include_directories(cache_staging_test PRIVATE stubs ../main)
 target_include_directories(cache_integration_test PRIVATE stubs ../main)
+target_include_directories(sync_current_content_transaction_test PRIVATE stubs ../main)
 target_compile_definitions(display_contract_test PRIVATE "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_definitions(cache_integration_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
+target_compile_definitions(sync_current_content_transaction_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_options(display_contract_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 target_compile_options(cache_staging_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 target_compile_options(cache_integration_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
+target_compile_options(sync_current_content_transaction_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 
 enable_testing()
 add_test(NAME display_contract_test COMMAND display_contract_test)
 add_test(NAME cache_staging_test COMMAND cache_staging_test)
 add_test(NAME cache_integration_test COMMAND cache_integration_test)
+add_test(NAME sync_current_content_transaction_test COMMAND sync_current_content_transaction_test)

@@ -261,6 +261,39 @@ void TestFrameManifestStateFailureRollsBackInstalledSwaps() {
     CHECK(static_cast<unsigned char>(ReadText(cache::internal::ImagePath(gid, 0))[0]) == 0x11);
 }
 
+void TestFrameAudioDeleteFailureRollsBackInstalledSwaps() {
+    TempCacheRoot root;
+    CHECK(root.ok());
+    if (!root.ok())
+        return;
+    const std::string gid = "group-a";
+    SeedCommittedFrame(gid, 0, "img-old", "aud-old", 0x11, 0x22);
+    CHECK(cache::WriteManifest(gid, "manifest-old", 1, "Old", TestDisplay()));
+    CHECK(cache::WriteStateMeta("old-selected", "manifest-old"));
+
+    cache::CacheWriter writer(gid);
+    CHECK(writer.Begin());
+    CHECK(writer.DeleteFrameAudio(0));
+    CHECK(writer.WriteFrameMeta(0, MakeMeta("new", "content-new", "img-old", "")));
+    CHECK(writer.CommitFrame(0, "img-old", "", TestDisplay()));
+    CHECK(writer.CommitManifest("manifest-new", 1, "New", TestDisplay()));
+
+    unlink(cache::internal::StatePath().c_str());
+    CHECK(mkdir(cache::internal::StatePath().c_str(), 0775) == 0);
+    CHECK(!cache::WriteStateMeta(gid, "manifest-new"));
+    writer.Rollback();
+    rmdir(cache::internal::StatePath().c_str());
+
+    cache::FrameMeta meta;
+    CHECK(cache::ReadFrameMeta(gid, 0, meta, TestDisplay()));
+    CHECK(meta.audio_etag == "aud-old");
+    CHECK(cache::FrameAudioExists(gid, 0, "aud-old", TestDisplay()));
+    const std::string audio = ReadText(cache::internal::AudioPath(gid, 0));
+    CHECK(audio.size() == 4);
+    if (!audio.empty())
+        CHECK(static_cast<unsigned char>(audio[0]) == 0x22);
+}
+
 void TestFrameManifestStateSuccessFinalizesBackups() {
     TempCacheRoot root;
     CHECK(root.ok());
@@ -300,6 +333,33 @@ void TestFrameManifestStateSuccessFinalizesBackups() {
     CHECK(!Exists(cache::internal::ManifestPath(gid) + ".bak"));
 }
 
+void TestFrameAudioDeleteSuccessFinalizesBackups() {
+    TempCacheRoot root;
+    CHECK(root.ok());
+    if (!root.ok())
+        return;
+    const std::string gid = "group-a";
+    SeedCommittedFrame(gid, 0, "img-old", "aud-old", 0x11, 0x22);
+    CHECK(cache::WriteManifest(gid, "manifest-old", 1, "Old", TestDisplay()));
+
+    cache::CacheWriter writer(gid);
+    CHECK(writer.Begin());
+    CHECK(writer.DeleteFrameAudio(0));
+    CHECK(writer.WriteFrameMeta(0, MakeMeta("new", "content-new", "img-old", "")));
+    CHECK(writer.CommitFrame(0, "img-old", "", TestDisplay()));
+    CHECK(writer.CommitManifest("manifest-new", 1, "New", TestDisplay()));
+    CHECK(cache::WriteStateMeta(gid, "manifest-new"));
+    CHECK(writer.Commit());
+
+    cache::FrameMeta meta;
+    CHECK(cache::ReadFrameMeta(gid, 0, meta, TestDisplay()));
+    CHECK(meta.audio_etag.empty());
+    CHECK(!cache::FrameAudioExists(gid, 0, "aud-old", TestDisplay()));
+    CHECK(!Exists(cache::internal::AudioPath(gid, 0)));
+    CHECK(!Exists(cache::internal::AudioPath(gid, 0) + ".bak"));
+    CHECK(!Exists(cache::internal::MetaPath(gid, 0) + ".bak"));
+}
+
 }  // namespace
 
 int main() {
@@ -307,6 +367,8 @@ int main() {
     TestIdentitylessManifestAndFrameMetadataInvalidate();
     TestAudioOnlyCacheWriterPersistsIdentityAndCommits();
     TestFrameManifestStateFailureRollsBackInstalledSwaps();
+    TestFrameAudioDeleteFailureRollsBackInstalledSwaps();
     TestFrameManifestStateSuccessFinalizesBackups();
+    TestFrameAudioDeleteSuccessFinalizesBackups();
     return g_failures == 0 ? 0 : 1;
 }

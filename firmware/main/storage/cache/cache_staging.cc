@@ -72,6 +72,14 @@ bool InstallSwaps(std::vector<Swap>& swaps) {
             }
             swap.had_target = true;
         }
+        if (swap.delete_target) {
+            if (!RemoveIfExists(swap.target)) {
+                RollbackSwaps(swaps);
+                return false;
+            }
+            swap.installed = true;
+            continue;
+        }
         if (!RenameReplace(swap.staged, swap.target)) {
             if (swap.had_target) {
                 if (RenameReplace(swap.backup, swap.target)) {

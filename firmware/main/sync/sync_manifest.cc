@@ -230,10 +230,6 @@ bool SyncService::CommitStagedFrames(cache::CacheWriter& writer, const std::stri
     writer.Commit();
     cache::TouchGroup(gid);
     cache::PruneOldGroups(selected_group_id, gid, kCacheMinFreeBytes, kMaxCachedGroups);
-    for (const auto& f : manifest.contents) {
-        if (f.audio_etag.empty())
-            cache::DeleteFrameAudio(gid, f.seq);
-    }
     for (int idx = total; idx < old_content_count; ++idx) {
         cache::DeleteFrameFiles(gid, idx);
     }
@@ -355,8 +351,12 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
         if (old_meta.status_bar_text != next_meta.status_bar_text || old_meta.has_ttl != next_meta.has_ttl ||
             old_meta.ttl_sec != next_meta.ttl_sec || old_meta.image_etag != next_meta.image_etag ||
             old_meta.audio_etag != next_meta.audio_etag) {
-            if (!cache::WriteFrameMeta(gid, f.seq, next_meta)) {
+            cache::CacheWriter writer(gid);
+            if (!writer.Begin() || !writer.WriteFrameMeta(f.seq, next_meta) ||
+                !writer.CommitFrame(f.seq, f.image_etag, f.audio_etag, Board::Get().platform().Display()) ||
+                !writer.Commit()) {
                 ESP_LOGW(kTag, "frame meta write failed seq=%d", f.seq);
+                writer.Rollback();
                 return false;
             }
         }
@@ -376,6 +376,11 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
                                            f.variant_status, f.image_size, f.frame_profile_id, f.frame};
     if (!sync_contract::ContentIsDownloadable(content))
         return false;
+    cache::CacheWriter writer(gid);
+    if (!writer.Begin()) {
+        ESP_LOGW(kTag, "frame stage init failed seq=%d", f.seq);
+        return false;
+    }
     if (!cache::FrameImageExists(gid, f.seq, f.image_etag, Board::Get().platform().Display())) {
         bool       nm            = false;
         const auto image_if_none = ExistingImageEtag(gid, f.seq, f.image_etag, Board::Get().platform().Display());
@@ -390,7 +395,7 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
                          static_cast<unsigned>(download_buf_.size()), static_cast<unsigned>(f.frame.byte_size));
                 return false;
             }
-            if (!cache::WriteFrameImage(gid, f.seq, download_buf_, f.image_etag, f.frame)) {
+            if (!writer.WriteFrameImage(f.seq, download_buf_, f.image_etag, f.frame_profile_id, f.frame)) {
                 ESP_LOGW(kTag, "frame image write failed seq=%d", f.seq);
                 return false;
             }
@@ -400,7 +405,10 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
         }
     }
     if (f.audio_etag.empty()) {
-        cache::DeleteFrameAudio(gid, f.seq);
+        if (!writer.DeleteFrameAudio(f.seq)) {
+            ESP_LOGW(kTag, "frame audio delete stage failed seq=%d", f.seq);
+            return false;
+        }
     } else if (!cache::FrameAudioExists(gid, f.seq, f.audio_etag, Board::Get().platform().Display())) {
         if (ShouldStop())
             return false;
@@ -412,7 +420,7 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
                 ESP_LOGW(kTag, "frame audio unexpected not_modified seq=%d", f.seq);
                 return false;
             }
-            if (cache::WriteFrameAudio(gid, f.seq, download_buf_, f.audio_etag)) {
+            if (writer.WriteFrameAudio(f.seq, download_buf_, f.audio_etag, f.frame_profile_id, f.frame)) {
                 // Audio-only current-content updates should update cache without
                 // waking the EPD path; "changed" here means visible pixels changed.
             } else {
@@ -425,8 +433,14 @@ bool SyncService::SyncCurrentContent(const std::string& gid, const api::ContentM
         }
     }
 
-    if (!cache::WriteFrameMeta(gid, f.seq, next_meta)) {
+    if (!writer.WriteFrameMeta(f.seq, next_meta)) {
         ESP_LOGW(kTag, "frame meta write failed seq=%d", f.seq);
+        return false;
+    }
+    if (!writer.CommitFrame(f.seq, f.image_etag, f.audio_etag, Board::Get().platform().Display()) ||
+        !writer.Commit()) {
+        ESP_LOGW(kTag, "frame commit failed seq=%d", f.seq);
+        writer.Rollback();
         return false;
     }
     power_state::SetCurrentFrameFromMeta(f.seq, next_meta);

@@ -103,6 +103,7 @@ class CacheWriter {
     bool FrameAudioExists(int idx, const std::string& expected_etag, const display::DisplayInfo& display_info) const;
     bool WriteFrameAudio(int idx, const std::vector<uint8_t>& bytes, const std::string& etag,
                          const std::string& profile_id, const display::FrameDescriptor& descriptor);
+    bool DeleteFrameAudio(int idx);
     bool WriteFrameMeta(int idx, const FrameMeta& meta);
     bool CommitFrame(int idx, const std::string& image_etag, const std::string& audio_etag,
                      const display::DisplayInfo& display_info);

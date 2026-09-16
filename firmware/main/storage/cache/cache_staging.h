@@ -11,6 +11,7 @@ struct Swap {
     std::string backup;
     bool        had_target = false;
     bool        installed  = false;
+    bool        delete_target = false;
 };
 
 bool CommitSwaps(std::vector<Swap>& swaps);

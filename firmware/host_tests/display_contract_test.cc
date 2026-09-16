@@ -977,6 +977,20 @@ void TestManifestDescriptorValidation() {
     ManifestIdentity negative_seq = valid;
     negative_seq.contents[0].seq = -1;
     CHECK(!sync_contract::ValidateManifestContentSet(negative_seq));
+
+    ManifestIdentity gap_seq = valid;
+    gap_seq.contents[0].seq = 1;
+    CHECK(!sync_contract::ValidateManifestContentSet(gap_seq));
+
+    ManifestIdentity contiguous = valid;
+    contiguous.contents.push_back(ContentIdentity{1, "content-2", "image-etag-2", "", "ready", 15000,
+                                                  valid.display_profile_id, info.frame});
+    CHECK(sync_contract::ValidateManifestContentSet(contiguous));
+
+    ManifestIdentity out_of_order = contiguous;
+    out_of_order.contents[0].seq = 1;
+    out_of_order.contents[1].seq = 0;
+    CHECK(!sync_contract::ValidateManifestContentSet(out_of_order));
 }
 
 void TestImagePayloadAndCacheIdentityValidation() {

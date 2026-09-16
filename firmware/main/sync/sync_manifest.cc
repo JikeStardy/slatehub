@@ -222,12 +222,16 @@ bool SyncService::CommitStagedFrames(cache::CacheWriter& writer, const std::stri
         writer.Rollback();
         return false;
     }
-    if (!cache::WriteStateMeta(gid, manifest.manifest_etag)) {
-        ESP_LOGW(kTag, "state write failed action=rollback");
+    if (!writer.CommitStateMeta(gid, manifest.manifest_etag)) {
+        ESP_LOGW(kTag, "state commit failed action=rollback");
         writer.Rollback();
         return false;
     }
-    writer.Commit();
+    if (!writer.Commit()) {
+        ESP_LOGW(kTag, "cache commit failed action=rollback");
+        writer.Rollback();
+        return false;
+    }
     cache::TouchGroup(gid);
     cache::PruneOldGroups(selected_group_id, gid, kCacheMinFreeBytes, kMaxCachedGroups);
     for (int idx = total; idx < old_content_count; ++idx) {

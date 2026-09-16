@@ -46,6 +46,10 @@ std::string StageDir(const std::string& gid) {
     return GroupDir(gid) + "/stage";
 }
 
+std::string StageJournalPath(const std::string& gid) {
+    return StageDir(gid) + "/transaction.journal";
+}
+
 std::string ImagePath(const std::string& gid, int idx) {
     return FramesDir(gid) + "/" + std::to_string(idx) + ".img";
 }

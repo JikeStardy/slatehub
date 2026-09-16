@@ -6,6 +6,39 @@
 #include "storage/cache/cache_internal.h"
 #include "storage/cache/cache_io.h"
 #include "storage/cache/cache_paths.h"
+#include "storage/cache/cache_staging.h"
+
+#include <dirent.h>
+#include <cstring>
+
+namespace {
+
+bool RecoverStagedTransactions() {
+    const std::string groups_dir = std::string(cache::internal::RootPath()) + "/groups";
+    DIR*              dir        = opendir(groups_dir.c_str());
+    if (!dir)
+        return true;
+
+    bool ok = true;
+    while (struct dirent* ent = readdir(dir)) {
+        if (std::strcmp(ent->d_name, ".") == 0 || std::strcmp(ent->d_name, "..") == 0)
+            continue;
+        const std::string gid          = ent->d_name;
+        const std::string stage_dir    = groups_dir + "/" + gid + "/stage";
+        const std::string journal_path = stage_dir + "/transaction.journal";
+        bool              recovered    = true;
+        if (cache::internal::PathExists(journal_path)) {
+            recovered = cache::staging::RecoverJournal(journal_path);
+            ok        = recovered && ok;
+        }
+        if (recovered)
+            ok = cache::internal::RemoveTree(stage_dir) && ok;
+    }
+    closedir(dir);
+    return ok;
+}
+
+}  // namespace
 
 namespace cache {
 
@@ -24,6 +57,10 @@ bool Init() {
     size_t total = 0, used = 0;
     esp_littlefs_info(cfg.partition_label, &total, &used);
     internal::DirEnsure(std::string(internal::RootPath()) + "/groups");
+    if (!RecoverStagedTransactions()) {
+        ESP_LOGE(internal::kTag, "cache recovery failed action=abort_init");
+        return false;
+    }
     return true;
 }
 

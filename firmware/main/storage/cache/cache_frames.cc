@@ -264,9 +264,10 @@ bool BeginFrameStage(const std::string& gid) {
     return internal::DirEnsure(internal::StageDir(gid));
 }
 
-void CleanupFrameStage(const std::string& gid) {
+bool CleanupFrameStage(const std::string& gid) {
     if (!gid.empty())
-        internal::RemoveTree(internal::StageDir(gid));
+        return internal::RemoveTree(internal::StageDir(gid));
+    return true;
 }
 
 bool StagedFrameImageExists(const std::string& gid, int idx, const std::string& expected_etag,
@@ -388,14 +389,20 @@ bool CommitStagedFrame(const std::string& gid, int idx, const std::string& image
     }
     swaps.push_back({staged_meta, internal::MetaPath(gid, idx), internal::MetaPath(gid, idx) + ".bak"});
 
-    const bool ok = staging::InstallSwaps(swaps);
-    if (ok) {
-        internal::RemoveIfExists(internal::EtagPath(gid, idx, "img"));
-        internal::RemoveIfExists(internal::EtagPath(gid, idx, "pcm"));
-    } else {
-        swaps.resize(first_new_swap);
+    for (std::size_t i = first_new_swap; i < swaps.size(); ++i) {
+        swaps[i].target_existed = internal::PathExists(swaps[i].target);
     }
-    return ok;
+    if (!staging::WriteJournal(internal::StageJournalPath(gid), swaps)) {
+        swaps.resize(first_new_swap);
+        return false;
+    }
+    if (!staging::InstallSwaps(swaps)) {
+        (void)staging::RollbackSwaps(swaps);
+        return false;
+    }
+    internal::RemoveIfExists(internal::EtagPath(gid, idx, "img"));
+    internal::RemoveIfExists(internal::EtagPath(gid, idx, "pcm"));
+    return true;
 }
 }  // namespace
 
@@ -459,8 +466,33 @@ bool CacheWriter::CommitManifest(const std::string& manifest_etag, int content_c
     }
     const std::size_t first_new_swap = swaps_.size();
     swaps_.push_back({staged_manifest, internal::ManifestPath(gid_), internal::ManifestPath(gid_) + ".bak"});
-    if (!staging::InstallSwaps(swaps_)) {
+    swaps_.back().target_existed = internal::PathExists(swaps_.back().target);
+    if (!staging::WriteJournal(internal::StageJournalPath(gid_), swaps_)) {
         swaps_.resize(first_new_swap);
+        return false;
+    }
+    if (!staging::InstallSwaps(swaps_)) {
+        (void)staging::RollbackSwaps(swaps_);
+        return false;
+    }
+    return true;
+}
+
+bool CacheWriter::CommitStateMeta(const std::string& selected_group_id, const std::string& etag) {
+    if (!begun_)
+        return false;
+    const std::string staged_state = internal::StageDir(gid_) + "/state.json";
+    if (!internal::WriteStagedStateMetaFile(staged_state, selected_group_id, etag))
+        return false;
+    const std::size_t first_new_swap = swaps_.size();
+    swaps_.push_back({staged_state, internal::StatePath(), internal::StatePath() + ".bak"});
+    swaps_.back().target_existed = internal::PathExists(swaps_.back().target);
+    if (!staging::WriteJournal(internal::StageJournalPath(gid_), swaps_)) {
+        swaps_.resize(first_new_swap);
+        return false;
+    }
+    if (!staging::InstallSwaps(swaps_)) {
+        (void)staging::RollbackSwaps(swaps_);
         return false;
     }
     return true;
@@ -469,19 +501,29 @@ bool CacheWriter::CommitManifest(const std::string& manifest_etag, int content_c
 bool CacheWriter::Commit() {
     if (!begun_)
         return false;
+    if (!staging::RemoveJournal(internal::StageJournalPath(gid_)))
+        return false;
     (void)staging::FinalizeSwaps(swaps_);
+    internal::ResetStateCache();
     committed_ = true;
     CleanupFrameStage(gid_);
     return true;
 }
 
-void CacheWriter::Rollback() {
+bool CacheWriter::Rollback() {
     if (begun_ && !committed_) {
-        staging::RollbackSwaps(swaps_);
-        CleanupFrameStage(gid_);
+        if (!staging::RollbackSwaps(swaps_))
+            return false;
+        if (!staging::RemoveJournal(internal::StageJournalPath(gid_)))
+            return false;
+        if (!CleanupFrameStage(gid_))
+            return false;
     }
     swaps_.clear();
-    begun_ = false;
+    begun_     = false;
+    committed_ = false;
+    internal::ResetStateCache();
+    return true;
 }
 
 }  // namespace cache

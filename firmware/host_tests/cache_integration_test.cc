@@ -172,6 +172,33 @@ void SeedCommittedFrame(const std::string& gid, int idx, const std::string& imag
     CHECK(cache::WriteFrameMeta(gid, idx, MakeMeta("old", "content-old", image_etag, audio_etag)));
 }
 
+void TestInitRecoversInterruptedStageJournal() {
+    TempCacheRoot root;
+    CHECK(root.ok());
+    if (!root.ok())
+        return;
+    const std::string gid = "group-a";
+    CHECK(cache::internal::DirEnsure(std::string(cache::internal::RootPath()) + "/groups"));
+    CHECK(cache::internal::DirEnsure(cache::internal::GroupDir(gid)));
+    CHECK(cache::internal::DirEnsure(cache::internal::StageDir(gid)));
+
+    const std::string target  = cache::internal::ManifestPath(gid);
+    const std::string staged  = cache::internal::StageDir(gid) + "/manifest.json";
+    const std::string backup  = target + ".bak";
+    const std::string journal = cache::internal::StageJournalPath(gid);
+    CHECK(WriteText(target, "old-manifest"));
+    CHECK(WriteText(staged, "new-manifest"));
+    std::vector<cache::staging::Swap> swaps{{staged, target, backup}};
+    CHECK(cache::staging::WriteJournal(journal, swaps));
+    CHECK(rename(target.c_str(), backup.c_str()) == 0);
+    CHECK(rename(staged.c_str(), target.c_str()) == 0);
+
+    CHECK(cache::Init());
+    CHECK(ReadText(target) == "old-manifest");
+    CHECK(!Exists(backup));
+    CHECK(!Exists(cache::internal::StageDir(gid)));
+}
+
 void TestIdentitylessManifestAndFrameMetadataInvalidate() {
     TempCacheRoot root;
     CHECK(root.ok());
@@ -213,7 +240,7 @@ void TestAudioOnlyCacheWriterPersistsIdentityAndCommits() {
     CHECK(writer.WriteFrameMeta(0, MakeMeta("new", "content-new", "img-old", "aud-new")));
     CHECK(writer.CommitFrame(0, "img-old", "aud-new", TestDisplay()));
     CHECK(writer.CommitManifest("manifest-new", 1, "New", TestDisplay()));
-    CHECK(cache::WriteStateMeta(gid, "manifest-new"));
+    CHECK(writer.CommitStateMeta(gid, "manifest-new"));
     CHECK(writer.Commit());
 
     cache::FrameMeta meta;
@@ -244,11 +271,9 @@ void TestFrameManifestStateFailureRollsBackInstalledSwaps() {
     CHECK(writer.CommitFrame(0, "img-new", "aud-new", TestDisplay()));
     CHECK(writer.CommitManifest("manifest-new", 1, "New", TestDisplay()));
 
-    unlink(cache::internal::StatePath().c_str());
-    CHECK(mkdir(cache::internal::StatePath().c_str(), 0775) == 0);
-    CHECK(!cache::WriteStateMeta(gid, "manifest-new"));
-    writer.Rollback();
-    rmdir(cache::internal::StatePath().c_str());
+    CHECK(mkdir((cache::internal::StageDir(gid) + "/state.json").c_str(), 0775) == 0);
+    CHECK(!writer.CommitStateMeta(gid, "manifest-new"));
+    CHECK(writer.Rollback());
 
     cache::FrameMeta meta;
     cache::ManifestMeta manifest;
@@ -278,11 +303,9 @@ void TestFrameAudioDeleteFailureRollsBackInstalledSwaps() {
     CHECK(writer.CommitFrame(0, "img-old", "", TestDisplay()));
     CHECK(writer.CommitManifest("manifest-new", 1, "New", TestDisplay()));
 
-    unlink(cache::internal::StatePath().c_str());
-    CHECK(mkdir(cache::internal::StatePath().c_str(), 0775) == 0);
-    CHECK(!cache::WriteStateMeta(gid, "manifest-new"));
-    writer.Rollback();
-    rmdir(cache::internal::StatePath().c_str());
+    CHECK(mkdir((cache::internal::StageDir(gid) + "/state.json").c_str(), 0775) == 0);
+    CHECK(!writer.CommitStateMeta(gid, "manifest-new"));
+    CHECK(writer.Rollback());
 
     cache::FrameMeta meta;
     CHECK(cache::ReadFrameMeta(gid, 0, meta, TestDisplay()));
@@ -292,6 +315,63 @@ void TestFrameAudioDeleteFailureRollsBackInstalledSwaps() {
     CHECK(audio.size() == 4);
     if (!audio.empty())
         CHECK(static_cast<unsigned char>(audio[0]) == 0x22);
+}
+
+void TestInitRecoversStateManifestAndFrameAfterStateInstallCrash() {
+    TempCacheRoot root;
+    CHECK(root.ok());
+    if (!root.ok())
+        return;
+    const std::string gid = "group-a";
+    SeedCommittedFrame(gid, 0, "img-old", "aud-old", 0x11, 0x22);
+    CHECK(cache::WriteManifest(gid, "manifest-old", 1, "Old", TestDisplay()));
+    CHECK(cache::WriteStateMeta("old-selected", "manifest-old"));
+
+    auto* writer = new cache::CacheWriter(gid);
+    CHECK(writer->Begin());
+    std::vector<uint8_t> image(TestDisplay().frame.byte_size, 0x33);
+    CHECK(writer->WriteFrameImage(0, image, "img-new", TestDisplay().profile_id, TestDisplay().frame));
+    CHECK(writer->WriteFrameMeta(0, MakeMeta("new", "content-new", "img-new", "aud-old")));
+    CHECK(writer->CommitFrame(0, "img-new", "aud-old", TestDisplay()));
+    CHECK(writer->CommitManifest("manifest-new", 1, "New", TestDisplay()));
+    CHECK(writer->CommitStateMeta(gid, "manifest-new"));
+
+    cache::internal::ResetStateCache();
+    CHECK(cache::Init());
+
+    cache::FrameMeta    meta;
+    cache::ManifestMeta manifest;
+    std::string         selected;
+    std::string         etag;
+    CHECK(cache::ReadFrameMeta(gid, 0, meta, TestDisplay()));
+    CHECK(meta.image_etag == "img-old");
+    CHECK(cache::ReadManifestMeta(gid, manifest));
+    CHECK(manifest.manifest_etag == "manifest-old");
+    CHECK(cache::ReadStateMeta(selected, etag));
+    CHECK(selected == "old-selected");
+    CHECK(etag == "manifest-old");
+    CHECK(!Exists(cache::internal::StageDir(gid)));
+}
+
+void TestRollbackFailureKeepsJournalAndStageEvidence() {
+    TempCacheRoot root;
+    CHECK(root.ok());
+    if (!root.ok())
+        return;
+    const std::string gid = "group-a";
+    SeedCommittedFrame(gid, 0, "img-old", "aud-old", 0x11, 0x22);
+
+    cache::CacheWriter writer(gid);
+    CHECK(writer.Begin());
+    std::vector<uint8_t> image(TestDisplay().frame.byte_size, 0x33);
+    CHECK(writer.WriteFrameImage(0, image, "img-new", TestDisplay().profile_id, TestDisplay().frame));
+    CHECK(writer.WriteFrameMeta(0, MakeMeta("new", "content-new", "img-new", "aud-old")));
+    CHECK(writer.CommitFrame(0, "img-new", "aud-old", TestDisplay()));
+    CHECK(unlink((cache::internal::ImagePath(gid, 0) + ".bak").c_str()) == 0);
+
+    CHECK(!writer.Rollback());
+    CHECK(Exists(cache::internal::StageJournalPath(gid)));
+    CHECK(Exists(cache::internal::StageDir(gid)));
 }
 
 void TestFrameManifestStateSuccessFinalizesBackups() {
@@ -312,7 +392,7 @@ void TestFrameManifestStateSuccessFinalizesBackups() {
     CHECK(writer.WriteFrameMeta(0, MakeMeta("new", "content-new", "img-new", "aud-new")));
     CHECK(writer.CommitFrame(0, "img-new", "aud-new", TestDisplay()));
     CHECK(writer.CommitManifest("manifest-new", 1, "New", TestDisplay()));
-    CHECK(cache::WriteStateMeta(gid, "manifest-new"));
+    CHECK(writer.CommitStateMeta(gid, "manifest-new"));
     CHECK(writer.Commit());
 
     cache::FrameMeta meta;
@@ -348,7 +428,7 @@ void TestFrameAudioDeleteSuccessFinalizesBackups() {
     CHECK(writer.WriteFrameMeta(0, MakeMeta("new", "content-new", "img-old", "")));
     CHECK(writer.CommitFrame(0, "img-old", "", TestDisplay()));
     CHECK(writer.CommitManifest("manifest-new", 1, "New", TestDisplay()));
-    CHECK(cache::WriteStateMeta(gid, "manifest-new"));
+    CHECK(writer.CommitStateMeta(gid, "manifest-new"));
     CHECK(writer.Commit());
 
     cache::FrameMeta meta;
@@ -364,10 +444,13 @@ void TestFrameAudioDeleteSuccessFinalizesBackups() {
 
 int main() {
     TestCjsonBoundedNumberParsing();
+    TestInitRecoversInterruptedStageJournal();
     TestIdentitylessManifestAndFrameMetadataInvalidate();
     TestAudioOnlyCacheWriterPersistsIdentityAndCommits();
     TestFrameManifestStateFailureRollsBackInstalledSwaps();
     TestFrameAudioDeleteFailureRollsBackInstalledSwaps();
+    TestInitRecoversStateManifestAndFrameAfterStateInstallCrash();
+    TestRollbackFailureKeepsJournalAndStageEvidence();
     TestFrameManifestStateSuccessFinalizesBackups();
     TestFrameAudioDeleteSuccessFinalizesBackups();
     return g_failures == 0 ? 0 : 1;

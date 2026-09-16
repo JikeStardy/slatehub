@@ -22,6 +22,7 @@ add_executable(cache_integration_test
     cache_integration_test.cc
     stubs/cJSON.cc
     ../main/drivers/display/display_contract.cc
+    ../main/storage/cache/cache.cc
     ../main/storage/cache/cache_frames.cc
     ../main/storage/cache/cache_internal.cc
     ../main/storage/cache/cache_io.cc
@@ -55,6 +56,7 @@ target_include_directories(cache_staging_test PRIVATE stubs ../main)
 target_include_directories(cache_integration_test PRIVATE stubs ../main)
 target_include_directories(sync_current_content_transaction_test PRIVATE stubs ../main)
 target_compile_definitions(display_contract_test PRIVATE "SLATE_BOARD_ID=\"zectrix-note4\"")
+target_compile_definitions(cache_staging_test PRIVATE SLATE_HOST_TEST)
 target_compile_definitions(cache_integration_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_definitions(sync_current_content_transaction_test PRIVATE SLATE_HOST_TEST "SLATE_BOARD_ID=\"zectrix-note4\"")
 target_compile_options(display_contract_test PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)

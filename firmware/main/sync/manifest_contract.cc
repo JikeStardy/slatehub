@@ -1,6 +1,5 @@
 #include "sync/manifest_contract.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -222,14 +221,9 @@ bool ValidateManifestIdentity(const ManifestIdentity& manifest, const display::D
 }
 
 bool ValidateManifestContentSet(const ManifestIdentity& manifest) {
-    std::vector<int> seen;
-    seen.reserve(manifest.contents.size());
-    for (const ContentIdentity& content : manifest.contents) {
-        if (content.seq < 0)
+    for (std::size_t i = 0; i < manifest.contents.size(); ++i) {
+        if (manifest.contents[i].seq != static_cast<int>(i))
             return false;
-        if (std::find(seen.begin(), seen.end(), content.seq) != seen.end())
-            return false;
-        seen.push_back(content.seq);
     }
     return true;
 }

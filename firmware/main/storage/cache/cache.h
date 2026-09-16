@@ -109,8 +109,9 @@ class CacheWriter {
                      const display::DisplayInfo& display_info);
     bool CommitManifest(const std::string& manifest_etag, int content_count, const std::string& name,
                         const display::DisplayInfo& display_info);
+    bool CommitStateMeta(const std::string& selected_group_id, const std::string& etag);
     bool Commit();
-    void Rollback();
+    bool Rollback();
 
    private:
     std::string gid_;

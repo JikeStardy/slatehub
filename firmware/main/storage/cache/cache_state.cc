@@ -70,8 +70,8 @@ void ResetStateCacheUnlocked() {
     cache.cache_access_seq  = 0;
 }
 
-bool WriteStateJsonUnlocked(const std::string& selected_group_id, const std::string& etag, int current_frame_seq,
-                            uint32_t cache_access_seq) {
+bool WriteStateJsonFile(const std::string& path, const std::string& selected_group_id, const std::string& etag,
+                        int current_frame_seq, uint32_t cache_access_seq) {
     if (current_frame_seq < 0)
         current_frame_seq = 0;
 
@@ -83,10 +83,15 @@ bool WriteStateJsonUnlocked(const std::string& selected_group_id, const std::str
     cJSON_AddNumberToObject(root, "current_frame_seq", current_frame_seq);
     cJSON_AddNumberToObject(root, "cache_access_seq", static_cast<double>(cache_access_seq));
     char* s  = cJSON_PrintUnformatted(root);
-    bool  ok = s && WriteAll(StatePath(), s, std::strlen(s));
+    bool  ok = s && WriteAll(path, s, std::strlen(s));
     cJSON_free(s);
     cJSON_Delete(root);
     return ok;
+}
+
+bool WriteStateJsonUnlocked(const std::string& selected_group_id, const std::string& etag, int current_frame_seq,
+                            uint32_t cache_access_seq) {
+    return WriteStateJsonFile(StatePath(), selected_group_id, etag, current_frame_seq, cache_access_seq);
 }
 
 bool LoadStateCacheUnlocked() {
@@ -143,6 +148,16 @@ bool NextCacheAccessSeq(uint32_t& out) {
         return false;
     }
     return true;
+}
+
+bool WriteStagedStateMetaFile(const std::string& path, const std::string& selected_group_id,
+                              const std::string& etag) {
+    ScopedMutexLock lock(StateMutex());
+    if (!lock.locked())
+        return false;
+    LoadStateCacheUnlocked();
+    const auto& cache = StateCacheUnlocked();
+    return WriteStateJsonFile(path, selected_group_id, etag, cache.current_frame_seq, cache.cache_access_seq);
 }
 
 }  // namespace cache::internal

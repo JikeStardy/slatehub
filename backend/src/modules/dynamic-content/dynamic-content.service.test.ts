@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { ValidationError } from '../../common/errors';
 import { DynamicContentService } from './dynamic-content.service';
 
 describe('DynamicContentService display profile guard', () => {
@@ -30,5 +31,69 @@ describe('DynamicContentService display profile guard', () => {
       })
     ).resolves.toHaveLength(4_736);
     expect(calls).toEqual(['virtual-mono-296x128']);
+  });
+
+  it('rejects production direct preview requests for virtual display profiles', async () => {
+    const calls: string[] = [];
+    const service = new DynamicContentService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        renderPreviewDirect: async (
+          _dynamicType: string,
+          _config: unknown,
+          _frameName: string | null,
+          _data: unknown,
+          displayProfileId: string
+        ) => {
+          calls.push(displayProfileId);
+          return Buffer.alloc(4_736);
+        },
+      } as never,
+      undefined,
+      { nodeEnv: 'production' } as never
+    );
+
+    await expect(
+      service.previewDirect({
+        config: { type: 'daily_calendar', tz: 'Asia/Shanghai' },
+        display_profile_id: 'virtual-mono-296x128',
+      })
+    ).rejects.toThrow(ValidationError);
+    expect(calls).toEqual([]);
+  });
+
+  it('rejects production stored-content preview requests for virtual display profiles', async () => {
+    const calls: string[] = [];
+    const service = new DynamicContentService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        renderPreview: async (
+          _contentId: string,
+          _ownerUserId: string,
+          _config: unknown,
+          _frameName: string | null | undefined,
+          displayProfileId: string
+        ) => {
+          calls.push(displayProfileId);
+          return Buffer.alloc(4_736);
+        },
+      } as never,
+      undefined,
+      { nodeEnv: 'production' } as never
+    );
+
+    await expect(
+      service.preview('content-1', 'user-1', {
+        config: { type: 'daily_calendar', tz: 'Asia/Shanghai' },
+        display_profile_id: 'virtual-mono-296x128',
+      })
+    ).rejects.toThrow(ValidationError);
+    expect(calls).toEqual([]);
   });
 });

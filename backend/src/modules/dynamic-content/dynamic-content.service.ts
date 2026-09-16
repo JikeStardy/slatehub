@@ -3,7 +3,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   DashboardDataPayload,
+  displayProfilesForEnvironment,
   DynamicConfig,
+  getDisplayProfile,
   isAudioDynamicConfig,
   type ContentMutationResponseT,
   type CreateDynamicContentRequestT,
@@ -19,6 +21,7 @@ import { compactContentSortOrders } from '../../common/db/bulk-sort-order';
 import { nextContentSortOrder } from '../../common/db/sort-order';
 import { formatError } from '../../common/utils/error-format';
 import { ContentMutationCoordinator } from '../../common/worker/content-mutation-coordinator';
+import { AppConfig } from '../../infra/config/app.config';
 import { GroupsService } from '../groups/groups.service';
 import { deleteContentAudioBlob } from '../../infra/blob/content-audio-blobs';
 import { DynamicContentRegistry } from './dynamic-content-registry';
@@ -36,7 +39,8 @@ export class DynamicContentService {
     private readonly groups: GroupsService,
     private readonly registry: DynamicContentRegistry,
     private readonly renderer: DynamicContentRendererService,
-    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default()
+    private readonly contentMutations: ContentMutationCoordinator = ContentMutationCoordinator.default(),
+    private readonly config: AppConfig = { nodeEnv: 'test' } as AppConfig
   ) {}
 
   async previewDirect(raw: {
@@ -47,12 +51,13 @@ export class DynamicContentService {
   }): Promise<Buffer> {
     const config = DynamicConfig.parse(raw.config);
     const previewData = this.parseDashboardPreviewData(config.type, raw.data);
+    const displayProfileId = this.resolvePreviewDisplayProfile(raw.display_profile_id);
     return this.renderer.renderPreviewDirect(
       config.type,
       config,
       raw.frame_name ?? defaultDynamicFrameName(config.type, config),
       previewData,
-      raw.display_profile_id
+      displayProfileId
     );
   }
 
@@ -66,13 +71,14 @@ export class DynamicContentService {
       data?: unknown;
     }
   ): Promise<Buffer> {
+    const displayProfileId = this.resolvePreviewDisplayProfile(body.display_profile_id);
     if (body.data === undefined) {
       return this.renderer.renderPreview(
         contentId,
         ownerUserId,
         body.config,
         body.frame_name,
-        body.display_profile_id
+        displayProfileId
       );
     }
 
@@ -105,8 +111,19 @@ export class DynamicContentService {
       config,
       frameName,
       previewData,
-      body.display_profile_id
+      displayProfileId
     );
+  }
+
+  private resolvePreviewDisplayProfile(displayProfileId: string): string {
+    const profile = getDisplayProfile(displayProfileId);
+    if (!displayProfilesForEnvironment(this.config.nodeEnv).some((p) => p.id === profile.id)) {
+      throw new ValidationError('当前环境不可使用该 display_profile_id', {
+        display_profile_id: profile.id,
+        node_env: this.config.nodeEnv,
+      });
+    }
+    return profile.id;
   }
 
   async append(

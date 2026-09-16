@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { DITHER_MODES } from '../dither.js';
-import { DisplayProfile, DisplayProfileId, FrameDescriptor } from '../display-profiles.js';
+import {
+  DisplayProfile,
+  DisplayProfileId,
+  FrameDescriptor,
+  type DisplayProfileT,
+} from '../display-profiles.js';
 import { DashboardDataPayload, DynamicConfig, DynamicType, TtsVoice } from './dynamic.js';
 
 export const ContentKind = z.enum(['image', 'dynamic']);
@@ -123,7 +128,9 @@ export const ManifestResponse = z.object({
   display_profile: DisplayProfile,
   contents: z.array(ContentSummary),
 });
-export type ManifestResponseT = z.infer<typeof ManifestResponse>;
+export type ManifestResponseT = Omit<z.infer<typeof ManifestResponse>, 'display_profile'> & {
+  readonly display_profile: DisplayProfileT;
+};
 
 export const RenderContentRequest = z.object({
   source: z.enum(['markdown', 'html', 'png_base64']),

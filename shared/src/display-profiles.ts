@@ -14,14 +14,22 @@ export const BoardCapabilities = z.object({
   audio: z.boolean(),
   partial_refresh: z.boolean(),
 });
-export type BoardCapabilitiesT = z.infer<typeof BoardCapabilities>;
+type DeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends ReadonlyArray<infer U>
+    ? ReadonlyArray<DeepReadonly<U>>
+    : T extends object
+      ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+      : T;
+
+export type BoardCapabilitiesT = DeepReadonly<z.infer<typeof BoardCapabilities>>;
 
 export const BoardDefinition = z.object({
   id: z.string().min(1),
   display_profile_id: z.string().min(1),
   capabilities: BoardCapabilities,
 });
-export type BoardDefinitionT = z.infer<typeof BoardDefinition>;
+export type BoardDefinitionT = DeepReadonly<z.infer<typeof BoardDefinition>>;
 
 export const DisplayProfile = z.object({
   id: z.string().min(1),
@@ -31,14 +39,14 @@ export const DisplayProfile = z.object({
   frame_codec: FrameCodec,
   availability: z.array(DisplayProfileEnvironment).min(1),
 });
-export type DisplayProfileT = z.infer<typeof DisplayProfile>;
+export type DisplayProfileT = DeepReadonly<z.infer<typeof DisplayProfile>>;
 
 const DisplayProfileRegistry = z.object({
   boards: z.array(BoardDefinition).min(1),
   display_profiles: z.array(DisplayProfile).min(1),
 });
 
-const registry = DisplayProfileRegistry.parse(registryData);
+const registry = deepFreeze(DisplayProfileRegistry.parse(registryData));
 const boardsById = new Map(registry.boards.map((board) => [board.id, board]));
 const profilesById = new Map(registry.display_profiles.map((profile) => [profile.id, profile]));
 
@@ -50,8 +58,8 @@ for (const board of registry.boards) {
   }
 }
 
-export const BOARD_DEFINITIONS = registry.boards;
-export const DISPLAY_PROFILES = registry.display_profiles;
+export const BOARD_DEFINITIONS: ReadonlyArray<BoardDefinitionT> = registry.boards;
+export const DISPLAY_PROFILES: ReadonlyArray<DisplayProfileT> = registry.display_profiles;
 export const DEFAULT_BOARD_ID = 'zectrix-note4';
 export const DEFAULT_DISPLAY_PROFILE_ID = 'zectrix-note4-400x300-mono';
 
@@ -77,7 +85,7 @@ export function getDisplayProfile(profileId: string): DisplayProfileT {
 
 export function displayProfilesForEnvironment(
   environment: DisplayProfileEnvironmentT
-): DisplayProfileT[] {
+): ReadonlyArray<DisplayProfileT> {
   return DISPLAY_PROFILES.filter((profile) => profile.availability.includes(environment));
 }
 
@@ -133,4 +141,17 @@ function assertUniqueIds(values: ReadonlyArray<{ id: string }>, kind: string): v
   const ids = new Set(values.map((value) => value.id));
   if (ids.size !== values.length)
     throw new Error(`duplicate ${kind} id in display profile registry`);
+}
+
+function deepFreeze<T>(value: T): DeepReadonly<T> {
+  if (!value || typeof value !== 'object') return value as DeepReadonly<T>;
+
+  for (const property of Reflect.ownKeys(value)) {
+    const child = (value as Record<PropertyKey, unknown>)[property];
+    if (child && typeof child === 'object' && !Object.isFrozen(child)) {
+      deepFreeze(child);
+    }
+  }
+
+  return Object.freeze(value) as DeepReadonly<T>;
 }

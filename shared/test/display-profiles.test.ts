@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
   API_PREFIX,
+  BOARD_DEFINITIONS,
+  DISPLAY_PROFILES,
   FrameDescriptor,
   RegisterDeviceRequest,
   PreviewDynamicContentRequest,
@@ -52,6 +54,30 @@ describe('display profile registry', () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it('keeps exported registry entries immutable at runtime', () => {
+    expect(() => {
+      (BOARD_DEFINITIONS as unknown as unknown[]).push({
+        id: 'mutated-board',
+        display_profile_id: 'virtual-mono-296x128',
+        capabilities: { audio: false, partial_refresh: false },
+      });
+    }).toThrow(TypeError);
+
+    expect(() => {
+      (DISPLAY_PROFILES[0] as unknown as { width: number }).width = 8;
+    }).toThrow(TypeError);
+
+    expect(() => {
+      (
+        BOARD_DEFINITIONS[0]!.capabilities as unknown as { partial_refresh: boolean }
+      ).partial_refresh = false;
+    }).toThrow(TypeError);
+
+    expect(BOARD_DEFINITIONS.map((board) => board.id)).toEqual(['zectrix-note4']);
+    expect(getBoardDefinition('zectrix-note4').capabilities.partial_refresh).toBe(true);
+    expect(getDisplayProfile('zectrix-note4-400x300-mono').width).toBe(400);
   });
 });
 

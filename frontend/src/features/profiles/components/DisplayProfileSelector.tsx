@@ -5,7 +5,7 @@ import { selectableDisplayProfiles } from '@/features/profiles/profile-environme
 interface DisplayProfileSelectorProps {
   value: string;
   onChange: (profileId: string) => void;
-  profiles?: DisplayProfileT[];
+  profiles?: ReadonlyArray<DisplayProfileT>;
   label?: string;
   compact?: boolean;
 }

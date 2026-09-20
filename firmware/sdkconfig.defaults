@@ -83,7 +83,7 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 
 # 默认服务端 URL 留空。固件烧出去是一份,谁烧谁填:用户在 captive portal 表单里
 # 自己填实际地址(placeholder 已给示例)。本地开发可用 menuconfig 临时覆盖。
-CONFIG_SLATE_DEFAULT_SERVER_URL=""
+CONFIG_SLATEHUB_DEFAULT_SERVER_URL=""
 
 # WiFi 软 AP + STA 共存（配网时设备自己挂着 AP,
 # 用户手机也连着设备 AP——配置完成切 STA）

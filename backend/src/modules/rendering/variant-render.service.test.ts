@@ -13,10 +13,10 @@ import type { DisplayProfileT } from 'shared';
 const NOTE4_PROFILE = 'zectrix-note4-400x300-mono';
 const VIRTUAL_PROFILE = 'virtual-mono-296x128';
 
-let blobDir = '/tmp/slate-variant-render-test';
+let blobDir = '/tmp/slatehub-variant-render-test';
 
 beforeEach(async () => {
-  blobDir = await mkdtemp(join(tmpdir(), 'slate-variant-render-test-'));
+  blobDir = await mkdtemp(join(tmpdir(), 'slatehub-variant-render-test-'));
 });
 
 afterEach(async () => {

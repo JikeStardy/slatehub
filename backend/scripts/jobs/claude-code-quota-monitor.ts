@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 获取 Claude Code 限额数据，推送到 Slate 的 ai_quota_monitor 动态帧。
+ * 获取 Claude Code 限额数据，推送到 SlateHub 的 ai_quota_monitor 动态帧。
  *
  * 数据获取：
  *   1. Claude Code statusLine 模式：从 stdin 读取 rate_limits，输出状态栏并后台推送。
@@ -11,8 +11,8 @@
  *   2. 自动读取 ~/.claude/.credentials.json 中的 accessToken
  *
  * 环境变量：
- *   SLATE_API_BASE          Slate 后端地址，如 http://localhost:3000
- *   CLAUDE_QUOTA_CONTENT_ID Slate 中 ai_quota_monitor 类型动态帧的 contentId
+ *   SLATEHUB_API_BASE       SlateHub 后端地址，如 http://localhost:3000
+ *   CLAUDE_QUOTA_CONTENT_ID SlateHub 中 ai_quota_monitor 类型动态帧的 contentId
  *   ANTHROPIC_API_KEY       （可选）Anthropic API key 或 OAuth token
  *   ANTHROPIC_API_BASE      （可选）API 地址，默认 https://api.anthropic.com
  *   CLAUDE_PLAN_LABEL       （可选）套餐标签，默认 "Max 20x"
@@ -31,8 +31,8 @@ import {
   truncateScriptLogText,
 } from '../helpers/script-logger';
 import { readPositiveIntEnv, requireEnv, stripTrailingSlash } from '../lib/env';
-import type { SlateJob } from '../lib/job';
-import { dashboardIngestURL } from '../lib/slate-ingest';
+import type { SlateHubJob } from '../lib/job';
+import { slatehubIngestURL } from '../lib/slatehub-ingest';
 import {
   formatHourMinuteInTimeZone,
   formatMonthDayMinuteInTimeZone,
@@ -44,7 +44,7 @@ import {
 const logger = createScriptLogger('ClaudeCodeQuotaMonitor');
 
 interface ClaudeQuotaMonitorConfig {
-  slateAPIBase: string;
+  slatehubAPIBase: string;
   contentID: string;
   anthropicAPIBase: string;
   planLabel: string;
@@ -56,10 +56,10 @@ interface ClaudeQuotaMonitorConfig {
 }
 
 function readConfig(): ClaudeQuotaMonitorConfig {
-  const cacheDir = join(homedir(), '.cache', 'slate-claude-quota');
+  const cacheDir = join(homedir(), '.cache', 'slatehub-claude-quota');
   mkdirSync(cacheDir, { recursive: true });
   return {
-    slateAPIBase: stripTrailingSlash(requireEnv('SLATE_API_BASE')),
+    slatehubAPIBase: stripTrailingSlash(requireEnv('SLATEHUB_API_BASE')),
     contentID: requireEnv('CLAUDE_QUOTA_CONTENT_ID'),
     anthropicAPIBase: stripTrailingSlash(
       process.env.ANTHROPIC_API_BASE ?? 'https://api.anthropic.com'
@@ -377,7 +377,7 @@ function shouldPush(config: ClaudeQuotaMonitorConfig): boolean {
 }
 
 async function pushPayloadBody(config: ClaudeQuotaMonitorConfig, body: string) {
-  const url = dashboardIngestURL(config.slateAPIBase, config.contentID);
+  const url = slatehubIngestURL(config.slatehubAPIBase, config.contentID);
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -386,12 +386,12 @@ async function pushPayloadBody(config: ClaudeQuotaMonitorConfig, body: string) {
 
   if (!res.ok) {
     const body = await readScriptErrorBody(res);
-    throw new Error(`Slate push failed ${res.status}: ${body}`);
+    throw new Error(`SlateHub push failed ${res.status}: ${body}`);
   }
 
   const result = await res.json();
   logger.info(
-    `Slate accepted Claude Code quota push: ${truncateScriptLogText(JSON.stringify(result), 1000)}`
+    `SlateHub accepted Claude Code quota push: ${truncateScriptLogText(JSON.stringify(result), 1000)}`
   );
 }
 
@@ -457,9 +457,9 @@ async function main() {
   await runClaudeCodeQuotaMonitorJob();
 }
 
-export const job: SlateJob = {
+export const job: SlateHubJob = {
   id: 'claude-code-quota-monitor',
-  description: 'Fetch Claude Code quota usage and push it to a Slate dashboard frame.',
+  description: 'Fetch Claude Code quota usage and push it to a SlateHub dashboard frame.',
   run: runClaudeCodeQuotaMonitorJob,
 };
 

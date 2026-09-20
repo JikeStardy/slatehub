@@ -2,8 +2,8 @@ import type { DashboardDataPayloadT } from 'shared';
 import { createScriptLogger } from '../helpers/script-logger';
 import { requireEnv, stripTrailingSlash } from '../lib/env';
 import { getJSON, postJSON } from '../lib/http';
-import type { SlateJob } from '../lib/job';
-import { pushDashboardData } from '../lib/slate-ingest';
+import type { SlateHubJob } from '../lib/job';
+import { pushDashboardData } from '../lib/slatehub-ingest';
 import {
   formatHourMinuteInTimeZone,
   formatMonthDayMinuteInTimeZone,
@@ -39,7 +39,7 @@ interface Sub2APIUsageStatsConfig {
   sub2apiBase: string;
   email: string;
   password: string;
-  slateAPIBase: string;
+  slatehubAPIBase: string;
   contentID: string;
   timeZone: string;
 }
@@ -85,7 +85,7 @@ function readConfig(): Sub2APIUsageStatsConfig {
     sub2apiBase: stripTrailingSlash(requireEnv('SUB2API_BASE')),
     email: requireEnv('SUB2API_EMAIL'),
     password: requireEnv('SUB2API_PASSWORD'),
-    slateAPIBase: stripTrailingSlash(requireEnv('SLATE_API_BASE')),
+    slatehubAPIBase: stripTrailingSlash(requireEnv('SLATEHUB_API_BASE')),
     contentID: requireEnv('SUB2API_CONTENT_ID'),
     timeZone: readScriptTimeZone(),
   };
@@ -285,14 +285,14 @@ export async function runSub2APIUsageStatsJob(): Promise<void> {
   const config = readConfig();
   const stats = await fetchUsageStats(config);
   await pushDashboardData({
-    slateAPIBase: config.slateAPIBase,
+    slatehubAPIBase: config.slatehubAPIBase,
     contentID: config.contentID,
     data: buildDashboardData(stats, config.timeZone),
   });
 }
 
-export const job: SlateJob = {
+export const job: SlateHubJob = {
   id: 'sub2api-usage-stats',
-  description: 'Fetch Sub2API user dashboard usage stats and push them to a Slate dashboard frame.',
+  description: 'Fetch Sub2API user dashboard usage stats and push them to a SlateHub dashboard frame.',
   run: runSub2APIUsageStatsJob,
 };

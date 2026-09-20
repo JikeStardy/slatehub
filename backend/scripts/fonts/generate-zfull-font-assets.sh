@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-WORK_DIR="${SLATE_ZFULL_FONT_WORK_DIR:-/private/tmp/slate-zfull-font-test}"
+WORK_DIR="${SLATEHUB_ZFULL_FONT_WORK_DIR:-/private/tmp/slatehub-zfull-font-test}"
 OUT_DIR="$ROOT/backend/assets/fonts/bitmap-1bpp"
 ZFULL_TTF="${ZFULL_TTF:-$ROOT/backend/assets/fonts/vector/Zfull-GB.ttf}"
 ZFULL_SIZES="${ZFULL_SIZES:-10 12 14 16 18}"

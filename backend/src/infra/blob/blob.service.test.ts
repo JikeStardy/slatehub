@@ -6,10 +6,10 @@ import { BlobService } from './blob.service';
 import type { AppConfig } from '../config/app.config';
 import { ValidationError } from '../../common/errors';
 
-let blobDir = '/tmp/slate-blob-test';
+let blobDir = '/tmp/slatehub-blob-test';
 
 beforeEach(async () => {
-  blobDir = await mkdtemp(join(tmpdir(), 'slate-blob-test-'));
+  blobDir = await mkdtemp(join(tmpdir(), 'slatehub-blob-test-'));
 });
 
 afterEach(async () => {

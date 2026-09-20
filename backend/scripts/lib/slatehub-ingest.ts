@@ -8,23 +8,23 @@ import { createScriptLogger, truncateScriptLogText } from '../helpers/script-log
 import { postJSON } from './http';
 import { stripTrailingSlash } from './env';
 
-const logger = createScriptLogger('SlateIngest');
+const logger = createScriptLogger('SlateHubIngest');
 
-export function dashboardIngestURL(slateAPIBase: string, contentID: string): string {
-  return `${stripTrailingSlash(slateAPIBase)}${API_PREFIX}/contents/${contentID}/data`;
+export function slatehubIngestURL(slatehubAPIBase: string, contentID: string): string {
+  return `${stripTrailingSlash(slatehubAPIBase)}${API_PREFIX}/contents/${contentID}/data`;
 }
 
 export async function pushDashboardData(input: {
-  slateAPIBase: string;
+  slatehubAPIBase: string;
   contentID: string;
   data: DashboardDataPayloadT;
 }): Promise<IngestResponseT> {
   const payload = IngestPayload.parse({ version: 1, data: input.data });
-  const url = dashboardIngestURL(input.slateAPIBase, input.contentID);
-  const result = await postJSON<IngestResponseT>(url, payload, 'Slate push');
+  const url = slatehubIngestURL(input.slatehubAPIBase, input.contentID);
+  const result = await postJSON<IngestResponseT>(url, payload, 'SlateHub push');
 
   logger.info(
-    `Slate accepted dashboard data push: ${truncateScriptLogText(JSON.stringify(result), 1000)}`
+    `SlateHub accepted dashboard data push: ${truncateScriptLogText(JSON.stringify(result), 1000)}`
   );
 
   return result;

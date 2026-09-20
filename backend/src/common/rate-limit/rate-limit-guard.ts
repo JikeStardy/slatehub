@@ -7,7 +7,7 @@ import {
   type FixedWindowRateLimiterOptions,
 } from './fixed-window-rate-limiter';
 
-export const RATE_LIMIT_KEY = 'slate:rate-limit';
+export const RATE_LIMIT_KEY = 'slatehub:rate-limit';
 
 export interface RateLimitGuardOptions {
   limiter: FixedWindowRateLimiterOptions;

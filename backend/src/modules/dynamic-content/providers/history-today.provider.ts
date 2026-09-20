@@ -16,7 +16,7 @@ import { CachedInflightFetcher, DEFAULT_PROVIDER_FETCH_TIMEOUT_MS } from './prov
 const CACHE_TTL_MS = 86_400_000;
 const RAW_LANG = 'zh-cn';
 const WIKIMEDIA_USER_AGENT =
-  'Slate/0.1 (+https://github.com/qiujun8023/slate; history-today-provider)';
+  'SlateHub/0.2 (+https://github.com/JikeStardy/slatehub; history-today-provider)';
 const MAX_RAW_CACHE_ENTRIES = 64;
 const MAX_AI_CACHE_ENTRIES = 256;
 

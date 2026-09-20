@@ -7,7 +7,7 @@ set -e
 # prisma 也是从 cwd 读 prisma.config.ts + prisma/schema.prisma,刚好同位置。
 cd /app/backend
 
-case "${SLATE_RUN_MODE:-server}" in
+case "${SLATEHUB_RUN_MODE:-server}" in
   server)
     bunx prisma migrate deploy
     exec bun run src/main.ts
@@ -16,7 +16,7 @@ case "${SLATE_RUN_MODE:-server}" in
     exec bun run scripts/job-runner.ts
     ;;
   *)
-    echo "Unsupported SLATE_RUN_MODE=${SLATE_RUN_MODE:-server}. Use server or job." >&2
+    echo "Unsupported SLATEHUB_RUN_MODE=${SLATEHUB_RUN_MODE:-server}. Use server or job." >&2
     exit 1
     ;;
 esac

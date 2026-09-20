@@ -25,10 +25,10 @@ import {
 const VIRTUAL_RENDER_TARGET = renderTargetForProfile('virtual-mono-296x128');
 const CANDIDATE_GC_HORIZON_MS = 24 * 60 * 60 * 1000;
 
-let blobDir = '/tmp/slate-dynamic-render-test';
+let blobDir = '/tmp/slatehub-dynamic-render-test';
 
 beforeEach(async () => {
-  blobDir = await mkdtemp(join(tmpdir(), 'slate-dynamic-render-test-'));
+  blobDir = await mkdtemp(join(tmpdir(), 'slatehub-dynamic-render-test-'));
 });
 
 afterEach(async () => {

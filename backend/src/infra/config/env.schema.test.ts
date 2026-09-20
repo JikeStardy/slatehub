@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { EnvSchema } from './env.schema';
 
 const baseEnv = {
-  DATABASE_URL: 'mysql://slate:slate@127.0.0.1:3306/slate',
-  JWT_SECRET: 'slate-test-secret-0123456789abcdef',
+  DATABASE_URL: 'mysql://slatehub:slatehub@127.0.0.1:3306/slatehub',
+  JWT_SECRET: 'slatehub-test-secret-0123456789abcdef',
 };
 
 describe('EnvSchema', () => {

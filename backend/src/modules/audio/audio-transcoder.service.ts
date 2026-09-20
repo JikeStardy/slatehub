@@ -123,7 +123,7 @@ export class AudioTranscoderService {
     argsForPaths: (inputPath: string, outputPath: string) => string[],
     opts: { signal?: AbortSignal } = {}
   ): Promise<Buffer> {
-    const tempDir = await mkdtemp(join(tmpdir(), 'slate-audio-'));
+    const tempDir = await mkdtemp(join(tmpdir(), 'slatehub-audio-'));
     const inputPath = join(tempDir, inputFileName);
     const outputPath = join(tempDir, 'output.pcm');
 

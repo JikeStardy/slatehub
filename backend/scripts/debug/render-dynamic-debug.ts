@@ -23,7 +23,7 @@ import { NOTE4_RENDER_TARGET } from '../../src/modules/rendering/render-target';
 import { CalendarDataService } from '../../src/modules/dynamic-content/calendar-data.service';
 import { DailyCalendarProvider } from '../../src/modules/dynamic-content/providers/daily-calendar.provider';
 
-const outDir = process.argv[2] ?? '/private/tmp/slate-render-debug';
+const outDir = process.argv[2] ?? '/private/tmp/slatehub-render-debug';
 const renderedAt = new Date('2026-05-17T04:00:00.000Z');
 const tz = 'Asia/Shanghai';
 

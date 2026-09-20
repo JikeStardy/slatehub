@@ -1,4 +1,4 @@
-# Slate 单机 docker compose 样例。开箱即用,自带 MySQL,适合自托管。
+# SlateHub 单机 docker compose 样例。开箱即用,自带 MySQL,适合自托管。
 # 生产部署用外部 MySQL 或反代时按需改造(去掉 mysql service,改 DATABASE_URL,加 traefik labels)。
 #
 # 首次启动:
@@ -10,14 +10,14 @@
 #   docker compose pull && docker compose up -d
 #
 # 持久化目录(compose 启动后会在 cwd 自动创建):
-#   ./slate/blobs/   frame image + audio,容器内 /data/blobs
+#   ./slatehub/blobs/ frame image + audio,容器内 /data/blobs
 #   ./mysql/         MySQL datadir
-# 备份建议:每天 mysqldump + tar ./slate/blobs。
+# 备份建议:每天 mysqldump + tar ./slatehub/blobs。
 
 services:
-  slate:
-    image: ghcr.io/qiujun8023/slate:latest
-    container_name: slate
+  slatehub:
+    image: ${SLATEHUB_IMAGE:-ghcr.io/jikestardy/slatehub:master}
+    container_name: slatehub
     restart: unless-stopped
     depends_on:
       mysql:
@@ -25,28 +25,28 @@ services:
     ports:
       - '3001:3001'
     volumes:
-      - ./slate:/data
+      - ./slatehub:/data
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql://slate:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@mysql:3306/slate
-      - NODE_ENV=production
-      - PORT=${PORT:-3001}
-      - BLOB_DIR=/data/blobs
+      DATABASE_URL: mysql://slatehub:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@mysql:3306/slatehub
+      NODE_ENV: production
+      PORT: ${PORT:-3001}
+      BLOB_DIR: /data/blobs
 
   mysql:
     image: mysql:8
-    container_name: slate-mysql
+    container_name: slatehub-mysql
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: slate
-      MYSQL_USER: slate
+      MYSQL_DATABASE: slatehub
+      MYSQL_USER: slatehub
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
       MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
     volumes:
       - ./mysql:/var/lib/mysql
     healthcheck:
-      test: ['CMD-SHELL', 'mysqladmin ping -h localhost -uslate -p$${MYSQL_PASSWORD}']
+      test: ['CMD-SHELL', 'mysqladmin ping -h localhost -uslatehub -p$${MYSQL_PASSWORD}']
       interval: 5s
       timeout: 3s
       retries: 12

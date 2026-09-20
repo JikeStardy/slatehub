@@ -51,7 +51,7 @@ export function fontSpecimen(kind: string, fontId: FontTestFontIdT): FontSpecime
   }
 
   return {
-    hero: 'Slate UI 0123456789 ABC abc',
+    hero: 'SlateHub UI 0123456789 ABC abc',
     body: ['The quick brown fox jumps.', 'A0 O0 I1 l1 []{} <> /\\', '23:59 100% +12.8 -04'],
     metrics: ['0123456789 23:59'],
     glyphs: ['A0 O0 I1 l1 mwMW'],
@@ -106,7 +106,7 @@ export function fontReadingLines(
     '0123456789 23:59 100% +12.8 -04',
     'A0 O0 I1 l1 mwMW []{} <> /\\',
     dense ? 'The quick brown fox jumps over the lazy dog.' : 'The quick brown fox jumps.',
-    'Slate UI e-paper bitmap font',
+    'SlateHub UI e-paper bitmap font',
     '!@#$%^&*()_+-=;:,.?',
     ...(dense
       ? [

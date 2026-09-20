@@ -1,4 +1,4 @@
-// slate data model
+// slatehub data model
 // User / Device / Group / Content
 // 字段顺序约定: scalar 字段最后两个固定为 createdAt + updatedAt; relation 紧随其后。
 

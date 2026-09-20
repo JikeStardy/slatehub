@@ -78,6 +78,6 @@ USER bun
 EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD [ "${SLATE_RUN_MODE:-server}" != "server" ] || wget --spider -q "http://127.0.0.1:${PORT}/healthz" || exit 1
+  CMD [ "${SLATEHUB_RUN_MODE:-server}" != "server" ] || wget --spider -q "http://127.0.0.1:${PORT}/healthz" || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]

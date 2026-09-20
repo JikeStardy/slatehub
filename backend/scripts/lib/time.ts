@@ -22,7 +22,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 export function readScriptTimeZone(): string {
-  const timeZone = readEnv('SLATE_JOB_TIME_ZONE') || DEFAULT_SCRIPT_TIME_ZONE;
+  const timeZone = readEnv('SLATEHUB_JOB_TIME_ZONE') || DEFAULT_SCRIPT_TIME_ZONE;
   validateTimeZone(timeZone);
   return timeZone;
 }
@@ -80,7 +80,7 @@ function validateTimeZone(timeZone: string): void {
     new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date(0));
   } catch (error) {
     throw new Error(
-      `Invalid script time zone ${timeZone}. Set SLATE_JOB_TIME_ZONE to an IANA time zone.`,
+      `Invalid script time zone ${timeZone}. Set SLATEHUB_JOB_TIME_ZONE to an IANA time zone.`,
       { cause: error }
     );
   }

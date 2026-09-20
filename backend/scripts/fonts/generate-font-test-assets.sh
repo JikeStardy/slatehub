@@ -2,11 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-PROBE_DIR="${SLATE_FONT_PROBE_DIR:-/private/tmp/slate-font-probe}"
-WORK_DIR="${SLATE_FONT_WORK_DIR:-/private/tmp/slate-font-test}"
+PROBE_DIR="${SLATEHUB_FONT_PROBE_DIR:-/private/tmp/slatehub-font-probe}"
+WORK_DIR="${SLATEHUB_FONT_WORK_DIR:-/private/tmp/slatehub-font-test}"
 OUT_DIR="$ROOT/backend/assets/fonts/bitmap-1bpp"
 FIRMWARE_FONT_DIR="$ROOT/firmware/main/resources/fonts"
-SOURCE_HAN_SANS_C="${SLATE_SOURCE_HAN_SANS_C:-$FIRMWARE_FONT_DIR/source_han_sans_sc_regular_slim.c}"
+SOURCE_HAN_SANS_C="${SLATEHUB_SOURCE_HAN_SANS_C:-$FIRMWARE_FONT_DIR/source_han_sans_sc_regular_slim.c}"
 SYMBOLS="墨水屏字体测试中文点阵简繁日"
 DEMO_SYMBOLS="墨水屏字体测试中文点阵今日天气多云风力级简繁标点，。！？；：～一二三四五六七八九十口日目田回黑白像素横竖撇捺线面黑墨屏°"
 LV_FONT_CONV_BIN="$(command -v lv_font_conv || true)"
@@ -129,7 +129,7 @@ elif [[ -f "$OUT_DIR/source-han-sans-16-slim.json" ]]; then
   echo "warning: $SOURCE_HAN_SANS_C not found; keeping existing source-han-sans-16-slim.json" >&2
 else
   echo "missing source Han Sans LVGL font: $SOURCE_HAN_SANS_C" >&2
-  echo "set SLATE_SOURCE_HAN_SANS_C to a repo-local or absolute LVGL .c font source" >&2
+  echo "set SLATEHUB_SOURCE_HAN_SANS_C to a repo-local or absolute LVGL .c font source" >&2
   exit 1
 fi
 bash "$ROOT/backend/scripts/fonts/generate-zfull-font-assets.sh"

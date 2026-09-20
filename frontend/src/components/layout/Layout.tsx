@@ -6,6 +6,7 @@ import { FlaskConical, LogOut } from 'lucide-react';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { IconBlock } from '@/components/ui/IconBlock';
 import { appRoutes, layoutNavItems } from '@/app/routes';
+import { PRODUCT_NAME, PRODUCT_TAGLINE, PRODUCT_VERSION_LABEL } from '@/app/brand';
 import { currentDisplayProfileEnvironment } from '@/features/profiles/profile-environment';
 
 export function Layout() {
@@ -27,10 +28,10 @@ export function Layout() {
             </IconBlock>
             <div className="min-w-0">
               <p className="font-serif text-[18px] font-bold leading-none text-ink tracking-tight truncate">
-                Slate
+                {PRODUCT_NAME}
               </p>
               <p className="font-sans text-[10px] text-stone leading-none mt-1 tracking-[0.2em] uppercase truncate">
-                案头那块墨水屏
+                {PRODUCT_TAGLINE}
               </p>
             </div>
           </Link>
@@ -97,7 +98,7 @@ export function Layout() {
       <footer className="border-t border-line">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 py-3.5 text-center">
           <p className="font-mono text-[11px] text-stone tracking-[0.06em]">
-            Slate · multi-profile · 1bpp · v0.1
+            {PRODUCT_NAME} · multi-profile · 1bpp · {PRODUCT_VERSION_LABEL}
           </p>
         </div>
       </footer>

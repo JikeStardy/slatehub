@@ -74,14 +74,14 @@ describe('simulator profile cache and selection helpers', () => {
     const rawByContentId = new Map([['content-1', new Uint8Array(virtualFrame.byte_length)]]);
 
     expect(selectedFrameFilename(manifest, ready)).toBe(
-      'slate-group-1-04-content-1-virtual-mono-296x128-etag-ready.png'
+      'slatehub-group-1-04-content-1-virtual-mono-296x128-etag-ready.png'
     );
     const readyBytes = rawByContentId.get('content-1');
     expect(readyBytes).toBeDefined();
     expect(batchSnapshotEntries(manifest, rawByContentId)).toEqual([
       {
         contentId: 'content-1',
-        filename: 'slate-group-1-04-content-1-virtual-mono-296x128-etag-ready.png',
+        filename: 'slatehub-group-1-04-content-1-virtual-mono-296x128-etag-ready.png',
         bytes: readyBytes!,
         descriptor: virtualFrame,
       },

@@ -221,7 +221,7 @@ export function selectedFrameFilename(
 ): string {
   const seq = String(content.seq + 1).padStart(2, '0');
   return sanitizeFilename(
-    `slate-${manifest.group.id}-${seq}-${content.id}-${content.frame.profile_id}-${content.image_etag}.png`
+    `slatehub-${manifest.group.id}-${seq}-${content.id}-${content.frame.profile_id}-${content.image_etag}.png`
   );
 }
 

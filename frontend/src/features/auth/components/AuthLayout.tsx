@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { IconBlock } from '@/components/ui/IconBlock';
+import { PRODUCT_NAME, PRODUCT_TAGLINE } from '@/app/brand';
 
 interface AuthLayoutProps {
   /** 页面标题（如 "登录"、"注册"） */
@@ -23,7 +24,7 @@ export function AuthLayout({ title, subtitle, children }: AuthLayoutProps) {
 
         <div className="fade-up">
           <p className="font-sans text-[11px] text-stone uppercase tracking-[0.24em]">
-            SLATE · 控制台
+            {PRODUCT_NAME} · 控制台
           </p>
           <div className="h-px bg-ink mt-3.5 mb-7" />
           <h1 className="font-serif text-[100px] xl:text-[132px] font-black leading-[0.92] text-ink">
@@ -48,10 +49,10 @@ export function AuthLayout({ title, subtitle, children }: AuthLayoutProps) {
               墨
             </IconBlock>
             <h1 className="font-serif text-[36px] font-bold leading-none mt-3 tracking-tight">
-              Slate
+              {PRODUCT_NAME}
             </h1>
             <p className="font-sans text-[11px] text-stone mt-2 uppercase tracking-[0.2em]">
-              案头那块墨水屏
+              {PRODUCT_TAGLINE}
             </p>
           </div>
 

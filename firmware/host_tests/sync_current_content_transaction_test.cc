@@ -60,14 +60,15 @@ class TempCacheRoot {
    public:
     TempCacheRoot() {
         const char* tmpdir = std::getenv("TMPDIR");
-        std::string pattern = std::string((tmpdir && tmpdir[0]) ? tmpdir : "/tmp") + "/slate_sync_current_XXXXXX";
+        std::string pattern =
+            std::string((tmpdir && tmpdir[0]) ? tmpdir : "/tmp") + "/slatehub_sync_current_XXXXXX";
         std::vector<char> writable(pattern.begin(), pattern.end());
         writable.push_back('\0');
         char* path = mkdtemp(writable.data());
         if (!path)
             return;
         root_ = path;
-        setenv("SLATE_CACHE_ROOT", root_.c_str(), 1);
+        setenv("SLATEHUB_CACHE_ROOT", root_.c_str(), 1);
         cache::internal::ResetStateCache();
     }
 
@@ -75,7 +76,7 @@ class TempCacheRoot {
         cache::internal::ResetStateCache();
         if (!root_.empty())
             RemoveTree(root_);
-        unsetenv("SLATE_CACHE_ROOT");
+        unsetenv("SLATEHUB_CACHE_ROOT");
     }
 
     bool ok() const {

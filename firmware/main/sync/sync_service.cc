@@ -67,11 +67,11 @@ void SyncService::Start(std::string wake_reason, InitialSync initial_sync) {
     running_.store(true, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(task_mutex_);
-        BaseType_t ok = xTaskCreatePinnedToCore(&TaskEntry, "slate_sync", 10 * 1024, this, 4, &task_handle_, 0);
+        BaseType_t ok = xTaskCreatePinnedToCore(&TaskEntry, "slatehub", 10 * 1024, this, 4, &task_handle_, 0);
         if (ok != pdPASS) {
             running_.store(false, std::memory_order_release);
             task_handle_ = nullptr;
-            ESP_LOGE(sync_internal::kTag, "task create failed name=slate_sync");
+            ESP_LOGE(sync_internal::kTag, "task create failed name=slatehub");
             return;
         }
     }

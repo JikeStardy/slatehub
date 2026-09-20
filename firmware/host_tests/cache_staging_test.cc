@@ -13,6 +13,7 @@
 namespace {
 
 int g_failures = 0;
+constexpr char kExpectedJournalMagic[] = "slatehub-cache-stage-v1";
 
 void Check(bool ok, const char* expr, int line) {
     if (ok)
@@ -51,7 +52,7 @@ class TempDir {
    public:
     TempDir() {
         const char* tmpdir = std::getenv("TMPDIR");
-        std::string pattern = std::string((tmpdir && tmpdir[0]) ? tmpdir : "/tmp") + "/slate_stage_test_XXXXXX";
+        std::string pattern = std::string((tmpdir && tmpdir[0]) ? tmpdir : "/tmp") + "/slatehub_stage_test_XXXXXX";
         std::vector<char> writable(pattern.begin(), pattern.end());
         writable.push_back('\0');
         char* path = mkdtemp(writable.data());
@@ -354,7 +355,7 @@ void TestRecoverJournalRejectsOverlongLineAndKeepsEvidence() {
     if (!RequireTempDir(dir))
         return;
     const std::string journal = dir.Path("transaction.journal");
-    std::string       huge    = "slate-cache-stage-v1\n";
+    std::string       huge    = std::string(kExpectedJournalMagic) + "\n";
     huge.append(3000, 'x');
     CHECK(WriteText(journal, huge.c_str()));
 
@@ -369,7 +370,8 @@ void TestRecoverJournalRejectsTrailingPercentEscapesAndKeepsEvidence() {
 
     auto check_bad_stage = [&](const char* leaf, const std::string& staged) {
         const std::string journal = dir.Path(leaf);
-        CHECK(WriteString(journal, "slate-cache-stage-v1\n" + staged + "\t/target\t/backup\t0\t0\n"));
+        CHECK(WriteString(journal, std::string(kExpectedJournalMagic) + "\n" + staged +
+                                       "\t/target\t/backup\t0\t0\n"));
         CHECK(!cache::staging::RecoverJournal(journal));
         CHECK(Exists(journal));
     };
@@ -381,9 +383,29 @@ void TestRecoverJournalRejectsTrailingPercentEscapesAndKeepsEvidence() {
     line.append(2035, 'a');
     line.push_back('%');
     CHECK(line.size() + std::string("\t/t\t/b\t0\t0").size() == 2046);
-    CHECK(WriteString(max_journal, "slate-cache-stage-v1\n" + line + "\t/t\t/b\t0\t0"));
+    CHECK(WriteString(max_journal, std::string(kExpectedJournalMagic) + "\n" + line + "\t/t\t/b\t0\t0"));
     CHECK(!cache::staging::RecoverJournal(max_journal));
     CHECK(Exists(max_journal));
+}
+
+void TestRecoverJournalRejectsRetiredMagicAndRemovesEvidence() {
+    const TempDir dir;
+    if (!RequireTempDir(dir))
+        return;
+    const std::string target  = dir.Path("target");
+    const std::string staged  = dir.Path("staged");
+    const std::string backup  = dir.Path("target.bak");
+    const std::string journal = dir.Path("transaction.journal");
+    CHECK(WriteText(target, "old"));
+    CHECK(WriteText(staged, "new"));
+    CHECK(WriteString(journal, std::string("s" "late-cache-stage-v1\n") + staged + "\t" + target + "\t" +
+                                    backup + "\t0\t0\n"));
+
+    CHECK(cache::staging::RecoverJournal(journal));
+    CHECK(ReadText(target) == "old");
+    CHECK(ReadText(staged) == "new");
+    CHECK(!Exists(backup));
+    CHECK(!Exists(journal));
 }
 
 void TestRemoveJournalKeepsCommitMarkerWhenTmpCleanupFails() {
@@ -391,7 +413,7 @@ void TestRemoveJournalKeepsCommitMarkerWhenTmpCleanupFails() {
     if (!RequireTempDir(dir))
         return;
     const std::string journal = dir.Path("transaction.journal");
-    CHECK(WriteText(journal, "slate-cache-stage-v1\n"));
+    CHECK(WriteString(journal, std::string(kExpectedJournalMagic) + "\n"));
     CHECK(mkdir((journal + ".tmp").c_str(), 0775) == 0);
 
     CHECK(!cache::staging::RemoveJournal(journal));
@@ -412,6 +434,7 @@ int main() {
     TestRecoverJournalDoesNotDeleteUnstartedDeleteTarget();
     TestRecoverJournalRejectsOverlongLineAndKeepsEvidence();
     TestRecoverJournalRejectsTrailingPercentEscapesAndKeepsEvidence();
+    TestRecoverJournalRejectsRetiredMagicAndRemovesEvidence();
     TestRemoveJournalKeepsCommitMarkerWhenTmpCleanupFails();
     return g_failures == 0 ? 0 : 1;
 }

@@ -7,8 +7,8 @@ namespace cache::internal {
 
 const char* RootPath() {
 #ifdef SLATEHUB_HOST_TEST
-    const char* root = std::getenv("SLATE_CACHE_ROOT");
-    return root && root[0] != '\0' ? root : "/tmp/slate-cache-host";
+    const char* root = std::getenv("SLATEHUB_CACHE_ROOT");
+    return root && root[0] != '\0' ? root : "/tmp/slatehub-cache-host";
 #else
     return "/littlefs";
 #endif

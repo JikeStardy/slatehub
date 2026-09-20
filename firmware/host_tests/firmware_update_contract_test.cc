@@ -20,10 +20,10 @@ void Check(bool ok, const char* expr, int line) {
 constexpr const char* kSha256Abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
 std::string OfferJson(const char* board_id = "zectrix-note4",
-                      const char* url = "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                      const char* filename = "slate-zectrix-note4-v0.2.0-ota.bin",
+                      const char* url = "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                      const char* filename = "slatehub-zectrix-note4-v0.2.0-ota.bin",
                       const char* sha256 = kSha256Abc, const char* size_json = "3", int schema_version = 1,
-                      const char* product = "slate", const char* kind = "ota", const char* version = "0.2.0",
+                      const char* product = "slatehub", const char* kind = "ota", const char* version = "0.2.0",
                       const char* release_tag = "v0.2.0", const char* top_extra = "",
                       const char* artifact_extra = "") {
     return std::string("{\"schema_version\":") + std::to_string(schema_version) +
@@ -54,9 +54,9 @@ void TestAcceptsMatchingOffer() {
         CHECK(result.offer->board_id() == "zectrix-note4");
         CHECK(result.offer->version() == "0.2.0");
         CHECK(result.offer->release_tag() == "v0.2.0");
-        CHECK(result.offer->filename() == "slate-zectrix-note4-v0.2.0-ota.bin");
+        CHECK(result.offer->filename() == "slatehub-zectrix-note4-v0.2.0-ota.bin");
         CHECK(result.offer->download_url() ==
-              "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin");
+              "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin");
         CHECK(result.offer->size_bytes() == 3);
         CHECK(result.offer->sha256() == kSha256Abc);
     }
@@ -76,87 +76,90 @@ void TestRejectsMissingMetadataFields() {
 }
 
 void TestRejectsInvalidFields() {
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1,
-                         "slate\\u0000evil"))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1,
+                         "slatehub\\u0000evil"))
               .reject_reason == "metadata_invalid");
     std::string embedded_nul = OfferJson();
     embedded_nul.insert(embedded_nul.size() / 2, 1, '\0');
     CHECK(Read(embedded_nul).reject_reason == "metadata_invalid");
     CHECK(Read(ReplaceOnce(OfferJson(), "\"schema_version\":1", "\"schema_version\":1.5"))
               .reject_reason == "schema_version_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 2))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 2))
               .reject_reason == "schema_version_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "other"))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "other"))
               .reject_reason == "product_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "full"))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "s" "late"))
+              .reject_reason == "product_invalid");
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "full"))
               .reject_reason == "artifact_kind_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "0"))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "0"))
               .reject_reason == "size_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota", ""))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", ""))
               .reject_reason == "version_missing");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota", "0.2.0",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", "0.2.0",
                          ""))
               .reject_reason == "release_tag_missing");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota", "0.2.0",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", "0.2.0",
                          "0.2.0"))
               .reject_reason == "release_tag_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v1.2-ota.bin",
-                         "slate-zectrix-note4-v1.2-ota.bin", kSha256Abc, "3", 1, "slate", "ota", "1.2",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v1.2-ota.bin",
+                         "slatehub-zectrix-note4-v1.2-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", "1.2",
                          "v1.2"))
               .reject_reason == "version_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota",
                          "0.2.0\\u000a", "v0.2.0"))
               .reject_reason == "version_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "http://updates.example/slate-zectrix-note4-v0.2.0-ota.bin"))
+    CHECK(Read(OfferJson("zectrix-note4", "http://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin"))
               .reject_reason == "url_not_https");
-    CHECK(Read(OfferJson("zectrix-note4", "https:///slate-zectrix-note4-v0.2.0-ota.bin"))
-              .reject_reason == "url_not_https");
-    CHECK(Read(OfferJson("zectrix-note4",
-                         "https://updates.example:bad/slate-zectrix-note4-v0.2.0-ota.bin"))
+    CHECK(Read(OfferJson("zectrix-note4", "https:///slatehub-zectrix-note4-v0.2.0-ota.bin"))
               .reject_reason == "url_not_https");
     CHECK(Read(OfferJson("zectrix-note4",
-                         "https://user@updates.example/slate-zectrix-note4-v0.2.0-ota.bin"))
+                         "https://updates.example:bad/slatehub-zectrix-note4-v0.2.0-ota.bin"))
+              .reject_reason == "url_not_https");
+    CHECK(Read(OfferJson("zectrix-note4",
+                         "https://user@updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin"))
               .reject_reason == "url_not_https");
     CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/other.bin")).reject_reason ==
           "filename_url_basename_mismatch");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
                          "other.bin"))
               .reject_reason == "filename_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", "ABC"))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", "ABC"))
               .reject_reason == "sha256_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3.5"))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3.5"))
               .reject_reason == "size_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "1e400"))
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "1e400"))
               .reject_reason == "size_invalid");
 }
 
 void TestRejectsAdditionalProperties() {
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota", "0.2.0",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", "0.2.0",
                          "v0.2.0", ",\"extra\":\"nope\""))
               .reject_reason == "metadata_fields_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota", "0.2.0",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", "0.2.0",
                          "v0.2.0", "", ",\"extra\":\"nope\""))
               .reject_reason == "artifact_fields_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota", "0.2.0",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", "0.2.0",
                          "v0.2.0", ",\"board_id\":\"other-esp-screen\""))
               .reject_reason == "metadata_fields_invalid");
-    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slate-zectrix-note4-v0.2.0-ota.bin",
-                         "slate-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slate", "ota", "0.2.0",
+    CHECK(Read(OfferJson("zectrix-note4", "https://updates.example/slatehub-zectrix-note4-v0.2.0-ota.bin",
+                         "slatehub-zectrix-note4-v0.2.0-ota.bin", kSha256Abc, "3", 1, "slatehub", "ota", "0.2.0",
                          "v0.2.0", "", ",\"download_url\":\"https://evil.example/payload.bin\""))
               .reject_reason == "artifact_fields_invalid");
 }

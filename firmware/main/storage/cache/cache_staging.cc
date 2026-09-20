@@ -13,7 +13,7 @@ namespace cache::staging {
 namespace {
 
 constexpr char kTag[] = "cache_stage";
-constexpr char kJournalMagic[] = "slate-cache-stage-v1";
+constexpr char kJournalMagic[] = "slatehub-cache-stage-v1";
 constexpr std::size_t kMaxJournalLineBytes = 2048;
 
 #ifdef SLATEHUB_HOST_TEST
@@ -187,6 +187,20 @@ bool ReadJournal(const std::string& journal_path, std::vector<Swap>& swaps) {
     return ok;
 }
 
+bool HasRetiredJournalMagic(const std::string& journal_path) {
+    FILE* f = std::fopen(journal_path.c_str(), "rb");
+    if (!f)
+        return false;
+
+    char line[kMaxJournalLineBytes] = {};
+    const bool read_line = std::fgets(line, sizeof(line), f) != nullptr;
+    std::fclose(f);
+    if (!read_line)
+        return false;
+    line[std::strcspn(line, "\r\n")] = '\0';
+    return std::strcmp(line, "s" "late-cache-stage-v1") == 0;
+}
+
 }  // namespace
 
 bool RollbackSwaps(std::vector<Swap>& swaps) {
@@ -311,6 +325,10 @@ bool RemoveJournal(const std::string& journal_path) {
 bool RecoverJournal(const std::string& journal_path) {
     std::vector<Swap> swaps;
     if (!ReadJournal(journal_path, swaps)) {
+        if (HasRetiredJournalMagic(journal_path)) {
+            ESP_LOGW(kTag, "retired journal magic path=%s action=remove", journal_path.c_str());
+            return RemoveJournal(journal_path);
+        }
         ESP_LOGW(kTag, "journal read failed path=%s action=keep", journal_path.c_str());
         return false;
     }

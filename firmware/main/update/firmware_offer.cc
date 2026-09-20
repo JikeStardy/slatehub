@@ -197,7 +197,7 @@ FirmwareOfferResult ReadFirmwareOffer(std::string_view metadata_json) {
     const cJSON* schema_version = ObjectItem(firmware, "schema_version");
     if (!cJSON_IsNumber(schema_version) || schema_version->valuedouble != 1.0)
         return Reject("schema_version_invalid");
-    if (JsonString(firmware, "product") != "slate")
+    if (JsonString(firmware, "product") != "slatehub")
         return Reject("product_invalid");
 
     const cJSON* artifact = ObjectItem(firmware, "artifact");
@@ -227,7 +227,7 @@ FirmwareOfferResult ReadFirmwareOffer(std::string_view metadata_json) {
     if (offer->filename_.empty())
         return Reject("filename_missing");
     const std::string expected_filename =
-        "slate-" + offer->board_id_ + "-" + offer->release_tag_ + "-ota.bin";
+        "slatehub-" + offer->board_id_ + "-" + offer->release_tag_ + "-ota.bin";
     if (offer->filename_ != expected_filename)
         return Reject("filename_invalid");
     offer->download_url_ = JsonString(artifact, "download_url");

@@ -88,9 +88,13 @@ jobs:
 
           check_lock_workspace_version() {
             local workspace="$1"
+            local lock_workspace="$workspace"
             local value
+            if [ "$workspace" = "__root__" ]; then
+              lock_workspace=""
+            fi
             value="$(
-              awk -v workspace="\"$workspace\":" '
+              awk -v workspace="\"$lock_workspace\":" '
                 /^[[:space:]]*"packages":[[:space:]]*\{/ { exit }
                 $0 ~ "^[[:space:]]*" workspace "[[:space:]]*\\{" { in_workspace = 1; next }
                 in_workspace && /^[[:space:]]*},/ { exit }
@@ -113,6 +117,7 @@ jobs:
           check_package_version frontend/package.json
           check_package_version shared/package.json
 
+          check_lock_workspace_version __root__
           check_lock_workspace_version backend
           check_lock_workspace_version frontend
           check_lock_workspace_version shared

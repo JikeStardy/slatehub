@@ -354,6 +354,93 @@ function runFirmwareMetadataFixture() {
 
 const firmwareMetadataFixtureError = runFirmwareMetadataFixture();
 
+function runLockWorkspaceVersionFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'slatehub-lock-version-contract-'));
+
+  function runHelper(lockfile, workspace = '__root__') {
+    writeFileSync(join(dir, 'bun.lock'), lockfile);
+    return spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+          set -euo pipefail
+          RELEASE_VERSION=0.2.0
+          check_lock_workspace_version() {
+          ${lockWorkspaceVersionFunction}
+          }
+          check_lock_workspace_version ${workspace}
+        `,
+      ],
+      {
+        cwd: dir,
+        encoding: 'utf8',
+      }
+    );
+  }
+
+  const completeLockfile = `{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "slate",
+      "version": "0.2.0"
+    },
+    "backend": {
+      "name": "backend",
+      "version": "0.2.0"
+    },
+    "frontend": {
+      "name": "frontend",
+      "version": "0.2.0"
+    },
+    "shared": {
+      "name": "shared",
+      "version": "0.2.0"
+    }
+  },
+  "packages": {}
+}
+`;
+  const staleRootLockfile = completeLockfile.replace('"version": "0.2.0"', '"version": "0.1.1"');
+  const missingRootLockfile = completeLockfile.replace('      "version": "0.2.0"\n', '');
+
+  try {
+    const root = runHelper(completeLockfile);
+    if (root.status !== 0) {
+      return `root workspace check failed on matching version: ${root.stderr || root.stdout}`;
+    }
+
+    for (const workspace of ['backend', 'frontend', 'shared']) {
+      const result = runHelper(completeLockfile, workspace);
+      if (result.status !== 0) {
+        return `${workspace} workspace check failed on matching version: ${
+          result.stderr || result.stdout
+        }`;
+      }
+    }
+
+    const staleRoot = runHelper(staleRootLockfile);
+    if (
+      staleRoot.status === 0 ||
+      !/bun\.lock workspace __root__ version must be 0\.2\.0/.test(staleRoot.stderr)
+    ) {
+      return 'stale root workspace version was not rejected with the expected error.';
+    }
+
+    const missingRoot = runHelper(missingRootLockfile);
+    if (missingRoot.status === 0 || !/got missing/.test(missingRoot.stderr)) {
+      return 'missing root workspace version was not rejected with the expected error.';
+    }
+
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const lockWorkspaceVersionFixtureError = runLockWorkspaceVersionFixture();
+
 assertContract(
   /check:release-contract/.test(ciWorkflow) && /check:release-contract/.test(releaseWorkflow),
   'CI and release quality gates must run bun run check:release-contract.'
@@ -498,11 +585,11 @@ assertContract(
 );
 
 assertContract(
-  ['backend', 'frontend', 'shared'].every(
+  ['__root__', 'backend', 'frontend', 'shared'].every(
     (workspace) =>
       exactOccurrences(repositoryVersionsBlock, `check_lock_workspace_version ${workspace}`) === 1
   ),
-  'Release workflow must verify backend/frontend/shared bun.lock workspace versions.'
+  'Release workflow must verify root/backend/frontend/shared bun.lock workspace versions.'
 );
 
 assertContract(
@@ -524,7 +611,17 @@ assertContract(
 assertContract(
   lockWorkspaceVersionFunctionCount === 1 &&
     lockWorkspaceVersionFunctions.length === 1 &&
+    /local lock_workspace="\$workspace"/.test(lockWorkspaceVersionFunction) &&
+    containsCompact(
+      lockWorkspaceVersionFunction,
+      `
+      if [ "$workspace" = "__root__" ]; then
+        lock_workspace=""
+      fi
+    `
+    ) &&
     /awk -v workspace=/.test(lockWorkspaceVersionFunction) &&
+    /awk -v workspace="\\"\$lock_workspace\\":"/.test(lockWorkspaceVersionFunction) &&
     /' bun\.lock/.test(lockWorkspaceVersionFunction) &&
     /in_workspace &&/.test(lockWorkspaceVersionFunction) &&
     /bun\.lock workspace \$workspace version must be \$RELEASE_VERSION/.test(
@@ -540,6 +637,11 @@ assertContract(
       `
     ),
   'Release workflow lock helper must read workspace versions from bun.lock, compare to RELEASE_VERSION, and exit 1 on mismatch.'
+);
+
+assertContract(
+  lockWorkspaceVersionFixtureError === null,
+  `Release workflow lock helper must reject stale or missing root workspace versions: ${lockWorkspaceVersionFixtureError}.`
 );
 
 assertContract(

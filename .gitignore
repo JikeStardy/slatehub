@@ -23,6 +23,7 @@ build/
 .gemini/
 .omo/
 .omx/
+.worktrees/
 *.swp
 *.swo
 *~

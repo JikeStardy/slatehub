@@ -5,7 +5,7 @@ import { basename } from 'node:path';
 
 const registryPath = new URL('../shared/src/display-profiles.json', import.meta.url);
 const schemaVersion = 1;
-const product = 'slate';
+const product = 'slatehub';
 
 function usage() {
   return [
@@ -96,7 +96,7 @@ function urlBasename(rawUrl) {
 }
 
 function expectedOtaFilename(boardId, releaseTag) {
-  return `slate-${boardId}-${releaseTag}-ota.bin`;
+  return `slatehub-${boardId}-${releaseTag}-ota.bin`;
 }
 
 function validateReleasePair(version, releaseTag) {

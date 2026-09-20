@@ -13,10 +13,13 @@ function read(path) {
 
 const firmwareWorkflow = read('.github/workflows/firmware.yml');
 const releaseWorkflow = read('.github/workflows/release.yml');
+const dockerWorkflow = read('.github/workflows/docker.yml');
 const ciWorkflow = read('.github/workflows/ci.yml');
 const packageJson = JSON.parse(read('package.json'));
 const displayRegistry = JSON.parse(read('shared/src/display-profiles.json'));
 const workflows = `${firmwareWorkflow}\n${releaseWorkflow}`;
+const retiredArtifactPrefix = ['s', 'late-'].join('');
+const retiredConfigPrefix = ['CONFIG_', 'SLATE'].join('');
 
 const failures = [];
 
@@ -204,11 +207,11 @@ function hasBoardSdkconfigCommand(workflow) {
     containsCompact(
       command,
       `
-      BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.\${{ matrix.board_id }}.defaults" &&
-      printf "CONFIG_SLATE_BOARD_ID=\\"\${{ matrix.board_id }}\\"\\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
+      BOARD_SDKCONFIG_DEFAULTS="/tmp/slatehub-sdkconfig.\${{ matrix.board_id }}.defaults" &&
+      printf "CONFIG_SLATEHUB_BOARD_ID=\\"\${{ matrix.board_id }}\\"\\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
       idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
-      idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-\${{ matrix.board_id }}-full.bin" &&
-      cp build/slate.bin "build/slate-\${{ matrix.board_id }}-ota.bin"
+      idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slatehub-\${{ matrix.board_id }}-full.bin" &&
+      cp build/slatehub.bin "build/slatehub-\${{ matrix.board_id }}-ota.bin"
     `
     )
   );
@@ -220,6 +223,7 @@ const tagChangelogBlock = stepBlock(releaseWorkflow, 'Read tag changelog');
 const prepareFirmwareAssetsBlock = stepBlock(releaseWorkflow, 'Prepare firmware assets');
 const uploadFirmwareArtifactsBlock = stepBlock(releaseWorkflow, 'Upload firmware artifacts');
 const publishReleaseBlock = stepBlock(releaseWorkflow, 'Publish GitHub Release');
+const rollingUploadFirmwareBlock = stepBlock(firmwareWorkflow, 'upload firmware');
 const packageVersionFunctions = shellFunctionBlocks(
   repositoryVersionsBlock,
   'check_package_version'
@@ -274,11 +278,11 @@ function runFirmwareMetadataFixture() {
   const boardId = realBoardIds[0];
   const tag = 'v9.8.7';
   const version = '9.8.7';
-  const dir = mkdtempSync(join(tmpdir(), 'slate-release-contract-'));
-  const artifactName = `slate-${boardId}-${tag}-ota.bin`;
+  const dir = mkdtempSync(join(tmpdir(), 'slatehub-release-contract-'));
+  const artifactName = `slatehub-${boardId}-${tag}-ota.bin`;
   const artifact = join(dir, artifactName);
-  const metadata = join(dir, `slate-${boardId}-${tag}-ota.json`);
-  const downloadUrl = `https://github.com/example/slate/releases/download/${tag}/${artifactName}`;
+  const metadata = join(dir, `slatehub-${boardId}-${tag}-ota.json`);
+  const downloadUrl = `https://github.com/example/slatehub/releases/download/${tag}/${artifactName}`;
 
   try {
     writeFileSync(artifact, 'contract ota fixture');
@@ -321,7 +325,7 @@ function runFirmwareMetadataFixture() {
       return `verify failed: ${verify.stderr || verify.stdout}`;
     }
 
-    const virtualArtifact = join(dir, 'slate-virtual-mono-296x128-v9.8.7-ota.bin');
+    const virtualArtifact = join(dir, 'slatehub-virtual-mono-296x128-v9.8.7-ota.bin');
     writeFileSync(virtualArtifact, 'virtual ota fixture');
     const virtualCreate = runNodeScript('tools/firmware-release-metadata.mjs', [
       'create',
@@ -334,7 +338,7 @@ function runFirmwareMetadataFixture() {
       '--artifact',
       virtualArtifact,
       '--download-url',
-      `https://github.com/example/slate/releases/download/${tag}/${basename(virtualArtifact)}`,
+      `https://github.com/example/slatehub/releases/download/${tag}/${basename(virtualArtifact)}`,
       '--output',
       join(dir, 'virtual.json'),
     ]);
@@ -396,8 +400,20 @@ assertContract(
 
 assertContract(
   !/board_id:\s*virtual-mono-296x128/.test(workflows) &&
-    !/slate-virtual-mono-296x128/.test(workflows),
+    !/slatehub-virtual-mono-296x128/.test(workflows),
   'virtual-mono-296x128 must not be a firmware matrix row or release artifact.'
+);
+
+assertContract(
+  [dockerWorkflow, releaseWorkflow].every((workflow) =>
+    /IMAGE:\s*ghcr\.io\/\$\{\{\s*github\.repository_owner\s*\}\}\/slatehub/.test(workflow)
+  ),
+  'Docker rolling and release workflows must publish ghcr.io/${owner}/slatehub images.'
+);
+
+assertContract(
+  !workflows.includes(retiredArtifactPrefix) && !workflows.includes(`${retiredConfigPrefix}_`),
+  'Firmware and release workflows must not contain retired artifact or board CONFIG prefixes.'
 );
 
 assertContract(
@@ -406,46 +422,51 @@ assertContract(
 );
 
 assertContract(
-  !/printf\s+'CONFIG_SLATE_BOARD_ID=/.test(workflows),
+  !new RegExp(`printf\\s+'${retiredConfigPrefix}_BOARD_ID=`).test(workflows),
   'ESP-IDF action commands must avoid single-quoted printf snippets that can break shell wrapping.'
 );
 
 assertContract(
-  !/merge-bin -o "build\/slate-/.test(workflows) &&
+  !new RegExp(`merge-bin -o "build/${retiredArtifactPrefix}`).test(workflows) &&
     [firmwareWorkflow, releaseWorkflow].every((workflow) =>
-      /merge-bin -o "slate-\$\{\{\s*matrix\.board_id\s*\}\}-full\.bin"/.test(workflow)
+      /merge-bin -o "slatehub-\$\{\{\s*matrix\.board_id\s*\}\}-full\.bin"/.test(workflow)
     ),
   'idf.py merge-bin output must use the build-relative firmware file name, not a nested build/ path.'
 );
 
 assertContract(
-  /slate-\$\{\{\s*matrix\.board_id\s*\}\}-full/.test(firmwareWorkflow) &&
-    /slate-\$\{\{\s*matrix\.board_id\s*\}\}-ota/.test(firmwareWorkflow),
+  /slatehub-\$\{\{\s*matrix\.board_id\s*\}\}-full/.test(firmwareWorkflow) &&
+    /slatehub-\$\{\{\s*matrix\.board_id\s*\}\}-ota/.test(firmwareWorkflow),
   'Rolling firmware artifact names must include the board id.'
 );
 
 assertContract(
-  /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-full\.bin/.test(releaseWorkflow) &&
-    /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.bin/.test(releaseWorkflow) &&
-    /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.json/.test(releaseWorkflow) &&
-    /slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-sha256\.txt/.test(releaseWorkflow),
+  /name:\s*slatehub-firmware-\$\{\{\s*matrix\.board_id\s*\}\}/.test(rollingUploadFirmwareBlock),
+  'Rolling firmware upload artifact name must use the slatehub prefix and board id.'
+);
+
+assertContract(
+  /slatehub-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-full\.bin/.test(releaseWorkflow) &&
+    /slatehub-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.bin/.test(releaseWorkflow) &&
+    /slatehub-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.json/.test(releaseWorkflow) &&
+    /slatehub-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-sha256\.txt/.test(releaseWorkflow),
   'Release firmware asset names must include board id and release tag, including the OTA metadata sidecar.'
 );
 
 assertContract(
-  /pattern:\s*slate-release-firmware-\*/.test(releaseWorkflow) &&
+  /pattern:\s*slatehub-release-firmware-\*/.test(releaseWorkflow) &&
     /merge-multiple:\s*true/.test(releaseWorkflow) &&
     /find "\$FIRMWARE_DIR"/.test(publishReleaseBlock) &&
-    /slate-\*-\$\{RELEASE_TAG\}-\*\.bin/.test(publishReleaseBlock) &&
-    /slate-\*-\$\{RELEASE_TAG\}-ota\.json/.test(publishReleaseBlock) &&
-    /slate-\*-\$\{RELEASE_TAG\}-sha256\.txt/.test(publishReleaseBlock) &&
+    /slatehub-\*-\$\{RELEASE_TAG\}-\*\.bin/.test(publishReleaseBlock) &&
+    /slatehub-\*-\$\{RELEASE_TAG\}-ota\.json/.test(publishReleaseBlock) &&
+    /slatehub-\*-\$\{RELEASE_TAG\}-sha256\.txt/.test(publishReleaseBlock) &&
     /ASSETS=\("\$\{FIRMWARE_ASSETS\[@\]\}" "\$\{ASSETS\[@\]\}"\)/.test(publishReleaseBlock),
   'GitHub Release publish step must download all board artifacts and collect board-named .bin, OTA metadata, and sha256 assets dynamically.'
 );
 
 assertContract(
   [
-    /OTA_METADATA_NAME="slate-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.json"/,
+    /OTA_METADATA_NAME="slatehub-\$\{BOARD_ID\}-\$\{RELEASE_TAG\}-ota\.json"/,
     /node tools\/firmware-release-metadata\.mjs create/,
     /--board-id "\$BOARD_ID"/,
     /--version "\$\{RELEASE_TAG#v\}"/,

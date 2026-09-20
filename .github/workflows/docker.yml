@@ -14,7 +14,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/slate
+  IMAGE: ghcr.io/${{ github.repository_owner }}/slatehub
 
 jobs:
   build:

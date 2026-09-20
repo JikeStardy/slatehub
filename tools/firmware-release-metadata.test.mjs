@@ -14,7 +14,7 @@ const schemaPath = fileURLToPath(
 );
 
 function tempDir() {
-  const dir = join(tmpdir(), `slate-firmware-release-metadata-${randomUUID()}`);
+  const dir = join(tmpdir(), `slatehub-firmware-release-metadata-${randomUUID()}`);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -34,12 +34,12 @@ function createFixture(dir, overrides = {}) {
   const tag = overrides.tag ?? 'v0.1.1';
   const version = overrides.version ?? '0.1.1';
   const boardId = overrides.boardId ?? 'zectrix-note4';
-  const artifactName = `slate-${boardId}-${tag}-ota.bin`;
+  const artifactName = `slatehub-${boardId}-${tag}-ota.bin`;
   const artifact = join(dir, artifactName);
-  const output = join(dir, `slate-${boardId}-${tag}-ota.json`);
+  const output = join(dir, `slatehub-${boardId}-${tag}-ota.json`);
   const downloadUrl =
     overrides.downloadUrl ??
-    `https://github.com/example/slate/releases/download/${tag}/${artifactName}`;
+    `https://github.com/example/slatehub/releases/download/${tag}/${artifactName}`;
   const data = overrides.data ?? Buffer.from('ota payload');
   writeFileSync(artifact, data);
 
@@ -83,7 +83,7 @@ describe('firmware release metadata tool', () => {
       const metadata = JSON.parse(readFileSync(output, 'utf8'));
       assert.deepEqual(metadata, {
         schema_version: 1,
-        product: 'slate',
+        product: 'slatehub',
         board_id: boardId,
         version,
         release_tag: tag,
@@ -107,9 +107,9 @@ describe('firmware release metadata tool', () => {
     for (const protocol of ['http', 'ftp']) {
       const dir = tempDir();
       try {
-        const artifactName = `slate-zectrix-note4-v0.1.1-ota.bin`;
+        const artifactName = `slatehub-zectrix-note4-v0.1.1-ota.bin`;
         const { created } = createFixture(dir, {
-          downloadUrl: `${protocol}://github.com/example/slate/releases/download/v0.1.1/${artifactName}`,
+          downloadUrl: `${protocol}://github.com/example/slatehub/releases/download/v0.1.1/${artifactName}`,
         });
         assert.notEqual(created.status, 0, `${protocol} unexpectedly passed`);
         assert.match(created.stderr, /https/i);
@@ -127,7 +127,7 @@ describe('firmware release metadata tool', () => {
 
       const metadata = {
         schema_version: 1,
-        product: 'slate',
+        product: 'slatehub',
         board_id: fixture.boardId,
         version: fixture.version,
         release_tag: fixture.tag,
@@ -163,7 +163,7 @@ describe('firmware release metadata tool', () => {
         assert.equal(created.status, 0, created.stderr);
 
         const metadata = JSON.parse(readFileSync(output, 'utf8'));
-        metadata.artifact.download_url = `${protocol}://github.com/example/slate/releases/download/v0.1.1/${artifactName}`;
+        metadata.artifact.download_url = `${protocol}://github.com/example/slatehub/releases/download/v0.1.1/${artifactName}`;
         writeFileSync(output, `${JSON.stringify(metadata, null, 2)}\n`);
 
         const verified = runTool(['verify', '--metadata', output, '--artifact', artifact]);
@@ -178,9 +178,9 @@ describe('firmware release metadata tool', () => {
   test('create and verify reject download URLs with a trailing slash', () => {
     const dir = tempDir();
     try {
-      const artifactName = 'slate-zectrix-note4-v0.1.1-ota.bin';
+      const artifactName = 'slatehub-zectrix-note4-v0.1.1-ota.bin';
       const trailingSlashUrl =
-        `https://github.com/example/slate/releases/download/v0.1.1/${artifactName}/`;
+        `https://github.com/example/slatehub/releases/download/v0.1.1/${artifactName}/`;
       const rejectedCreate = createFixture(dir, { downloadUrl: trailingSlashUrl });
       assert.notEqual(rejectedCreate.created.status, 0, 'create accepted a trailing slash URL');
 
@@ -206,7 +206,7 @@ describe('firmware release metadata tool', () => {
   test('rejects virtual or non-production board ids', () => {
     const dir = tempDir();
     try {
-      const artifact = join(dir, 'slate-virtual-mono-296x128-v0.1.1-ota.bin');
+      const artifact = join(dir, 'slatehub-virtual-mono-296x128-v0.1.1-ota.bin');
       writeFileSync(artifact, 'ota');
 
       const result = runTool([
@@ -220,7 +220,7 @@ describe('firmware release metadata tool', () => {
         '--artifact',
         artifact,
         '--download-url',
-        'https://github.com/example/slate/releases/download/v0.1.1/slate-virtual-mono-296x128-v0.1.1-ota.bin',
+        'https://github.com/example/slatehub/releases/download/v0.1.1/slatehub-virtual-mono-296x128-v0.1.1-ota.bin',
         '--output',
         join(dir, 'sidecar.json'),
       ]);
@@ -255,10 +255,10 @@ describe('firmware release metadata tool', () => {
       const tag = 'v0.1.1';
       const version = '0.1.1';
       const boardId = 'zectrix-note4';
-      const artifactName = `slate-${boardId}-${tag}-ota.bin`;
+      const artifactName = `slatehub-${boardId}-${tag}-ota.bin`;
       const artifact = join(dir, artifactName);
-      const output = join(dir, `slate-${boardId}-${tag}-ota.json`);
-      const downloadUrl = `https://github.com/example/slate/releases/download/${tag}/${artifactName}`;
+      const output = join(dir, `slatehub-${boardId}-${tag}-ota.json`);
+      const downloadUrl = `https://github.com/example/slatehub/releases/download/${tag}/${artifactName}`;
       writeFileSync(artifact, 'original');
 
       const created = runTool([
@@ -331,6 +331,25 @@ describe('firmware release metadata tool', () => {
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+  });
+
+  test('verify rejects metadata with the retired product identity', () => {
+    const dir = tempDir();
+    try {
+      const { artifact, created, output } = createFixture(dir);
+      assert.equal(created.status, 0, created.stderr);
+
+      const metadata = JSON.parse(readFileSync(output, 'utf8'));
+      const retiredProduct = ['s', 'late'].join('');
+      metadata.product = retiredProduct;
+      writeFileSync(output, `${JSON.stringify(metadata, null, 2)}\n`);
+
+      const result = runTool(['verify', '--metadata', output, '--artifact', artifact]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /product must be slatehub/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

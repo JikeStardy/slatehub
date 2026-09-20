@@ -20,7 +20,7 @@ defaults:
 env:
   DATABASE_URL: mysql://ci:ci@127.0.0.1:3306/ci
   JWT_SECRET: ci_dummy_secret_long_enough_to_pass_validation
-  IMAGE: ghcr.io/${{ github.repository_owner }}/slate
+  IMAGE: ghcr.io/${{ github.repository_owner }}/slatehub
 
 jobs:
   prepare:
@@ -148,7 +148,7 @@ jobs:
       - name: Upload release notes
         uses: actions/upload-artifact@v7
         with:
-          name: slate-release-notes
+          name: slatehub-release-notes
           path: ${{ steps.changelog.outputs.notes_path }}
           if-no-files-found: error
 
@@ -234,11 +234,11 @@ jobs:
           target: ${{ matrix.target }}
           path: 'firmware'
           command: >-
-            BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.${{ matrix.board_id }}.defaults" &&
-            printf "CONFIG_SLATE_BOARD_ID=\"${{ matrix.board_id }}\"\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
+            BOARD_SDKCONFIG_DEFAULTS="/tmp/slatehub-sdkconfig.${{ matrix.board_id }}.defaults" &&
+            printf "CONFIG_SLATEHUB_BOARD_ID=\"${{ matrix.board_id }}\"\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
             idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
-            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-${{ matrix.board_id }}-full.bin" &&
-            cp build/slate.bin "build/slate-${{ matrix.board_id }}-ota.bin"
+            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slatehub-${{ matrix.board_id }}-full.bin" &&
+            cp build/slatehub.bin "build/slatehub-${{ matrix.board_id }}-ota.bin"
 
       - name: Prepare firmware assets
         id: package
@@ -248,16 +248,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          FULL_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-full.bin"
-          OTA_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-ota.bin"
-          OTA_METADATA_NAME="slate-${BOARD_ID}-${RELEASE_TAG}-ota.json"
+          FULL_NAME="slatehub-${BOARD_ID}-${RELEASE_TAG}-full.bin"
+          OTA_NAME="slatehub-${BOARD_ID}-${RELEASE_TAG}-ota.bin"
+          OTA_METADATA_NAME="slatehub-${BOARD_ID}-${RELEASE_TAG}-ota.json"
 
-          cp "firmware/build/slate-${BOARD_ID}-full.bin" "$RUNNER_TEMP/$FULL_NAME"
-          cp "firmware/build/slate-${BOARD_ID}-ota.bin" "$RUNNER_TEMP/$OTA_NAME"
+          cp "firmware/build/slatehub-${BOARD_ID}-full.bin" "$RUNNER_TEMP/$FULL_NAME"
+          cp "firmware/build/slatehub-${BOARD_ID}-ota.bin" "$RUNNER_TEMP/$OTA_NAME"
 
           (
             cd "$RUNNER_TEMP"
-            sha256sum "$FULL_NAME" "$OTA_NAME" > "slate-${BOARD_ID}-${RELEASE_TAG}-sha256.txt"
+            sha256sum "$FULL_NAME" "$OTA_NAME" > "slatehub-${BOARD_ID}-${RELEASE_TAG}-sha256.txt"
           )
 
           node tools/firmware-release-metadata.mjs create \
@@ -278,12 +278,12 @@ jobs:
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: slate-release-firmware-${{ matrix.board_id }}
+          name: slatehub-release-firmware-${{ matrix.board_id }}
           path: |
             ${{ runner.temp }}/${{ steps.package.outputs.full_name }}
             ${{ runner.temp }}/${{ steps.package.outputs.ota_name }}
             ${{ runner.temp }}/${{ steps.package.outputs.ota_metadata_name }}
-            ${{ runner.temp }}/slate-${{ matrix.board_id }}-${{ needs.prepare.outputs.tag }}-sha256.txt
+            ${{ runner.temp }}/slatehub-${{ matrix.board_id }}-${{ needs.prepare.outputs.tag }}-sha256.txt
           if-no-files-found: error
 
   github-release:
@@ -301,13 +301,13 @@ jobs:
       - name: Download release notes
         uses: actions/download-artifact@v7
         with:
-          name: slate-release-notes
+          name: slatehub-release-notes
           path: ${{ runner.temp }}/release-notes
 
       - name: Download firmware artifacts
         uses: actions/download-artifact@v7
         with:
-          pattern: slate-release-firmware-*
+          pattern: slatehub-release-firmware-*
           path: ${{ runner.temp }}/firmware
           merge-multiple: true
 
@@ -316,7 +316,7 @@ jobs:
           set -euo pipefail
 
           cp compose.yml "$RUNNER_TEMP/compose.yml"
-          cp .env.example "$RUNNER_TEMP/slate.env.example"
+          cp .env.example "$RUNNER_TEMP/slatehub.env.example"
 
       - name: Publish GitHub Release
         env:
@@ -330,12 +330,12 @@ jobs:
 
           ASSETS=(
             "$DEPLOY_DIR/compose.yml"
-            "$DEPLOY_DIR/slate.env.example"
+            "$DEPLOY_DIR/slatehub.env.example"
           )
 
           mapfile -t FIRMWARE_ASSETS < <(
             find "$FIRMWARE_DIR" -maxdepth 1 -type f \
-              \( -name "slate-*-${RELEASE_TAG}-*.bin" -o -name "slate-*-${RELEASE_TAG}-ota.json" -o -name "slate-*-${RELEASE_TAG}-sha256.txt" \) \
+              \( -name "slatehub-*-${RELEASE_TAG}-*.bin" -o -name "slatehub-*-${RELEASE_TAG}-ota.json" -o -name "slatehub-*-${RELEASE_TAG}-sha256.txt" \) \
               | sort
           )
 

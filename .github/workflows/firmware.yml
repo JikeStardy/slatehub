@@ -28,18 +28,18 @@ jobs:
           target: ${{ matrix.target }}
           path: 'firmware'
           command: >-
-            BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.${{ matrix.board_id }}.defaults" &&
-            printf "CONFIG_SLATE_BOARD_ID=\"${{ matrix.board_id }}\"\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
+            BOARD_SDKCONFIG_DEFAULTS="/tmp/slatehub-sdkconfig.${{ matrix.board_id }}.defaults" &&
+            printf "CONFIG_SLATEHUB_BOARD_ID=\"${{ matrix.board_id }}\"\n" > "$BOARD_SDKCONFIG_DEFAULTS" &&
             idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build &&
-            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slate-${{ matrix.board_id }}-full.bin" &&
-            cp build/slate.bin "build/slate-${{ matrix.board_id }}-ota.bin"
+            idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o "slatehub-${{ matrix.board_id }}-full.bin" &&
+            cp build/slatehub.bin "build/slatehub-${{ matrix.board_id }}-ota.bin"
 
       - name: upload firmware
         uses: actions/upload-artifact@v7
         with:
-          name: firmware-${{ matrix.board_id }}
+          name: slatehub-firmware-${{ matrix.board_id }}
           path: |
-            firmware/build/slate-${{ matrix.board_id }}-full.bin
-            firmware/build/slate-${{ matrix.board_id }}-ota.bin
+            firmware/build/slatehub-${{ matrix.board_id }}-full.bin
+            firmware/build/slatehub-${{ matrix.board_id }}-ota.bin
           if-no-files-found: error
           retention-days: 14

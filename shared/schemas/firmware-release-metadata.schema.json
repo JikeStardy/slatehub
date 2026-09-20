@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://slate.local/schemas/firmware-release-metadata.schema.json",
-  "title": "SlateFirmwareReleaseMetadata",
+  "$id": "https://slatehub.local/schemas/firmware-release-metadata.schema.json",
+  "title": "SlateHubFirmwareReleaseMetadata",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "product", "board_id", "version", "release_tag", "artifact"],
@@ -10,7 +10,7 @@
       "const": 1
     },
     "product": {
-      "const": "slate"
+      "const": "slatehub"
     },
     "board_id": {
       "type": "string",
@@ -36,7 +36,7 @@
         },
         "filename": {
           "type": "string",
-          "pattern": "^slate-[a-z0-9-]+-v[0-9]+\\.[0-9]+\\.[0-9]+-ota\\.bin$"
+          "pattern": "^slatehub-[a-z0-9-]+-v[0-9]+\\.[0-9]+\\.[0-9]+-ota\\.bin$"
         },
         "size_bytes": {
           "type": "integer",

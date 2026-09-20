@@ -95,7 +95,7 @@ void Init() {
     cfg.start             = true;
     esp_netif_sntp_init(&cfg);
 
-    setenv("TZ", CONFIG_SLATE_DEFAULT_TIMEZONE, 1);
+    setenv("TZ", CONFIG_SLATEHUB_DEFAULT_TIMEZONE, 1);
     tzset();
 }
 

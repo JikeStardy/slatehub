@@ -1,7 +1,7 @@
 #pragma once
 
-namespace slate {
+namespace slatehub {
 
 extern const char* const kCaptivePortalHtml;
 
-}  // namespace slate
+}  // namespace slatehub

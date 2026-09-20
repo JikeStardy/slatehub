@@ -50,11 +50,6 @@ std::string GetUuid() {
     std::string uuid = nvs_store::GetString(nvs_schema::kXiaozhi, nvs_schema::xiaozhi::kUuid);
     if (!uuid.empty())
         return uuid;
-    uuid = nvs_store::GetString(nvs_schema::kLegacyXiaozhi, nvs_schema::xiaozhi::kUuid);
-    if (!uuid.empty()) {
-        nvs_store::SetString(nvs_schema::kXiaozhi, nvs_schema::xiaozhi::kUuid, uuid);
-        return uuid;
-    }
     uuid = GenerateUuid();
     nvs_store::SetString(nvs_schema::kXiaozhi, nvs_schema::xiaozhi::kUuid, uuid);
     return uuid;
@@ -73,12 +68,7 @@ bool SaveMqtt(const MqttConfig& cfg) {
 }
 
 bool LoadMqtt(MqttConfig& out) {
-    if (LoadMqttFromNamespace(nvs_schema::kXiaozhiMqtt, out))
-        return true;
-    if (!LoadMqttFromNamespace(nvs_schema::kLegacyXiaozhiMqtt, out))
-        return false;
-    SaveMqtt(out);
-    return true;
+    return LoadMqttFromNamespace(nvs_schema::kXiaozhiMqtt, out);
 }
 
 void ClearMqtt() {
@@ -95,12 +85,7 @@ bool SaveWebsocket(const WebsocketConfig& cfg) {
 }
 
 bool LoadWebsocket(WebsocketConfig& out) {
-    if (LoadWebsocketFromNamespace(nvs_schema::kXiaozhiWs, out))
-        return true;
-    if (!LoadWebsocketFromNamespace(nvs_schema::kLegacyXiaozhiWs, out))
-        return false;
-    SaveWebsocket(out);
-    return true;
+    return LoadWebsocketFromNamespace(nvs_schema::kXiaozhiWs, out);
 }
 
 void ClearWebsocket() {
@@ -111,12 +96,7 @@ bool HasProtocolConfig() {
     if (nvs_store::HasStrings(nvs_schema::kXiaozhiMqtt,
                               {nvs_schema::mqtt::kEndpoint, nvs_schema::mqtt::kClientId, nvs_schema::mqtt::kPubTopic}))
         return true;
-    if (nvs_store::HasString(nvs_schema::kXiaozhiWs, nvs_schema::ws::kUrl))
-        return true;
-    if (nvs_store::HasStrings(nvs_schema::kLegacyXiaozhiMqtt,
-                              {nvs_schema::mqtt::kEndpoint, nvs_schema::mqtt::kClientId, nvs_schema::mqtt::kPubTopic}))
-        return true;
-    return nvs_store::HasString(nvs_schema::kLegacyXiaozhiWs, nvs_schema::ws::kUrl);
+    return nvs_store::HasString(nvs_schema::kXiaozhiWs, nvs_schema::ws::kUrl);
 }
 
 int GetVolume() {
@@ -131,9 +111,6 @@ void ClearAll() {
     nvs_store::EraseNamespace(nvs_schema::kXiaozhi);
     nvs_store::EraseNamespace(nvs_schema::kXiaozhiMqtt);
     nvs_store::EraseNamespace(nvs_schema::kXiaozhiWs);
-    nvs_store::EraseNamespace(nvs_schema::kLegacyXiaozhi);
-    nvs_store::EraseNamespace(nvs_schema::kLegacyXiaozhiMqtt);
-    nvs_store::EraseNamespace(nvs_schema::kLegacyXiaozhiWs);
 }
 
 }  // namespace settings

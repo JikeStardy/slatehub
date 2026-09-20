@@ -16,7 +16,7 @@ constexpr char kTag[] = "cache_stage";
 constexpr char kJournalMagic[] = "slate-cache-stage-v1";
 constexpr std::size_t kMaxJournalLineBytes = 2048;
 
-#ifdef SLATE_HOST_TEST
+#ifdef SLATEHUB_HOST_TEST
 std::string g_fail_rename_from;
 std::string g_fail_rename_to;
 std::string g_fail_unlink_path;
@@ -28,7 +28,7 @@ bool PathExists(const std::string& path) {
 }
 
 bool RenameReplace(const std::string& from, const std::string& to) {
-#ifdef SLATE_HOST_TEST
+#ifdef SLATEHUB_HOST_TEST
     if (from == g_fail_rename_from && to == g_fail_rename_to) {
         g_fail_rename_from.clear();
         g_fail_rename_to.clear();
@@ -44,7 +44,7 @@ bool RenameReplace(const std::string& from, const std::string& to) {
 }
 
 bool RemoveIfExists(const std::string& path) {
-#ifdef SLATE_HOST_TEST
+#ifdef SLATEHUB_HOST_TEST
     if (path == g_fail_unlink_path) {
         g_fail_unlink_path.clear();
         errno = EIO;
@@ -330,7 +330,7 @@ bool RecoverJournal(const std::string& journal_path) {
     return ok;
 }
 
-#ifdef SLATE_HOST_TEST
+#ifdef SLATEHUB_HOST_TEST
 void TestFailNextRename(const std::string& from, const std::string& to) {
     g_fail_rename_from = from;
     g_fail_rename_to   = to;

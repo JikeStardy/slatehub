@@ -23,7 +23,7 @@ constexpr char kTag[] = "splash";
 void FormatApSsid(char* out, size_t cap) {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    std::snprintf(out, cap, "%s-%02X%02X", CONFIG_SLATE_AP_SSID_PREFIX, mac[4], mac[5]);
+    std::snprintf(out, cap, "%s-%02X%02X", CONFIG_SLATEHUB_AP_SSID_PREFIX, mac[4], mac[5]);
 }
 
 // 把 BootStage(event_bus.h)映射成 SplashState。

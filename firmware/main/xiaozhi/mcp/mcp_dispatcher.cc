@@ -26,7 +26,7 @@ std::string InitializeResultJson() {
     const auto* app = esp_app_get_description();
     std::string result =
         "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},"
-        "\"serverInfo\":{\"name\":\"slate\",\"version\":\"";
+        "\"serverInfo\":{\"name\":\"slatehub\",\"version\":\"";
     result += app ? app->version : "unknown";
     result += "\"}}";
     return result;

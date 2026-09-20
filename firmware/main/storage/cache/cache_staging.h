@@ -23,7 +23,7 @@ bool WriteJournal(const std::string& journal_path, const std::vector<Swap>& swap
 bool RemoveJournal(const std::string& journal_path);
 bool RecoverJournal(const std::string& journal_path);
 
-#ifdef SLATE_HOST_TEST
+#ifdef SLATEHUB_HOST_TEST
 void TestFailNextRename(const std::string& from, const std::string& to);
 void TestFailNextUnlink(const std::string& path);
 #endif

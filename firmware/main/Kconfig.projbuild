@@ -1,13 +1,13 @@
-menu "Slate Configuration"
+menu "SlateHub Configuration"
 
-config SLATE_BOARD_ID
-    string "Slate board id"
+config SLATEHUB_BOARD_ID
+    string "SlateHub board id"
     default "zectrix-note4"
     help
         Compile-time board identity. Task 5A implements only zectrix-note4;
         other values must fail configuration/build until a BSP is added.
 
-config SLATE_DEFAULT_SERVER_URL
+config SLATEHUB_DEFAULT_SERVER_URL
     string "Default server URL (shown in captive portal)"
     default ""
     help
@@ -16,19 +16,19 @@ config SLATE_DEFAULT_SERVER_URL
         portal HTML guides users). For local dev override via menuconfig
         or sdkconfig.defaults (e.g. http://192.168.x.x:3001).
 
-config SLATE_AP_SSID_PREFIX
+config SLATEHUB_AP_SSID_PREFIX
     string "SoftAP SSID prefix (suffix is last 2 bytes of MAC)"
-    default "Slate"
+    default "SlateHub"
     help
         AP SSID will be {prefix}-{XX}{YY} where XX:YY is last 2 bytes of MAC.
 
-config SLATE_DEFAULT_TIMEZONE
+config SLATEHUB_DEFAULT_TIMEZONE
     string "Default POSIX timezone string for SNTP"
     default "CST-8"
     help
         Used by setenv("TZ", ...) after SNTP sync. CST-8 = China Standard Time.
 
-config SLATE_IDLE_DEEP_SLEEP_MIN
+config SLATEHUB_IDLE_DEEP_SLEEP_MIN
     int "Idle minutes before entering deep sleep"
     default 3
     range 1 60

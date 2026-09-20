@@ -516,7 +516,7 @@ void App::Init() {
              decision_.first_register ? 1 : 0);
 
     SleepManager::Policy policy;
-    policy.idle_timeout_min = CONFIG_SLATE_IDLE_DEEP_SLEEP_MIN;
+    policy.idle_timeout_min = CONFIG_SLATEHUB_IDLE_DEEP_SLEEP_MIN;
     policy.disabled         = (decision_.mode == boot_mode::Mode::kPortal);
     sleep_mgr_.Init(policy);
     // 阻止深睡的两个来源：语音会话活动中、以及一次 sync 突发(大文件下载)进行中。

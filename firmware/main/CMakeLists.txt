@@ -138,11 +138,11 @@ idf_component_register(
 
 # ESP-IDF's dependency scan returns from this file at idf_component_register().
 # Keep the guard below it so only the normal configure phase validates the board.
-if(NOT CONFIG_SLATE_BOARD_ID STREQUAL "zectrix-note4")
+if(NOT CONFIG_SLATEHUB_BOARD_ID STREQUAL "zectrix-note4")
     message(
         FATAL_ERROR
-        "Unsupported CONFIG_SLATE_BOARD_ID='${CONFIG_SLATE_BOARD_ID}'. Only zectrix-note4 is implemented."
+        "Unsupported CONFIG_SLATEHUB_BOARD_ID='${CONFIG_SLATEHUB_BOARD_ID}'. Only zectrix-note4 is implemented."
     )
 endif()
 
-target_compile_definitions(${COMPONENT_LIB} PRIVATE "SLATE_BOARD_ID=\"${CONFIG_SLATE_BOARD_ID}\"")
+target_compile_definitions(${COMPONENT_LIB} PRIVATE "SLATEHUB_BOARD_ID=\"${CONFIG_SLATEHUB_BOARD_ID}\"")

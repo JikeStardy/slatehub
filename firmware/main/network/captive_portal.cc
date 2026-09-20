@@ -116,12 +116,13 @@ esp_err_t CaptivePortal::HandleRoot(httpd_req_t* req) {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     char ap_ssid[24];
-    std::snprintf(ap_ssid, sizeof(ap_ssid), "%s-%02X%02X", CONFIG_SLATE_AP_SSID_PREFIX, mac[4], mac[5]);
+    std::snprintf(ap_ssid, sizeof(ap_ssid), "%s-%02X%02X", CONFIG_SLATEHUB_AP_SSID_PREFIX, mac[4], mac[5]);
 
-    std::string html = RenderTemplate(slate::kCaptivePortalHtml, {
-                                                                     {"SERVER_URL", CONFIG_SLATE_DEFAULT_SERVER_URL},
-                                                                     {"AP_SSID", ap_ssid},
-                                                                 });
+    std::string html =
+        RenderTemplate(slatehub::kCaptivePortalHtml, {
+                                                         {"SERVER_URL", CONFIG_SLATEHUB_DEFAULT_SERVER_URL},
+                                                         {"AP_SSID", ap_ssid},
+                                                     });
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, html.c_str(), html.size());
@@ -313,7 +314,7 @@ bool CaptivePortal::Start() {
     if (running_.load())
         return true;
 
-    if (!Wifi::Get().StartAp(CONFIG_SLATE_AP_SSID_PREFIX)) {
+    if (!Wifi::Get().StartAp(CONFIG_SLATEHUB_AP_SSID_PREFIX)) {
         ESP_LOGE(kTag, "start failed reason=start_ap_failed");
         return false;
     }

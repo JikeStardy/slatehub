@@ -102,7 +102,7 @@ std::string ActivationClient::SystemInfoJson() const {
     cJSON_AddItemToObject(root, "chip_info", chip_info);
 
     cJSON* application = cJSON_CreateObject();
-    cJSON_AddStringToObject(application, "name", app ? app->project_name : "slate");
+    cJSON_AddStringToObject(application, "name", app ? app->project_name : "slatehub");
     cJSON_AddStringToObject(application, "version", app ? app->version : "unknown");
     std::string compile_time;
     if (app) {

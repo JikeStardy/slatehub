@@ -2,9 +2,9 @@
 
 // NVS 凭据存储:
 //
-// 1. 配网凭据 slate.net { ssid / pwd / url }: captive portal 提交后由 Save() 写入。
+// 1. 配网凭据 slatehub.net { ssid / pwd / url }: captive portal 提交后由 Save() 写入。
 //
-// 2. 内容服务端设备身份 slate.net { dev_id / dev_sec }:
+// 2. 内容服务端设备身份 slatehub.net { dev_id / dev_sec }:
 //    register 响应里下发,SaveSecret() 单独写一次
 //    并 commit,保证跨重启可见。后续所有受保护 API 用 Authorization: Bearer <device_secret>。
 //    poll 收到 401 (secret 失效) 时调 ClearSecret() 让设备重启走 register 流,

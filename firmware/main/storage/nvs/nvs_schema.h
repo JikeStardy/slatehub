@@ -11,15 +11,23 @@ constexpr bool FitsName(const char (&)[N]) {
     return N > 1 && N <= NVS_KEY_NAME_MAX_SIZE;
 }
 
-inline constexpr char kNet[]               = "slate.net";
-inline constexpr char kAudio[]             = "slate.audio";
-inline constexpr char kXiaozhi[]           = "slate.xiaozhi";
-inline constexpr char kXiaozhiMqtt[]       = "slate.xiao.mq";
-inline constexpr char kXiaozhiWs[]         = "slate.xiao.ws";
-inline constexpr char kLegacyXiaozhi[]     = "slate.chat";
-inline constexpr char kLegacyXiaozhiMqtt[] = "slate.chat.mq";
-inline constexpr char kLegacyXiaozhiWs[]   = "slate.chat.ws";
-inline constexpr char kLegacy[]            = "slate";
+template <std::size_t A, std::size_t B>
+constexpr bool SameName(const char (&a)[A], const char (&b)[B]) {
+    if constexpr (A != B) {
+        return false;
+    }
+    for (std::size_t i = 0; i < A; ++i) {
+        if (a[i] != b[i])
+            return false;
+    }
+    return true;
+}
+
+inline constexpr char kNet[]         = "slatehub.net";
+inline constexpr char kAudio[]       = "slatehub.audio";
+inline constexpr char kXiaozhi[]     = "slatehub.xiao";
+inline constexpr char kXiaozhiMqtt[] = "slatehub.x.mq";
+inline constexpr char kXiaozhiWs[]   = "slatehub.x.ws";
 
 namespace net {
 inline constexpr char kSsid[]   = "ssid";
@@ -52,39 +60,46 @@ inline constexpr char kToken[]   = "token";
 inline constexpr char kVersion[] = "version";
 }  // namespace ws
 
-#define SLATE_NVS_ASSERT_NAME(name) static_assert(::nvs_schema::FitsName(name), #name " exceeds NVS name limit")
+#define SLATEHUB_NVS_ASSERT_NAME(name) static_assert(::nvs_schema::FitsName(name), #name " exceeds NVS name limit")
 
-SLATE_NVS_ASSERT_NAME(kNet);
-SLATE_NVS_ASSERT_NAME(kAudio);
-SLATE_NVS_ASSERT_NAME(kXiaozhi);
-SLATE_NVS_ASSERT_NAME(kXiaozhiMqtt);
-SLATE_NVS_ASSERT_NAME(kXiaozhiWs);
-SLATE_NVS_ASSERT_NAME(kLegacyXiaozhi);
-SLATE_NVS_ASSERT_NAME(kLegacyXiaozhiMqtt);
-SLATE_NVS_ASSERT_NAME(kLegacyXiaozhiWs);
-SLATE_NVS_ASSERT_NAME(kLegacy);
+SLATEHUB_NVS_ASSERT_NAME(kNet);
+SLATEHUB_NVS_ASSERT_NAME(kAudio);
+SLATEHUB_NVS_ASSERT_NAME(kXiaozhi);
+SLATEHUB_NVS_ASSERT_NAME(kXiaozhiMqtt);
+SLATEHUB_NVS_ASSERT_NAME(kXiaozhiWs);
 
-SLATE_NVS_ASSERT_NAME(net::kSsid);
-SLATE_NVS_ASSERT_NAME(net::kPwd);
-SLATE_NVS_ASSERT_NAME(net::kUrl);
-SLATE_NVS_ASSERT_NAME(net::kDevId);
-SLATE_NVS_ASSERT_NAME(net::kDevSec);
+static_assert(!SameName(kNet, kAudio), "NVS namespaces must be unique");
+static_assert(!SameName(kNet, kXiaozhi), "NVS namespaces must be unique");
+static_assert(!SameName(kNet, kXiaozhiMqtt), "NVS namespaces must be unique");
+static_assert(!SameName(kNet, kXiaozhiWs), "NVS namespaces must be unique");
+static_assert(!SameName(kAudio, kXiaozhi), "NVS namespaces must be unique");
+static_assert(!SameName(kAudio, kXiaozhiMqtt), "NVS namespaces must be unique");
+static_assert(!SameName(kAudio, kXiaozhiWs), "NVS namespaces must be unique");
+static_assert(!SameName(kXiaozhi, kXiaozhiMqtt), "NVS namespaces must be unique");
+static_assert(!SameName(kXiaozhi, kXiaozhiWs), "NVS namespaces must be unique");
+static_assert(!SameName(kXiaozhiMqtt, kXiaozhiWs), "NVS namespaces must be unique");
 
-SLATE_NVS_ASSERT_NAME(audio::kVolume);
+SLATEHUB_NVS_ASSERT_NAME(net::kSsid);
+SLATEHUB_NVS_ASSERT_NAME(net::kPwd);
+SLATEHUB_NVS_ASSERT_NAME(net::kUrl);
+SLATEHUB_NVS_ASSERT_NAME(net::kDevId);
+SLATEHUB_NVS_ASSERT_NAME(net::kDevSec);
 
-SLATE_NVS_ASSERT_NAME(xiaozhi::kUuid);
+SLATEHUB_NVS_ASSERT_NAME(audio::kVolume);
 
-SLATE_NVS_ASSERT_NAME(mqtt::kEndpoint);
-SLATE_NVS_ASSERT_NAME(mqtt::kClientId);
-SLATE_NVS_ASSERT_NAME(mqtt::kUsername);
-SLATE_NVS_ASSERT_NAME(mqtt::kPassword);
-SLATE_NVS_ASSERT_NAME(mqtt::kPubTopic);
-SLATE_NVS_ASSERT_NAME(mqtt::kKeepalive);
+SLATEHUB_NVS_ASSERT_NAME(xiaozhi::kUuid);
 
-SLATE_NVS_ASSERT_NAME(ws::kUrl);
-SLATE_NVS_ASSERT_NAME(ws::kToken);
-SLATE_NVS_ASSERT_NAME(ws::kVersion);
+SLATEHUB_NVS_ASSERT_NAME(mqtt::kEndpoint);
+SLATEHUB_NVS_ASSERT_NAME(mqtt::kClientId);
+SLATEHUB_NVS_ASSERT_NAME(mqtt::kUsername);
+SLATEHUB_NVS_ASSERT_NAME(mqtt::kPassword);
+SLATEHUB_NVS_ASSERT_NAME(mqtt::kPubTopic);
+SLATEHUB_NVS_ASSERT_NAME(mqtt::kKeepalive);
 
-#undef SLATE_NVS_ASSERT_NAME
+SLATEHUB_NVS_ASSERT_NAME(ws::kUrl);
+SLATEHUB_NVS_ASSERT_NAME(ws::kToken);
+SLATEHUB_NVS_ASSERT_NAME(ws::kVersion);
+
+#undef SLATEHUB_NVS_ASSERT_NAME
 
 }  // namespace nvs_schema

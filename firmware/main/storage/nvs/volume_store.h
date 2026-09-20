@@ -1,6 +1,6 @@
 #pragma once
 
-// 音量持久化:NVS namespace "slate.audio"。
+// 音量持久化:NVS namespace "slatehub.audio"。
 // 用户感知是 0-10 档,codec 实际接收 0-100 → ToCodec(v) = v * 10。
 // 默认 9 档(=codec 90)。
 

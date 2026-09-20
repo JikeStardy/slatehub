@@ -1,7 +1,7 @@
 #include "bsp/board_platform.h"
 
-#ifndef SLATE_BOARD_ID
-#define SLATE_BOARD_ID "zectrix-note4"
+#ifndef SLATEHUB_BOARD_ID
+#error "SLATEHUB_BOARD_ID must be defined by the board build"
 #endif
 
 namespace {
@@ -10,8 +10,8 @@ constexpr bool StringEquals(const char* lhs, const char* rhs) {
     return (*lhs == *rhs) && (*lhs == '\0' || StringEquals(lhs + 1, rhs + 1));
 }
 
-static_assert(StringEquals(SLATE_BOARD_ID, "zectrix-note4"),
-              "Unsupported SLATE_BOARD_ID: only zectrix-note4 is implemented");
+static_assert(StringEquals(SLATEHUB_BOARD_ID, "zectrix-note4"),
+              "Unsupported SLATEHUB_BOARD_ID: only zectrix-note4 is implemented");
 
 }  // namespace
 

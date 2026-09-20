@@ -1,18 +1,18 @@
 #include "resources/captive_portal_html.h"
 
-// 嵌入式 HTML — Slate · Mono Press 风格重设计版
-// 用户连了 SoftAP "Slate-XXXX" 后浏览器看到此页。无外网访问,只能用系统字体回退。
+// 嵌入式 HTML — SlateHub · Mono Press 风格重设计版
+// 用户连了 SoftAP "SlateHub-XXXX" 后浏览器看到此页。无外网访问,只能用系统字体回退。
 // 保持与原版完全一致的接口:GET /scan、POST /submit、占位 {{SERVER_URL}} 与 {{AP_SSID}}。
 // 仅样式与排版重设计,字段、状态、交互、提示文案均不变。
 
-namespace slate {
+namespace slatehub {
 
 const char* const kCaptivePortalHtml = R"HTML(<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Slate · 配网</title>
+<title>SlateHub · 配网</title>
 <style>
 :root {
   --ink:   #14110d;
@@ -269,7 +269,7 @@ button.primary .arrow { font-family: ui-monospace, monospace; font-size: 16px; l
       <span>第 〇 卷 · 配 网 portal</span>
       <span>{{AP_SSID}}</span>
     </div>
-    <h1 class="brand">Slate<span class="brand-dot">.</span></h1>
+    <h1 class="brand">SlateHub<span class="brand-dot">.</span></h1>
     <p class="tag">案头那一块墨水屏，先递上凭证。</p>
     <div class="rule"></div>
     <div class="rule-thick"></div>
@@ -305,7 +305,7 @@ button.primary .arrow { font-family: ui-monospace, monospace; font-size: 16px; l
         <span class="lbl">url</span>
         <input id="server_url" name="server_url" type="url" required
                value="{{SERVER_URL}}"
-               placeholder="https://slate.your-domain.com">
+               placeholder="https://slatehub.your-domain.com">
       </label>
       <p class="hint">填运行 slate 后端的地址。本地调试用 http://&lt;LAN-IP&gt;:3001 即可。</p>
     </section>
@@ -319,7 +319,7 @@ button.primary .arrow { font-family: ui-monospace, monospace; font-size: 16px; l
   <div id="status"></div>
 
   <footer class="foot">
-    <span>slate · v0.1.0</span>
+    <span>slatehub · v0.2.0</span>
     <span>192.168.4.1</span>
   </footer>
 </div>
@@ -468,4 +468,4 @@ $('f').addEventListener('submit', async (e) => {
 </html>
 )HTML";
 
-}  // namespace slate
+}  // namespace slatehub

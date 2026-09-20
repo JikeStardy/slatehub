@@ -7,8 +7,8 @@
 #include <limits>
 #include <utility>
 
-#ifndef SLATE_BOARD_ID
-#error "SLATE_BOARD_ID must be defined by the board build"
+#ifndef SLATEHUB_BOARD_ID
+#error "SLATEHUB_BOARD_ID must be defined by the board build"
 #endif
 
 namespace firmware_update {
@@ -211,7 +211,7 @@ FirmwareOfferResult ReadFirmwareOffer(std::string_view metadata_json) {
 
     std::unique_ptr<AcceptedFirmwareOffer> offer(new AcceptedFirmwareOffer());
     offer->board_id_ = JsonString(firmware, "board_id");
-    if (offer->board_id_ != SLATE_BOARD_ID)
+    if (offer->board_id_ != SLATEHUB_BOARD_ID)
         return Reject("board_id_mismatch");
     offer->version_ = JsonString(firmware, "version");
     if (offer->version_.empty())

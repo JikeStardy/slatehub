@@ -443,6 +443,7 @@ void Wifi::StartApInternal(const std::string& ssid_prefix) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &apc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(kTag, "ap started ssid=%s", ssid);
     mode_.store(Mode::AccessPoint, std::memory_order_release);
 }
 

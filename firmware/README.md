@@ -1,4 +1,4 @@
-# Slate / Firmware
+# SlateHub / Firmware
 
 ESP-IDF 5.5.x 固件，目标芯片 ESP32-S3。当前真实硬件只支持 board id **`zectrix-note4`** / **ZecTrix_Note4_V1.0**（极趣实验室「Ai 便利贴」）：4.2 英寸黑白墨水屏、ES8311 音频、MEMS 麦、3 个按键（确认 / 上 / 下）、单节锂电池。
 
@@ -8,24 +8,24 @@ ESP-IDF 5.5.x 固件，目标芯片 ESP32-S3。当前真实硬件只支持 board
 
 ```bash
 source $IDF_PATH/export.sh
-printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > /tmp/slate-zectrix-note4.defaults
-idf.py -C firmware -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;/tmp/slate-zectrix-note4.defaults" build
+printf "CONFIG_SLATEHUB_BOARD_ID=\"zectrix-note4\"\n" > /tmp/slatehub-zectrix-note4.defaults
+idf.py -C firmware -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;/tmp/slatehub-zectrix-note4.defaults" build
 idf.py -C firmware -p <serial> flash monitor
 ```
 
 CI 使用 ESP-IDF v5.5.2 构建：
 
 ```bash
-BOARD_SDKCONFIG_DEFAULTS="/tmp/slate-sdkconfig.zectrix-note4.defaults"
-printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > "$BOARD_SDKCONFIG_DEFAULTS"
+BOARD_SDKCONFIG_DEFAULTS="/tmp/slatehub-sdkconfig.zectrix-note4.defaults"
+printf "CONFIG_SLATEHUB_BOARD_ID=\"zectrix-note4\"\n" > "$BOARD_SDKCONFIG_DEFAULTS"
 idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" build
-idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o slate-zectrix-note4-full.bin
-cp build/slate.bin build/slate-zectrix-note4-ota.bin
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;$BOARD_SDKCONFIG_DEFAULTS" merge-bin -o slatehub-zectrix-note4-full.bin
+cp build/slatehub.bin build/slatehub-zectrix-note4-ota.bin
 ```
 
 target、Flash、PSRAM、分区表已在 `sdkconfig.defaults` 固化，无需手动 `idf.py set-target`。
 
-> 本地手动构建前需要先创建上例中的临时 defaults 文件；CI 会按 board matrix 自动生成。只设置环境变量不会改变 Kconfig，必须通过 `SDKCONFIG_DEFAULTS` 或等价 IDF 配置路径写入 `CONFIG_SLATE_BOARD_ID`。
+> 本地手动构建前需要先创建上例中的临时 defaults 文件；CI 会按 board matrix 自动生成。只设置环境变量不会改变 Kconfig，必须通过 `SDKCONFIG_DEFAULTS` 或等价 IDF 配置路径写入 `CONFIG_SLATEHUB_BOARD_ID`。
 
 ## 板型与 DisplayProfile
 
@@ -37,7 +37,7 @@ target、Flash、PSRAM、分区表已在 `sdkconfig.defaults` 固化，无需手
 
 1. 在 `shared/src/display-profiles.json` 增加 production-capable DisplayProfile 和真实 BoardDefinition。
 2. 在 `firmware/main/bsp/` 增加对应 BoardPlatform、GPIO、电源、显示和能力定义，并让非支持 board id 在 CMake/Kconfig 阶段失败。
-3. 在 `.github/workflows/firmware.yml` 与 `release.yml` 的 matrix 增加 board row；产物命名保持 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin`、`slate-{board_id}-vX.Y.Z-ota.json` 和对应 sha256。
+3. 在 `.github/workflows/firmware.yml` 与 `release.yml` 的 matrix 增加 board row；产物命名保持 `slatehub-{board_id}-vX.Y.Z-full.bin`、`slatehub-{board_id}-vX.Y.Z-ota.bin`、`slatehub-{board_id}-vX.Y.Z-ota.json` 和对应 sha256。
 
 ## 工程结构
 
@@ -45,7 +45,7 @@ target、Flash、PSRAM、分区表已在 `sdkconfig.defaults` 固化，无需手
 firmware/
 ├── CMakeLists.txt
 ├── partitions.csv              4 MB factory app + 12 MB LittleFS storage
-├── sdkconfig.defaults          ESP32-S3 / Flash / PSRAM / PM / TLS / Slate 配置
+├── sdkconfig.defaults          ESP32-S3 / Flash / PSRAM / PM / TLS / SlateHub 配置
 ├── tools/                      字体生成工具
 └── main/
     ├── app/                    App 生命周期编排
@@ -62,7 +62,7 @@ firmware/
     ├── scenes/                 BootSplash、BgRefresh、Frame、Xiaozhi、Settings 及子页
     ├── startup/                boot mode、首次启动/注册流程
     ├── storage/                LittleFS cache、NVS schema
-    ├── sync/                   Slate backend HTTP API client 与 SyncService
+    ├── sync/                   SlateHub backend HTTP API client 与 SyncService
     ├── ui/                     状态栏、frame view、menu list、主题
     ├── utils/                  JSON、时间、字节、锁 helper
     └── xiaozhi/                小智配置、协议、MCP、对话服务
@@ -200,13 +200,13 @@ nvs_flash_init + LittleFS mount
   -> esp_pm_configure(80-240 MHz DFS)
 ```
 
-`Run()` 直接删除 main task，让 `ui_loop`、`slate_sync`、`audio_play`、EPD refresh 等后台 task 接管。
+`Run()` 直接删除 main task，让 `ui_loop`、`slatehub`、`audio_play`、EPD refresh 等后台 task 接管。
 
 ## Captive Portal
 
 没有 Wi-Fi 凭据时：
 
-- 启动 SoftAP：`{SLATE_AP_SSID_PREFIX}-{MAC后2字节}`，默认 `Slate-XXXX`。
+- 启动 SoftAP：`{SLATEHUB_AP_SSID_PREFIX}-{MAC后2字节}`，默认 `SlateHub-XXXX`。
 - DNS hijack 所有查询到 `192.168.4.1`。
 - HTTP portal 提供两步表单：Wi-Fi SSID/password 与 backend `server_url`。
 - 提交后先 `Wifi::TryConnect()` 验证，再保存 NVS 并重启。
@@ -248,7 +248,7 @@ Authorization: Bearer <device_secret>
 
 ## 同步协议
 
-`SyncService` 运行在 `slate_sync` task，事件位包括：
+`SyncService` 运行在 `slatehub` task，事件位包括：
 
 - 普通 poll
 - 手动 trigger
@@ -420,10 +420,10 @@ ES8311 使用 lazy open：
 
 `update/firmware_offer` 定义 release sidecar 的固件端解析 gate，但当前没有把它接入下载或安装路径，不调用 `esp_ota_*`，也不修改 partition / NVS。通过 gate 的元数据必须满足：
 
-- `schema_version: 1`、`product: "slate"`、`artifact.kind: "ota"`。
+- `schema_version: 1`、`product: "slatehub"`、`artifact.kind: "ota"`。
 - 顶层 `board_id` 等于当前编译板型，例如 `zectrix-note4`。
 - 顶层 `release_tag` 必须等于 `v` + `version`。
-- `artifact.filename` 必须精确等于 `slate-{board_id}-{release_tag}-ota.bin`。
+- `artifact.filename` 必须精确等于 `slatehub-{board_id}-{release_tag}-ota.bin`。
 - `artifact.download_url` 只能是 HTTPS，且 URL basename 必须等于 `artifact.filename`。
 - `artifact.size_bytes` 必须是有限正整数，并能安全转换为 `size_t`。
 - `artifact.sha256` 必须是 64 字符小写 hex。
@@ -437,7 +437,7 @@ ES8311 使用 lazy open：
 
 `SleepManager` 策略：
 
-- 默认闲置 10 分钟 deep sleep，可由 `SLATE_IDLE_DEEP_SLEEP_MIN` 配置。
+- 默认闲置 10 分钟 deep sleep，可由 `SLATEHUB_IDLE_DEEP_SLEEP_MIN` 配置。
 - captive portal 模式禁用 deep sleep。
 - USB/充电存在时暂停 deep sleep。
 - 未绑定后 2 小时内阻止 deep sleep，方便用户在 Web claim 后设备快速响应；低电量会退出 grace。
@@ -467,11 +467,11 @@ GPIO39 上键不是 RTC IO，不能作为 deep sleep ext1 唤醒源。
 
 | 项 | 默认 | 说明 |
 | --- | --- | --- |
-| `SLATE_BOARD_ID` | `zectrix-note4` | 编译期真实板型；CI/release 通过 matrix 写入临时 `SDKCONFIG_DEFAULTS` |
-| `SLATE_DEFAULT_SERVER_URL` | 空 | captive portal 服务端 URL 预填值 |
-| `SLATE_AP_SSID_PREFIX` | `Slate` | SoftAP SSID 前缀 |
-| `SLATE_DEFAULT_TIMEZONE` | `CST-8` | SNTP 后设置的 POSIX TZ |
-| `SLATE_IDLE_DEEP_SLEEP_MIN` | `10` | 闲置多少分钟进 deep sleep |
+| `SLATEHUB_BOARD_ID` | `zectrix-note4` | 编译期真实板型；CI/release 通过 matrix 写入临时 `SDKCONFIG_DEFAULTS` |
+| `SLATEHUB_DEFAULT_SERVER_URL` | 空 | captive portal 服务端 URL 预填值 |
+| `SLATEHUB_AP_SSID_PREFIX` | `SlateHub` | SoftAP SSID 前缀 |
+| `SLATEHUB_DEFAULT_TIMEZONE` | `CST-8` | SNTP 后设置的 POSIX TZ |
+| `SLATEHUB_IDLE_DEEP_SLEEP_MIN` | `10` | 闲置多少分钟进 deep sleep |
 
 `sdkconfig.defaults` 还固化：
 

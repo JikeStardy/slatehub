@@ -1,8 +1,8 @@
-# Slate
+# SlateHub
 
-Slate（墨笺）是一个面向 ESP + 黑白墨水屏设备的开源相框 / 信息看板 / 语音玩具项目。把照片、实时资讯和自定义仪表板推送到一块墨水屏上，用按键翻页、用语音朗读。仓库涵盖设备固件、后端 API、Web 管理端和前后端共享 schema，可以完全自托管。
+SlateHub（墨笺）是一个面向 ESP + 黑白墨水屏设备的开源相框 / 信息看板 / 语音玩具项目。把照片、实时资讯和自定义仪表板推送到一块墨水屏上，用按键翻页、用语音朗读。仓库涵盖设备固件、后端 API、Web 管理端和前后端共享 schema，可以完全自托管。
 
-![Slate 软件管理、设备同步和墨水屏内容形态总览](readme-hero.png)
+![SlateHub 软件管理、设备同步和墨水屏内容形态总览](readme-hero.png)
 
 ## 功能特性
 
@@ -55,7 +55,7 @@ Slate（墨笺）是一个面向 ESP + 黑白墨水屏设备的开源相框 / �
 ## 仓库结构
 
 ```text
-slate/
+slatehub/
 ├── backend/        NestJS API、Prisma schema、动态帧/图片/音频渲染
 ├── frontend/       React Web 管理端
 ├── shared/         前后端共享 TypeScript 源码
@@ -77,7 +77,7 @@ slate/
 
 ## 多设备架构
 
-Slate 把“真实板子”和“显示输出”分成两层：
+SlateHub 把“真实板子”和“显示输出”分成两层：
 
 - `BoardDefinition` 描述一个真实 ESP 设备板型，例如 `zectrix-note4`，包含它使用的 `display_profile_id` 与音频、局刷等硬件能力。
 - `DisplayProfile` 描述帧格式，例如宽高、`mono1` 像素格式、`raw_mono1_msb` 编码与可用环境。后端按 profile 渲染内容变体，前端按 profile 预览，固件只接受与当前板型完全匹配的 descriptor。
@@ -91,7 +91,7 @@ Slate 把“真实板子”和“显示输出”分成两层：
 ```text
 首次开机
   └─ NVS 没有 Wi-Fi/服务端凭据
-     └─ 启动 SoftAP + captive portal（Slate-XXXX）
+     └─ 启动 SoftAP + captive portal（SlateHub-XXXX）
         └─ 用户填写 Wi-Fi 与 backend URL
            └─ 重启后连接 STA、SNTP 对时
               └─ POST /api/v2/devices 注册设备，拿 device_secret + pair_code
@@ -135,11 +135,11 @@ HTTP API 统一挂在 `/api/v2` 下，`/healthz` 是唯一不带前缀的健康�
 启动 MySQL：
 
 ```bash
-docker run -d --name slate-mysql -p 3306:3306 \
+docker run -d --name slatehub-mysql -p 3306:3306 \
   -e MYSQL_ROOT_PASSWORD=root \
-  -e MYSQL_DATABASE=slate \
-  -e MYSQL_USER=slate \
-  -e MYSQL_PASSWORD=slate \
+  -e MYSQL_DATABASE=slatehub \
+  -e MYSQL_USER=slatehub \
+  -e MYSQL_PASSWORD=slatehub \
   mysql:8
 ```
 
@@ -167,12 +167,12 @@ bun run dev:frontend    # http://localhost:5173，Vite proxy /api 与 /healthz �
 
 ```bash
 source $IDF_PATH/export.sh
-printf "CONFIG_SLATE_BOARD_ID=\"zectrix-note4\"\n" > /tmp/slate-zectrix-note4.defaults
-idf.py -C firmware -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;/tmp/slate-zectrix-note4.defaults" build
+printf "CONFIG_SLATEHUB_BOARD_ID=\"zectrix-note4\"\n" > /tmp/slatehub-zectrix-note4.defaults
+idf.py -C firmware -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;/tmp/slatehub-zectrix-note4.defaults" build
 idf.py -C firmware -p <serial> flash monitor
 ```
 
-target、分区表、Flash/PSRAM 配置已经固化在 `firmware/sdkconfig.defaults`，无需手动 `idf.py set-target`。真实板型由 `CONFIG_SLATE_BOARD_ID` 选择，CI/release 通过 board matrix 注入；当前只有 `zectrix-note4`。
+target、分区表、Flash/PSRAM 配置已经固化在 `firmware/sdkconfig.defaults`，无需手动 `idf.py set-target`。真实板型由 `CONFIG_SLATEHUB_BOARD_ID` 选择，CI/release 通过 board matrix 注入；当前只有 `zectrix-note4`。
 
 ## 常用校验
 
@@ -194,12 +194,18 @@ bun run --cwd frontend build
 
 生产镜像是单镜像：backend 直接运行 TypeScript，frontend 的 `dist/` 由 backend 同域静态托管，API 和 Web 共用一个端口。
 
-稳定版部署文件随 GitHub Release 上传；以下命令在首个正式 release 发布后可用。
+稳定版部署文件随 GitHub Release 上传；以下命令在首个正式 release 发布后可用。默认 `master` 是预发布 / 滚动构建通道；稳定部署建议把镜像固定到 `v0.2.0`，或在正式 release 发布后使用 `latest`。
 
 ```bash
-curl -fLO https://github.com/qiujun8023/slate/releases/latest/download/compose.yml
-curl -fLo .env.example https://github.com/qiujun8023/slate/releases/latest/download/slate.env.example
+curl -fLO https://github.com/JikeStardy/slatehub/releases/latest/download/compose.yml
+curl -fLo .env.example https://github.com/JikeStardy/slatehub/releases/latest/download/slatehub.env.example
 cp .env.example .env
+```
+
+如果 GitHub Packages / GHCR 包保持私有，部署机需要先用带 `read:packages` 权限的 token 登录：
+
+```bash
+docker login ghcr.io
 ```
 
 编辑 `.env`：
@@ -212,8 +218,8 @@ openssl rand -hex 64   # 填 JWT_SECRET
 启动：
 
 ```bash
-mkdir -p slate/blobs mysql
-sudo chown -R 1000:1000 slate
+mkdir -p slatehub/blobs mysql
+sudo chown -R 1000:1000 slatehub
 docker compose up -d
 curl -fsS http://localhost:3001/healthz
 ```
@@ -224,7 +230,7 @@ curl -fsS http://localhost:3001/healthz
 
 | 主机路径 | 容器路径 | 内容 |
 | --- | --- | --- |
-| `./slate/` | `/data/` | blob 根目录，主要是 `/data/blobs` |
+| `./slatehub/` | `/data/` | blob 根目录，主要是 `/data/blobs` |
 | `./mysql/` | `/var/lib/mysql/` | MySQL datadir |
 
 升级：
@@ -243,7 +249,7 @@ docker compose up -d
 
 ## 版本与发布
 
-稳定版本见 GitHub Releases。Slate 使用单一产品版本号：一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和所有真实板型固件产物。固件附件命名为 `slate-{board_id}-vX.Y.Z-full.bin`、`slate-{board_id}-vX.Y.Z-ota.bin`、`slate-{board_id}-vX.Y.Z-ota.json` 和对应 sha256 文件；虚拟测试 profile 不发布固件。
+稳定版本见 GitHub Releases。SlateHub 使用单一产品版本号：一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和所有真实板型固件产物。固件附件命名为 `slatehub-{board_id}-vX.Y.Z-full.bin`、`slatehub-{board_id}-vX.Y.Z-ota.bin`、`slatehub-{board_id}-vX.Y.Z-ota.json` 和对应 sha256 文件；虚拟测试 profile 不发布固件。
 
 正式发布由 annotated tag 触发：
 
@@ -260,7 +266,7 @@ tag body 会作为 GitHub Release notes。详细流程见 [CONTRIBUTING.md](CONT
 
 | 工作流 | 触发 | 内容 |
 | --- | --- | --- |
-| `ci.yml` | PR、push 到 `master`、手动触发 | release contract check、format + lint、typecheck、backend test、frontend build |
+| `ci.yml` | PR、push 到 `master`、手动触发 | brand/release contract check、format + lint、typecheck、backend test、frontend build |
 | `docker.yml` | push 到 `master`、手动触发 | buildx 构建 linux/amd64 + linux/arm64 并推送 GHCR |
 | `firmware.yml` | `firmware/**` 变化、手动触发 | 按真实板型矩阵运行 ESP-IDF v5.5.2，上传 board-named full / OTA artifact |
 | `release.yml` | push `vX.Y.Z` tag | 校验版本，推送 release Docker tag，按真实板型矩阵构建固件并创建 GitHub Release |
@@ -268,3 +274,11 @@ tag body 会作为 GitHub Release notes。详细流程见 [CONTRIBUTING.md](CONT
 ## 贡献
 
 欢迎 issue 和 PR。开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 致谢与项目来源
+
+SlateHub 基于 Slate 项目演进，并继续遵循本仓库的 MIT License。
+
+原项目：<https://github.com/qiujun8023/slate>
+
+感谢原作者和贡献者为 SlateHub 打下基础。

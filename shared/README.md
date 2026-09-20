@@ -1,4 +1,4 @@
-# Slate / Shared
+# SlateHub / Shared
 
 `shared` 是前端和后端共同消费的 TypeScript 源码包，包含：
 
@@ -93,7 +93,7 @@ shared/src/
 
 ## 固件 Release Metadata
 
-每个真实板型的 OTA 附件都会附带 `slate-{board_id}-vX.Y.Z-ota.json`。该 sidecar 由 `tools/firmware-release-metadata.mjs` 根据实际 OTA bin 生成并立即 verify，字段固定为：
+每个真实板型的 OTA 附件都会附带 `slatehub-{board_id}-vX.Y.Z-ota.json`。该 sidecar 由 `tools/firmware-release-metadata.mjs` 根据实际 OTA bin 生成并立即 verify，字段固定为：
 
 - 顶层：`schema_version`、`product`、`board_id`、`version`、`release_tag`、`artifact`
 - `artifact`：`kind`、`filename`、`size_bytes`、`sha256`、`download_url`

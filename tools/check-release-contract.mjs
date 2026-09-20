@@ -383,7 +383,7 @@ function runLockWorkspaceVersionFixture() {
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "slate",
+      "name": "slatehub",
       "version": "0.2.0"
     },
     "backend": {

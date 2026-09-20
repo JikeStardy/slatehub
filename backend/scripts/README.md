@@ -1,6 +1,6 @@
 # Backend Scripts
 
-`backend/scripts/` 只放随 Slate 代码一起版本管理的辅助程序。可选临时 dashboard 推送任务走统一 job runner；一次性维护、调试、字体生成脚本保留真实路径，不提供旧入口兼容。
+`backend/scripts/` 只放随 SlateHub 代码一起版本管理的辅助程序。可选临时 dashboard 推送任务走统一 job runner；一次性维护、调试、字体生成脚本保留真实路径，不提供旧入口兼容。
 
 ## 目录
 
@@ -10,7 +10,7 @@ scripts/
 ├── jobs/                          可选临时 dashboard 推送任务
 │   ├── sub2api-usage-stats.ts     Sub2API 用量统计 -> ai_usage_stats
 │   └── claude-code-quota-monitor.ts Claude Code 限额 -> ai_quota_monitor
-├── lib/                           job 共享 env / HTTP / Slate ingest helper
+├── lib/                           job 共享 env / HTTP / SlateHub ingest helper
 ├── helpers/                       维护脚本共享 Nest bootstrap 和日志 helper
 ├── maintenance/                   一次性创建或修正内容组
 ├── fonts/                         位图字体提取和生成工具
@@ -23,28 +23,28 @@ scripts/
 
 ```bash
 cd backend
-SLATE_JOB=sub2api-usage-stats SLATE_JOB_RUN_ONCE=1 bun run scripts/job-runner.ts
+SLATEHUB_JOB=sub2api-usage-stats SLATEHUB_JOB_RUN_ONCE=1 bun run scripts/job-runner.ts
 ```
 
 长期循环运行：
 
 ```bash
 cd backend
-SLATE_JOB=sub2api-usage-stats SLATE_JOB_INTERVAL_SECONDS=600 bun run scripts/job-runner.ts
+SLATEHUB_JOB=sub2api-usage-stats SLATEHUB_JOB_INTERVAL_SECONDS=600 bun run scripts/job-runner.ts
 ```
 
-生产 Docker 通过 `SLATE_RUN_MODE=job` 进入 job runner。`SLATE_JOB=<name>` 会动态加载 `scripts/jobs/<name>.ts`，该文件导出 `job` 或 default `SlateJob`：
+生产 Docker 通过 `SLATEHUB_RUN_MODE=job` 进入 job runner。`SLATEHUB_JOB=<name>` 会动态加载 `scripts/jobs/<name>.ts`，该文件导出 `job` 或 default `SlateHubJob`：
 
 ```yaml
 environment:
-  - SLATE_RUN_MODE=job
-  - SLATE_JOB=sub2api-usage-stats
-  - SLATE_JOB_INTERVAL_SECONDS=600
-  - SLATE_JOB_TIME_ZONE=Asia/Shanghai
-  - SLATE_API_BASE=http://slate:3001
+  - SLATEHUB_RUN_MODE=job
+  - SLATEHUB_JOB=sub2api-usage-stats
+  - SLATEHUB_JOB_INTERVAL_SECONDS=600
+  - SLATEHUB_JOB_TIME_ZONE=Asia/Shanghai
+  - SLATEHUB_API_BASE=http://slatehub:3001
 ```
 
-`SLATE_JOB_INTERVAL_SECONDS` 默认 600。`SLATE_JOB_RUN_ONCE=1` 只执行一次后退出，适合临时验证。新增临时 job 只需要新增 `scripts/jobs/<name>.ts`，不需要改中心注册表。
+`SLATEHUB_JOB_INTERVAL_SECONDS` 默认 600。`SLATEHUB_JOB_RUN_ONCE=1` 只执行一次后退出，适合临时验证。新增临时 job 只需要新增 `scripts/jobs/<name>.ts`，不需要改中心注册表。
 
 ## Sub2API Usage Stats
 
@@ -59,13 +59,13 @@ environment:
 所需环境变量：
 
 ```text
-SLATE_RUN_MODE=job
-SLATE_JOB=sub2api-usage-stats
-SLATE_JOB_INTERVAL_SECONDS=600
-SLATE_JOB_TIME_ZONE=Asia/Shanghai
-SLATE_API_BASE=http://slate:3001
+SLATEHUB_RUN_MODE=job
+SLATEHUB_JOB=sub2api-usage-stats
+SLATEHUB_JOB_INTERVAL_SECONDS=600
+SLATEHUB_JOB_TIME_ZONE=Asia/Shanghai
+SLATEHUB_API_BASE=http://slatehub:3001
 SUB2API_BASE=https://sub2api.example.com
-SUB2API_CONTENT_ID=slate_dashboard_content_id
+SUB2API_CONTENT_ID=slatehub_dashboard_content_id
 SUB2API_EMAIL=you@example.com
 SUB2API_PASSWORD=change_me
 ```
@@ -80,17 +80,17 @@ Sub2API 的 refresh token 是按会话单独存储和撤销的，多端登录可
 
 ```yaml
 services:
-  slate-sub2api-usage-stats:
-    image: ghcr.io/qiujun8023/slate:latest
+  slatehub-sub2api-usage-stats:
+    image: ghcr.io/jikestardy/slatehub:latest
     restart: unless-stopped
     environment:
-      SLATE_RUN_MODE: job
-      SLATE_JOB: sub2api-usage-stats
-      SLATE_JOB_INTERVAL_SECONDS: '600'
-      SLATE_JOB_TIME_ZONE: Asia/Shanghai
-      SLATE_API_BASE: http://slate:3001
+      SLATEHUB_RUN_MODE: job
+      SLATEHUB_JOB: sub2api-usage-stats
+      SLATEHUB_JOB_INTERVAL_SECONDS: '600'
+      SLATEHUB_JOB_TIME_ZONE: Asia/Shanghai
+      SLATEHUB_API_BASE: http://slatehub:3001
       SUB2API_BASE: https://sub2api.example.com
-      SUB2API_CONTENT_ID: slate_dashboard_content_id
+      SUB2API_CONTENT_ID: slatehub_dashboard_content_id
       SUB2API_EMAIL: you@example.com
       SUB2API_PASSWORD: change_me
 ```
@@ -109,4 +109,4 @@ bun run scripts/debug/render-dynamic-debug.ts
 bash scripts/fonts/generate-font-test-assets.sh
 ```
 
-它们不是 Docker entrypoint 的运行模式。需要以 sidecar 运行时才新增到 `jobs/`，并让部署现场通过 `SLATE_JOB=<name>` 选择。
+它们不是 Docker entrypoint 的运行模式。需要以 sidecar 运行时才新增到 `jobs/`，并让部署现场通过 `SLATEHUB_JOB=<name>` 选择。

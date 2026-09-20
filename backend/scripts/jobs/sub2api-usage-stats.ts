@@ -293,6 +293,7 @@ export async function runSub2APIUsageStatsJob(): Promise<void> {
 
 export const job: SlateHubJob = {
   id: 'sub2api-usage-stats',
-  description: 'Fetch Sub2API user dashboard usage stats and push them to a SlateHub dashboard frame.',
+  description:
+    'Fetch Sub2API user dashboard usage stats and push them to a SlateHub dashboard frame.',
   run: runSub2APIUsageStatsJob,
 };

@@ -1,6 +1,6 @@
-# Slate / Frontend
+# SlateHub / Frontend
 
-前端是 Slate 的 Web 管理端，用于登录注册、绑定设备、管理内容组、创建/编辑内容、预览动态帧，以及生成 dashboard 数据推送 URL。
+前端是 SlateHub 的 Web 管理端，用于登录注册、绑定设备、管理内容组、创建/编辑内容、预览动态帧，以及生成 dashboard 数据推送 URL。
 
 ## 技术栈
 

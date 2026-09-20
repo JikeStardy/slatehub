@@ -1,4 +1,4 @@
-# Slate / Backend
+# SlateHub / Backend
 
 后端是 Bun 运行的 NestJS 11（Fastify）服务，使用 Prisma 7 + MySQL 8。单进程承担四类工作：
 
@@ -69,7 +69,7 @@ backend/
     ├── fonts/                   位图字体提取和生成工具
     ├── debug/                   本地渲染调试
     ├── helpers/                 Nest bootstrap、脚本日志 helper
-    └── lib/                     job 共享 env / HTTP / Slate ingest helper
+    └── lib/                     job 共享 env / HTTP / SlateHub ingest helper
 ```
 
 ## 多设备显示模型
@@ -512,17 +512,17 @@ bun run format:check
 
 ## Docker 运行方式
 
-生产镜像内有两种运行模式，由 `SLATE_RUN_MODE` 控制：
+生产镜像内有两种运行模式，由 `SLATEHUB_RUN_MODE` 控制：
 
 - `server`：默认模式，`entrypoint.sh` 会 `cd /app/backend`，执行 `bunx prisma migrate deploy`，再 `exec bun run src/main.ts`。
 - `job`：执行 `bun run scripts/job-runner.ts`，用于可选临时 dashboard 数据推送 sidecar。
 
-frontend `dist/` 位于 `/app/frontend/dist`，由 `main.ts` 自动发现并托管。镜像安装了 ffmpeg，并包含 `backend/scripts/`，因此部署现场的临时 job sidecar 可以复用同一个 Slate 镜像。
+frontend `dist/` 位于 `/app/frontend/dist`，由 `main.ts` 自动发现并托管。镜像安装了 ffmpeg，并包含 `backend/scripts/`，因此部署现场的临时 job sidecar 可以复用同一个 SlateHub 镜像。
 
 Compose 会注入：
 
 ```text
-DATABASE_URL=mysql://slate:${MYSQL_PASSWORD}@mysql:3306/slate
+DATABASE_URL=mysql://slatehub:${MYSQL_PASSWORD}@mysql:3306/slatehub
 NODE_ENV=production
 PORT=${PORT:-3001}
 BLOB_DIR=/data/blobs
@@ -530,26 +530,26 @@ BLOB_DIR=/data/blobs
 
 ### Job sidecar
 
-`SLATE_RUN_MODE=job` 时必须设置 `SLATE_JOB`。job runner 会动态加载 `scripts/jobs/<SLATE_JOB>.ts`，该文件需要导出 `job` 或 default `SlateJob`。这是给部署现场临时 sidecar 复用 Slate 镜像的入口。
+`SLATEHUB_RUN_MODE=job` 时必须设置 `SLATEHUB_JOB`。job runner 会动态加载 `scripts/jobs/<SLATEHUB_JOB>.ts`，该文件需要导出 `job` 或 default `SlateHubJob`。这是给部署现场临时 sidecar 复用 SlateHub 镜像的入口。
 
 示例：
 
 ```text
-SLATE_RUN_MODE=job
-SLATE_JOB=sub2api-usage-stats
-SLATE_JOB_INTERVAL_SECONDS=600
+SLATEHUB_RUN_MODE=job
+SLATEHUB_JOB=sub2api-usage-stats
+SLATEHUB_JOB_INTERVAL_SECONDS=600
 ```
 
 通用变量：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `SLATE_JOB_INTERVAL_SECONDS` | `600` | 循环运行间隔 |
-| `SLATE_JOB_RUN_ONCE` | 空 | 设为 `1` 时只执行一次 |
+| `SLATEHUB_JOB_INTERVAL_SECONDS` | `600` | 循环运行间隔 |
+| `SLATEHUB_JOB_RUN_ONCE` | 空 | 设为 `1` 时只执行一次 |
 
 `scripts/jobs/sub2api-usage-stats.ts` 只支持账号密码登录。它会在进程内缓存 access token，到期后优先使用 refresh token 轮转；refresh 失败或进程重启后才重新用账号密码登录。Sub2API 的 refresh token 按会话独立存储，多个登录会话可以并存。
 
-根 [compose.yml](../compose.yml) 只包含正式 Slate 服务和 MySQL，不固定任何临时 job。需要在某台机器上长期跑某个 dashboard 推送脚本时，在部署目录追加自己的 sidecar 服务和独立 env 文件，不要把外部系统账号密码放进 Slate 主服务 `.env`。
+根 [compose.yml](../compose.yml) 只包含正式 SlateHub 服务和 MySQL，不固定任何临时 job。需要在某台机器上长期跑某个 dashboard 推送脚本时，在部署目录追加自己的 sidecar 服务和独立 env 文件，不要把外部系统账号密码放进 SlateHub 主服务 `.env`。
 
 更多脚本结构见 [scripts/README.md](scripts/README.md)。
 

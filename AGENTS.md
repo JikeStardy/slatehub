@@ -1,6 +1,6 @@
 # Agent Guide
 
-本文件给本地 AI 代理使用，说明 Slate 仓库内必须遵守的协作和发布规则。面向人的贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+本文件给本地 AI 代理使用，说明 SlateHub 仓库内必须遵守的协作和发布规则。面向人的贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 基本规则
 
@@ -37,7 +37,7 @@ idf.py -C firmware build
 
 ## 发布规则
 
-Slate 使用单一产品版本号。一个 `vX.Y.Z` tag 同时发布：
+SlateHub 使用单一产品版本号。一个 `vX.Y.Z` tag 同时发布：
 
 - GHCR Docker 镜像：backend + frontend dist
 - ESP32-S3 固件：完整烧录包和 OTA 包
@@ -74,7 +74,7 @@ git push origin v0.2.0
 tag message 示例：
 
 ```text
-Slate v0.2.0
+SlateHub v0.2.0
 
 - 后端 / Web：新增 ...
 - 固件：修复 ...

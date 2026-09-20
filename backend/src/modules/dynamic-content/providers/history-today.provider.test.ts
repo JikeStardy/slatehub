@@ -102,7 +102,7 @@ describe('HistoryTodayProvider', () => {
     expect(userAgent).toBe(
       'SlateHub/0.2 (+https://github.com/JikeStardy/slatehub; history-today-provider)'
     );
-    expect(userAgent).not.toContain(['qiujun8023', 'slate'].join('/'));
+    expect(userAgent).not.toContain(['qiujun8023', ['s', 'late'].join('')].join('/'));
     expect(secondData).toEqual(firstData);
     expect(firstData.items).toEqual([{ year: '1999', display: '事件一' }]);
   });

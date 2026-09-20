@@ -166,6 +166,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           prisma: 'true'
+      - run: bun run check:brand-contract
       - run: bun run check:release-contract
       - run: bun run test:release-metadata
       - run: bun run format:check

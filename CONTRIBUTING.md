@@ -12,7 +12,7 @@
   - 固件：`fw_version`（设置 → 设备信息），或 commit hash
   - 后端：commit hash + Bun 版本 + MySQL 版本
   - 前端：commit hash + 浏览器版本
-- **日志** —— 后端日志（`docker compose logs slate`）、固件 UART log（`idf.py monitor`）、浏览器 Console，按需贴出关键片段
+- **日志** —— 后端日志（`docker compose logs slatehub`）、固件 UART log（`idf.py monitor`）、浏览器 Console，按需贴出关键片段
 
 ## 提交 PR
 
@@ -77,7 +77,7 @@ CI 上 `firmware.yml` 用 v5.5.2 跑构建。涉及 EPD / 电源 / 按键 / 休�
 
 ## 发布版本
 
-Slate 使用单一产品版本号。一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和固件产物；不要为 backend 和 firmware 拆成两个 release。
+SlateHub 使用单一产品版本号。一个 `vX.Y.Z` tag 同时发布生产 Docker 镜像和固件产物；不要为 backend 和 firmware 拆成两个 release。
 
 发布前同步以下版本号，必须全部等于 tag 去掉 `v` 后的版本：
 
@@ -100,7 +100,7 @@ git push origin v0.2.0
 tag message 示例：
 
 ```text
-Slate v0.2.0
+SlateHub v0.2.0
 
 - 后端 / Web：新增 ...
 - 固件：修复 ...

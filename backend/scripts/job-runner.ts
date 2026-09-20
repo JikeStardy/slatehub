@@ -79,7 +79,11 @@ async function loadJob(jobID: string): Promise<SlateHubJob> {
   };
 }
 
-function readPositiveIntValue(rawValue: string | undefined, fallback: number, name: string): number {
+function readPositiveIntValue(
+  rawValue: string | undefined,
+  fallback: number,
+  name: string
+): number {
   const raw = String(rawValue ?? '').trim();
   if (!raw) return fallback;
 

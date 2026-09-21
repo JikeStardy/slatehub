@@ -4,7 +4,7 @@
 
 ## 基本规则
 
-- 默认在 `master` 上开发，提交风格遵循 Conventional Commits。
+- 默认在 `dev` 上开发，提交风格遵循 Conventional Commits。
 - 不要回滚用户已有改动；如遇到无关的脏工作区，忽略即可。
 - 修改前先阅读相关模块 README：后端看 `backend/README.md`，前端看 `frontend/README.md`，共享 schema 看 `shared/README.md`，固件看 `firmware/README.md`。
 - 前端 UI 改动必须遵守 `frontend/README.md` 的 Mono Press 设计系统。
@@ -93,7 +93,7 @@ SlateHub v0.2.0
 6. 创建或更新 GitHub Release
 7. 上传固件 `.bin`、sha256、部署用 `compose.yml` / env 示例到 Release assets
 
-`docker.yml` 和 `firmware.yml` 是 `master` 的滚动构建，不代表稳定版本。正式版本只看 GitHub Releases 和 `vX.Y.Z` tag。
+`docker.yml` 和 `firmware.yml` 是 `dev` 的滚动构建，不代表稳定版本。正式版本只看 GitHub Releases 和 `vX.Y.Z` tag。
 
 ### 禁止事项
 

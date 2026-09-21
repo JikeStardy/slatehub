@@ -16,7 +16,7 @@
 
 services:
   slatehub:
-    image: ${SLATEHUB_IMAGE:-ghcr.io/jikestardy/slatehub:master}
+    image: ${SLATEHUB_IMAGE:-ghcr.io/jikestardy/slatehub:dev}
     container_name: slatehub
     restart: unless-stopped
     depends_on:

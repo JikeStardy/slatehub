@@ -146,8 +146,8 @@ assertContains(
 assertContains(
   'compose.yml',
   read('compose.yml'),
-  'SLATEHUB_IMAGE:-ghcr.io/jikestardy/slatehub:master',
-  'compose image default must use SlateHub GHCR master channel'
+  'SLATEHUB_IMAGE:-ghcr.io/jikestardy/slatehub:dev',
+  'compose image default must use SlateHub GHCR dev channel'
 );
 assertContains(
   '.github/workflows/docker.yml',

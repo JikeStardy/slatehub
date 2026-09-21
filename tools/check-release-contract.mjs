@@ -458,6 +458,26 @@ assertContract(
 );
 
 assertContract(
+  [ciWorkflow, dockerWorkflow, firmwareWorkflow].every(
+    (workflow) =>
+      /push:\s*\n\s+branches:\s*\[dev\]/.test(workflow) &&
+      !/branches:\s*\[master\]/.test(workflow)
+  ),
+  'Every rolling branch workflow must trigger on dev only.'
+);
+
+assertContract(
+  /pull_request:\s*\n\s+branches:\s*\[dev\]/.test(ciWorkflow),
+  'CI pull requests must target dev only.'
+);
+
+assertContract(
+  /type=raw,value=dev/.test(dockerWorkflow) &&
+    !/type=raw,value=master/.test(dockerWorkflow),
+  'Docker rolling builds must publish the dev tag only.'
+);
+
+assertContract(
   /bun run test:release-metadata/.test(ciWorkflow) &&
     /bun run test:release-metadata/.test(releaseWorkflow),
   'CI and release quality gates must run the complete firmware release metadata regression suite.'

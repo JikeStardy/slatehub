@@ -18,7 +18,7 @@
 
 ### 分支与提交
 
-- 从 `master` 切分支，名字简短描述意图（`fix-frame-reorder`、`feat-bulk-upload`）
+- 从 `dev` 切分支，名字简短描述意图（`fix-frame-reorder`、`feat-bulk-upload`）
 - 一个 PR 只解决一件事；不相干的清理拆 PR
 
 ### Commit message

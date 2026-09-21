@@ -2,7 +2,7 @@ name: docker
 
 on:
   push:
-    branches: [master]
+    branches: [dev]
   workflow_dispatch:
 
 concurrency:
@@ -37,7 +37,7 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=master
+            type=raw,value=dev
             type=sha,prefix=sha-,format=short
 
       - uses: docker/build-push-action@v7

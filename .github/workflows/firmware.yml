@@ -2,7 +2,7 @@ name: firmware
 
 on:
   push:
-    branches: [master]
+    branches: [dev]
     paths:
       - 'firmware/**'
       - '.github/workflows/firmware.yml'

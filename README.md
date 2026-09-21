@@ -194,7 +194,7 @@ bun run --cwd frontend build
 
 生产镜像是单镜像：backend 直接运行 TypeScript，frontend 的 `dist/` 由 backend 同域静态托管，API 和 Web 共用一个端口。
 
-稳定版部署文件随 GitHub Release 上传；以下命令在首个正式 release 发布后可用。默认 `master` 是预发布 / 滚动构建通道；稳定部署建议把镜像固定到 `v0.2.0`，或在正式 release 发布后使用 `latest`。
+稳定版部署文件随 GitHub Release 上传；以下命令在首个正式 release 发布后可用。默认 `dev` 是预发布 / 滚动构建通道；稳定部署建议把镜像固定到 `v0.2.0`，或在正式 release 发布后使用 `latest`。
 
 ```bash
 curl -fLO https://github.com/JikeStardy/slatehub/releases/latest/download/compose.yml
@@ -244,7 +244,7 @@ docker compose up -d
 
 - `latest`：最新稳定发布版本
 - `vX.Y.Z` / `X.Y`：指定稳定发布版本
-- `master`：master 最新构建
+- `dev`：dev 最新滚动构建
 - `sha-<short>`：按 commit 固定版本
 
 ## 版本与发布
@@ -266,9 +266,9 @@ tag body 会作为 GitHub Release notes。详细流程见 [CONTRIBUTING.md](CONT
 
 | 工作流 | 触发 | 内容 |
 | --- | --- | --- |
-| `ci.yml` | PR、push 到 `master`、手动触发 | brand/release contract check、format + lint、typecheck、backend test、frontend build |
-| `docker.yml` | push 到 `master`、手动触发 | buildx 构建 linux/amd64 + linux/arm64 并推送 GHCR |
-| `firmware.yml` | `firmware/**` 变化、手动触发 | 按真实板型矩阵运行 ESP-IDF v5.5.2，上传 board-named full / OTA artifact |
+| `ci.yml` | 目标为 `dev` 的 PR、push 到 `dev`、手动触发 | brand/release contract check、format + lint、typecheck、backend test、frontend build |
+| `docker.yml` | push 到 `dev`、手动触发 | buildx 构建 linux/amd64 + linux/arm64 并推送 GHCR `dev` tag |
+| `firmware.yml` | push 到 `dev` 且 `firmware/**` 变化、手动触发 | 按真实板型矩阵运行 ESP-IDF v5.5.2，上传 board-named full / OTA artifact |
 | `release.yml` | push `vX.Y.Z` tag | 校验版本，推送 release Docker tag，按真实板型矩阵构建固件并创建 GitHub Release |
 
 ## 贡献
